@@ -28,7 +28,7 @@ SketchyBar Studio discovers your existing SketchyBar setup, presents editable va
 
 ## Screenshots
 
-Screenshots welcome once the first public release UI settles.
+<img width="1425" height="1045" alt="SCR-20260505-lilj" src="https://github.com/user-attachments/assets/8554a595-df01-480f-86d6-be08b555d6e7" />
 
 ## Install
 
