@@ -17,16 +17,21 @@ INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON="$ROOT_DIR/Assets/SketchyBarStudio.icns"
 
 SWIFT_CONFIGURATION="debug"
-SWIFT_ARCH_ARGS=()
+UNIVERSAL_BUILD="false"
 
 if [[ "$MODE" == "--universal-package" || "$MODE" == "universal-package" ]]; then
   SWIFT_CONFIGURATION="release"
-  SWIFT_ARCH_ARGS=(--arch arm64 --arch x86_64)
+  UNIVERSAL_BUILD="true"
 fi
 
 build_bundle() {
-  swift build --configuration "$SWIFT_CONFIGURATION" "${SWIFT_ARCH_ARGS[@]}"
-  BUILD_DIR="$(swift build --configuration "$SWIFT_CONFIGURATION" "${SWIFT_ARCH_ARGS[@]}" --show-bin-path)"
+  if [[ "$UNIVERSAL_BUILD" == "true" ]]; then
+    swift build --configuration "$SWIFT_CONFIGURATION" --arch arm64 --arch x86_64
+    BUILD_DIR="$(swift build --configuration "$SWIFT_CONFIGURATION" --arch arm64 --arch x86_64 --show-bin-path)"
+  else
+    swift build --configuration "$SWIFT_CONFIGURATION"
+    BUILD_DIR="$(swift build --configuration "$SWIFT_CONFIGURATION" --show-bin-path)"
+  fi
   BUILD_BINARY="$BUILD_DIR/$APP_NAME"
 
   rm -rf "$APP_BUNDLE"
