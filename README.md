@@ -20,7 +20,9 @@ SketchyBar Studio discovers your existing SketchyBar setup, presents editable va
   - native macOS font panel, saved as SketchyBar font syntax
   - toggles for booleans
 - Save `.studio-backup` copies before writing.
-- Save profiles as full config folder snapshots.
+- Manage multiple config folders from a Config Library.
+- Save profiles as full config folder snapshots scoped to each config.
+- Switch the live SketchyBar config with a symlink-based `Make Selected Live` action.
 - Search files and values.
 - Show changed values only.
 - Save all changes and apply with `sketchybar --reload`.

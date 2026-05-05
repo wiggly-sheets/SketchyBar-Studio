@@ -147,6 +147,7 @@ private struct ConfigFileRow: View {
 
 private struct ProfilePanel: View {
     @ObservedObject var store: SketchyBarStore
+    @State private var restoreCandidate: ConfigProfile?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -176,13 +177,33 @@ private struct ProfilePanel: View {
                     Spacer()
 
                     Button {
-                        store.restore(profile: profile)
+                        restoreCandidate = profile
                     } label: {
                         Image(systemName: "arrow.uturn.backward")
                     }
                     .help("Restore profile")
                 }
             }
+        }
+        .confirmationDialog(
+            "Restore profile?",
+            isPresented: Binding(
+                get: { restoreCandidate != nil },
+                set: { if !$0 { restoreCandidate = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Restore", role: .destructive) {
+                if let restoreCandidate {
+                    store.restore(profile: restoreCandidate)
+                }
+                restoreCandidate = nil
+            }
+            Button("Cancel", role: .cancel) {
+                restoreCandidate = nil
+            }
+        } message: {
+            Text("This replaces the selected config folder with the saved profile. A timestamped backup is kept next to the config folder.")
         }
     }
 }

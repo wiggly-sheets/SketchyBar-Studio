@@ -3,15 +3,22 @@ import Foundation
 struct ProfileArchiveService {
     private let fileManager = FileManager.default
 
-    var profilesRoot: URL {
+    private var appSupportRoot: URL {
         let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        return support.appendingPathComponent("SketchyBarStudio").appendingPathComponent("Profiles")
+        return support.appendingPathComponent("SketchyBarStudio")
     }
 
-    func listProfiles() -> [ConfigProfile] {
+    func profilesRoot(for configID: String) -> URL {
+        appSupportRoot
+            .appendingPathComponent("Profiles")
+            .appendingPathComponent(sanitizedProfileName(configID))
+    }
+
+    func listProfiles(for configID: String) -> [ConfigProfile] {
+        let root = profilesRoot(for: configID)
         guard let urls = try? fileManager.contentsOfDirectory(
-            at: profilesRoot,
+            at: root,
             includingPropertiesForKeys: [.creationDateKey],
             options: [.skipsHiddenFiles]
         ) else {
@@ -27,14 +34,15 @@ struct ProfileArchiveService {
         .sorted { $0.createdAt > $1.createdAt }
     }
 
-    func saveProfile(named name: String, from configRoot: URL) throws {
+    func saveProfile(named name: String, from configRoot: URL, configID: String) throws {
         let cleanName = sanitizedProfileName(name)
         guard !cleanName.isEmpty else {
             throw ProfileError.emptyName
         }
 
-        try fileManager.createDirectory(at: profilesRoot, withIntermediateDirectories: true)
-        let destination = profilesRoot.appendingPathComponent(cleanName)
+        let root = profilesRoot(for: configID)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        let destination = root.appendingPathComponent(cleanName)
         if fileManager.fileExists(atPath: destination.path) {
             try fileManager.removeItem(at: destination)
         }

@@ -3,10 +3,14 @@ import Foundation
 
 final class SketchyBarStore: ObservableObject {
     @Published var configRoot: URL
+    @Published var configs: [ConfigWorkspace] = []
+    @Published var selectedConfigID: ConfigWorkspace.ID?
     @Published var files: [ConfigFile] = []
     @Published var selectedFileID: ConfigFile.ID?
     @Published var profiles: [ConfigProfile] = []
     @Published var profileName: String = ""
+    @Published var newConfigName: String = ""
+    @Published var newConfigPath: String = ""
     @Published var statusMessage: String = ""
     @Published var searchText: String = ""
     @Published var showModifiedOnly = false
@@ -20,11 +24,26 @@ final class SketchyBarStore: ObservableObject {
     private let luaScanner = LuaConfigScanner()
     private let shellScanner = ShellConfigScanner()
     private let activationService = ConfigActivationService()
+    private let configLibraryService = ConfigLibraryService()
+    private let configSwitchService = ConfigSwitchService()
     private let profileService = ProfileArchiveService()
 
     init() {
-        configRoot = Self.savedConfigRoot(defaultURL: locator.defaultConfigRoot)
+        let defaultRoot = locator.defaultConfigRoot
+        let loadedConfigs = configLibraryService.load(defaultConfigRoot: defaultRoot)
+        let savedConfigID = UserDefaults.standard.string(forKey: "selectedConfigID") ?? loadedConfigs.first?.id
+        let selected = loadedConfigs.first { $0.id == savedConfigID } ?? loadedConfigs.first
+
+        configRoot = selected?.url ?? defaultRoot
+        configs = loadedConfigs
+        selectedConfigID = savedConfigID
+        newConfigPath = configRoot.path
         reload()
+    }
+
+    var selectedConfig: ConfigWorkspace? {
+        guard let selectedConfigID else { return configs.first }
+        return configs.first { $0.id == selectedConfigID } ?? configs.first
     }
 
     var selectedFile: ConfigFile? {
@@ -34,6 +53,15 @@ final class SketchyBarStore: ObservableObject {
 
     var unsavedFileCount: Int {
         files.filter(\.hasUnsavedChanges).count
+    }
+
+    var selectedConfigProfileID: String {
+        selectedConfig?.id ?? "default"
+    }
+
+    var isSelectedConfigLive: Bool {
+        guard let selectedConfig else { return false }
+        return configSwitchService.isLive(config: selectedConfig)
     }
 
     func reload() {
@@ -52,7 +80,7 @@ final class SketchyBarStore: ObservableObject {
         }
 
         files = scannedFiles.filter { !$0.values.isEmpty }
-        profiles = profileService.listProfiles()
+        profiles = profileService.listProfiles(for: selectedConfigProfileID)
 
         if selectedFileID == nil || !files.contains(where: { $0.id == selectedFileID }) {
             selectedFileID = files.first?.id
@@ -61,38 +89,88 @@ final class SketchyBarStore: ObservableObject {
         if files.isEmpty {
             statusMessage = "No editable Lua or shell assignments found in \(configRoot.path)."
         } else {
-            statusMessage = "Loaded \(files.count) config files."
+            statusMessage = "Loaded \(files.count) config files from \(selectedConfig?.name ?? configRoot.lastPathComponent)."
         }
     }
 
     func updateConfigRoot(_ text: String) {
         let expanded = NSString(string: text).expandingTildeInPath
-        configRoot = URL(fileURLWithPath: expanded)
-        UserDefaults.standard.set(configRoot.path, forKey: "configRoot")
+        let url = URL(fileURLWithPath: expanded)
+        if let match = configs.first(where: { $0.url.path == url.path }) {
+            selectConfig(match.id)
+        } else {
+            let name = url.lastPathComponent.isEmpty ? "Config" : url.lastPathComponent
+            addConfig(name: name, path: url.path, selectAfterAdd: true)
+        }
+    }
+
+    func selectConfig(_ id: ConfigWorkspace.ID) {
+        guard let config = configs.first(where: { $0.id == id }) else { return }
+        selectedConfigID = id
+        configRoot = config.url
+        newConfigPath = config.path
+        UserDefaults.standard.set(id, forKey: "selectedConfigID")
+        UserDefaults.standard.set(config.path, forKey: "configRoot")
+        selectedFileID = nil
         reload()
+    }
+
+    func addConfig(name: String, path: String, selectAfterAdd: Bool) {
+        let expanded = NSString(string: path).expandingTildeInPath
+        let url = URL(fileURLWithPath: expanded)
+        guard !expanded.isEmpty else {
+            statusMessage = "Choose a config folder first."
+            return
+        }
+
+        if let existing = configs.first(where: { $0.url.path == url.path }) {
+            if selectAfterAdd { selectConfig(existing.id) }
+            return
+        }
+
+        let config = ConfigWorkspace.make(name: name, url: url)
+        configs.append(config)
+        saveConfigLibrary()
+        newConfigName = ""
+        newConfigPath = url.path
+        statusMessage = "Added config \(config.name)."
+        if selectAfterAdd { selectConfig(config.id) }
+    }
+
+    func removeConfig(_ id: ConfigWorkspace.ID) {
+        guard configs.count > 1 else {
+            statusMessage = "Keep at least one config."
+            return
+        }
+        configs.removeAll { $0.id == id }
+        saveConfigLibrary()
+        if selectedConfigID == id {
+            selectConfig(configs.first!.id)
+        }
+    }
+
+    func activateSelectedConfigAsLiveSymlink() {
+        guard let selectedConfig else { return }
+        do {
+            try configSwitchService.activate(config: selectedConfig)
+            statusMessage = "Activated \(selectedConfig.name) as ~/.config/sketchybar symlink."
+            applySketchyBarReload()
+        } catch {
+            statusMessage = "Config switch failed: \(error.localizedDescription)"
+        }
     }
 
     func update(valueID: LuaEditableValue.ID, draftValue: String) {
         guard let fileIndex = files.firstIndex(where: { file in
             file.values.contains(where: { $0.id == valueID })
-        }) else {
-            return
-        }
+        }) else { return }
 
         var file = files[fileIndex]
         var values = file.values
-        guard let valueIndex = values.firstIndex(where: { $0.id == valueID }) else {
-            return
-        }
+        guard let valueIndex = values.firstIndex(where: { $0.id == valueID }) else { return }
 
         values[valueIndex].draftValue = draftValue
-        file = ConfigFile(
-            url: file.url,
-            rootURL: file.rootURL,
-            kind: file.kind,
-            values: values,
-            activationReference: file.activationReference
-        )
+        file = ConfigFile(url: file.url, rootURL: file.rootURL, kind: file.kind, values: values, activationReference: file.activationReference)
         files[fileIndex] = file
     }
 
@@ -159,9 +237,7 @@ final class SketchyBarStore: ObservableObject {
     }
 
     func setActive(_ isActive: Bool, fileID: ConfigFile.ID) {
-        guard let file = files.first(where: { $0.id == fileID }) else {
-            return
-        }
+        guard let file = files.first(where: { $0.id == fileID }) else { return }
 
         do {
             try activationService.setActive(isActive, for: file)
@@ -174,10 +250,10 @@ final class SketchyBarStore: ObservableObject {
 
     func saveProfile() {
         do {
-            try profileService.saveProfile(named: profileName, from: configRoot)
+            try profileService.saveProfile(named: profileName, from: configRoot, configID: selectedConfigProfileID)
             profileName = ""
-            profiles = profileService.listProfiles()
-            statusMessage = "Saved profile."
+            profiles = profileService.listProfiles(for: selectedConfigProfileID)
+            statusMessage = "Saved profile for \(selectedConfig?.name ?? "config")."
         } catch {
             statusMessage = "Profile save failed: \(error.localizedDescription)"
         }
@@ -187,7 +263,7 @@ final class SketchyBarStore: ObservableObject {
         do {
             try profileService.restore(profile: profile, to: configRoot)
             reload()
-            statusMessage = "Restored \(profile.name). A timestamped backup of the previous config was kept next to the config folder."
+            statusMessage = "Restored \(profile.name). A timestamped backup of previous config was kept next to config folder."
         } catch {
             statusMessage = "Restore failed: \(error.localizedDescription)"
         }
@@ -221,18 +297,17 @@ final class SketchyBarStore: ObservableObject {
         }
     }
 
-    private static func savedTheme() -> AppTheme {
-        guard let rawValue = UserDefaults.standard.string(forKey: "appTheme"),
-              let theme = AppTheme(rawValue: rawValue) else {
-            return .nord
+    private func saveConfigLibrary() {
+        do {
+            try configLibraryService.save(configs)
+        } catch {
+            statusMessage = "Config library save failed: \(error.localizedDescription)"
         }
-        return theme
     }
 
-    private static func savedConfigRoot(defaultURL: URL) -> URL {
-        guard let path = UserDefaults.standard.string(forKey: "configRoot"), !path.isEmpty else {
-            return defaultURL
-        }
-        return URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
+    private static func savedTheme() -> AppTheme {
+        guard let rawValue = UserDefaults.standard.string(forKey: "appTheme"),
+              let theme = AppTheme(rawValue: rawValue) else { return .nord }
+        return theme
     }
 }
