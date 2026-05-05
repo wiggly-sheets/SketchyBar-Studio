@@ -47,6 +47,20 @@ For a distributable local `.app` bundle:
 open dist/SketchyBarStudio.app
 ```
 
+## Opening Unsigned Builds
+
+Early GitHub release builds are unsigned and not notarized. macOS may block the app after download because the zip is quarantined.
+
+Try right-clicking `SketchyBarStudio.app` and choosing **Open** first. If macOS still blocks it, remove the quarantine attribute manually:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/SketchyBarStudio.app
+```
+
+If you run it from another folder, replace `/Applications/SketchyBarStudio.app` with the actual app path.
+
+Only run this command for apps you downloaded from a source you trust.
+
 ## Known Limits
 
 - The Lua editor intentionally edits simple scalar assignments first. Complex tables and computed values stay untouched.
