@@ -6,7 +6,8 @@
 
    ```bash
    swift build
-   ./script/build_and_run.sh --package
+   ./script/build_and_run.sh --universal-package
+   lipo -info dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
    ```
 
 4. Manually open `dist/SketchyBarStudio.app`.

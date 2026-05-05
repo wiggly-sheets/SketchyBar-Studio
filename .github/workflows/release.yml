@@ -8,7 +8,7 @@ on:
 
 jobs:
   package:
-    name: Package app
+    name: Package universal app
     runs-on: macos-latest
 
     steps:
@@ -20,14 +20,19 @@ jobs:
           swift --version
           xcodebuild -version
 
-      - name: Build app bundle
-        run: bash ./script/build_and_run.sh --package
+      - name: Build universal app bundle
+        run: bash ./script/build_and_run.sh --universal-package
+
+      - name: Verify universal binary
+        run: |
+          file dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
+          lipo -verify_arch arm64 x86_64 dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
 
       - name: Zip app
-        run: ditto -c -k --keepParent dist/SketchyBarStudio.app SketchyBarStudio.app.zip
+        run: ditto -c -k --keepParent dist/SketchyBarStudio.app SketchyBarStudio-universal.app.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SketchyBarStudio-app
-          path: SketchyBarStudio.app.zip
+          name: SketchyBarStudio-universal-app
+          path: SketchyBarStudio-universal.app.zip

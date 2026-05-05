@@ -16,9 +16,18 @@ APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON="$ROOT_DIR/Assets/SketchyBarStudio.icns"
 
+SWIFT_CONFIGURATION="debug"
+SWIFT_ARCH_ARGS=()
+
+if [[ "$MODE" == "--universal-package" || "$MODE" == "universal-package" ]]; then
+  SWIFT_CONFIGURATION="release"
+  SWIFT_ARCH_ARGS=(--arch arm64 --arch x86_64)
+fi
+
 build_bundle() {
-  swift build
-  BUILD_BINARY="$(swift build --show-bin-path)/$APP_NAME"
+  swift build --configuration "$SWIFT_CONFIGURATION" "${SWIFT_ARCH_ARGS[@]}"
+  BUILD_DIR="$(swift build --configuration "$SWIFT_CONFIGURATION" "${SWIFT_ARCH_ARGS[@]}" --show-bin-path)"
+  BUILD_BINARY="$BUILD_DIR/$APP_NAME"
 
   rm -rf "$APP_BUNDLE"
   mkdir -p "$APP_MACOS" "$APP_RESOURCES"
@@ -52,17 +61,21 @@ build_bundle() {
 PLIST
 }
 
+verify_bundle() {
+  test -x "$APP_BINARY"
+  test -f "$INFO_PLIST"
+  test -f "$APP_RESOURCES/SketchyBarStudio.icns"
+}
+
 open_app() {
   pkill -x "$APP_NAME" >/dev/null 2>&1 || true
   /usr/bin/open -n "$APP_BUNDLE"
 }
 
 case "$MODE" in
-  --package|package)
+  --package|package|--universal-package|universal-package)
     build_bundle
-    test -x "$APP_BINARY"
-    test -f "$INFO_PLIST"
-    test -f "$APP_RESOURCES/SketchyBarStudio.icns"
+    verify_bundle
     echo "$APP_BUNDLE"
     ;;
   run)
@@ -90,7 +103,7 @@ case "$MODE" in
     pgrep -x "$APP_NAME" >/dev/null
     ;;
   *)
-    echo "usage: $0 [run|--package|--debug|--logs|--telemetry|--verify]" >&2
+    echo "usage: $0 [run|--package|--universal-package|--debug|--logs|--telemetry|--verify]" >&2
     exit 2
     ;;
 esac
