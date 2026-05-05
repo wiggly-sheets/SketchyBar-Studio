@@ -46,14 +46,14 @@ SketchyBar Studio is currently distributed as unsigned preview builds. You have 
 A custom Homebrew tap can install the release zip as a cask:
 
 ```bash
-brew tap YOUR-USER/sketchybar-studio
+brew tap wiggly-sheets/sketchybar-studio
 brew install --cask sketchybar-studio
 ```
 
 Or in one command:
 
 ```bash
-brew install --cask YOUR-USER/sketchybar-studio/sketchybar-studio
+brew install --cask wiggly-sheets/sketchybar-studio/sketchybar-studio
 ```
 
 Replace `YOUR-USER` with the GitHub account that hosts the tap.
@@ -61,7 +61,7 @@ Replace `YOUR-USER` with the GitHub account that hosts the tap.
 ### Option 3: Build from Source
 
 ```bash
-git clone https://github.com/YOUR-USER/sketchybar-studio.git
+git clone https://github.com/wiggly-sheets/sketchybar-studio.git
 cd sketchybar-studio
 ./script/build_and_run.sh
 ```
