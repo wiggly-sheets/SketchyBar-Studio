@@ -1,0 +1,28 @@
+name: Release Build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  package:
+    name: Package app
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build app bundle
+        run: ./script/build_and_run.sh --package
+
+      - name: Zip app
+        run: ditto -c -k --keepParent dist/SketchyBarStudio.app SketchyBarStudio.app.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SketchyBarStudio-app
+          path: SketchyBarStudio.app.zip

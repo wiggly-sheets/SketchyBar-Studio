@@ -1,0 +1,6 @@
+.build/
+.swiftpm/
+dist/
+*.xcuserdata/
+DerivedData/
+*.studio-backup
