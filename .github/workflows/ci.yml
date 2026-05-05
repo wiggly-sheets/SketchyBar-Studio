@@ -15,11 +15,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show Swift version
-        run: swift --version
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Clean SwiftPM cache for workspace
+        run: swift package clean
 
       - name: Build
         run: swift build
 
-      - name: Verify app bundle packaging
-        run: ./script/build_and_run.sh --package
+      - name: Package app bundle
+        run: bash ./script/build_and_run.sh --package
+
+      - name: Verify app bundle metadata
+        run: |
+          test -x dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
+          test -f dist/SketchyBarStudio.app/Contents/Resources/SketchyBarStudio.icns
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' dist/SketchyBarStudio.app/Contents/Info.plist | grep SketchyBarStudio

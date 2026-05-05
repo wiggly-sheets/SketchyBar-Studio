@@ -90,7 +90,7 @@ struct ConfigActivationService {
 
         let marker = entrypointURL.pathExtension.lowercased() == "lua" ? "-- " : "# "
         let indent = String(line.prefix { $0 == " " || $0 == "\t" })
-        return indent + marker + line.dropFirst(indent.count)
+        return indent + marker + String(line.dropFirst(indent.count))
     }
 
     private func uncomment(_ line: String) -> String {

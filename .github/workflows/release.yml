@@ -15,8 +15,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+
       - name: Build app bundle
-        run: ./script/build_and_run.sh --package
+        run: bash ./script/build_and_run.sh --package
 
       - name: Zip app
         run: ditto -c -k --keepParent dist/SketchyBarStudio.app SketchyBarStudio.app.zip

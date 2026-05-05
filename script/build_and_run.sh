@@ -16,20 +16,19 @@ APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON="$ROOT_DIR/Assets/SketchyBarStudio.icns"
 
-pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+build_bundle() {
+  swift build
+  BUILD_BINARY="$(swift build --show-bin-path)/$APP_NAME"
 
-swift build
-BUILD_BINARY="$(swift build --show-bin-path)/$APP_NAME"
+  rm -rf "$APP_BUNDLE"
+  mkdir -p "$APP_MACOS" "$APP_RESOURCES"
+  cp "$BUILD_BINARY" "$APP_BINARY"
+  chmod +x "$APP_BINARY"
+  if [[ -f "$APP_ICON" ]]; then
+    cp "$APP_ICON" "$APP_RESOURCES/SketchyBarStudio.icns"
+  fi
 
-rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS" "$APP_RESOURCES"
-cp "$BUILD_BINARY" "$APP_BINARY"
-chmod +x "$APP_BINARY"
-if [[ -f "$APP_ICON" ]]; then
-  cp "$APP_ICON" "$APP_RESOURCES/SketchyBarStudio.icns"
-fi
-
-cat >"$INFO_PLIST" <<PLIST
+  cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -51,30 +50,41 @@ cat >"$INFO_PLIST" <<PLIST
 </dict>
 </plist>
 PLIST
+}
 
 open_app() {
+  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
   /usr/bin/open -n "$APP_BUNDLE"
 }
 
 case "$MODE" in
   --package|package)
+    build_bundle
+    test -x "$APP_BINARY"
+    test -f "$INFO_PLIST"
+    test -f "$APP_RESOURCES/SketchyBarStudio.icns"
     echo "$APP_BUNDLE"
     ;;
   run)
+    build_bundle
     open_app
     ;;
   --debug|debug)
+    build_bundle
     lldb -- "$APP_BINARY"
     ;;
   --logs|logs)
+    build_bundle
     open_app
     /usr/bin/log stream --info --style compact --predicate "process == \"$APP_NAME\""
     ;;
   --telemetry|telemetry)
+    build_bundle
     open_app
     /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
     ;;
   --verify|verify)
+    build_bundle
     open_app
     sleep 1
     pgrep -x "$APP_NAME" >/dev/null
