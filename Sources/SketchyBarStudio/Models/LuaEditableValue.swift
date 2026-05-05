@@ -35,4 +35,9 @@ struct LuaEditableValue: Identifiable, Hashable {
             key.hasSuffix(".font.style") ||
             key.hasSuffix(".font.size")
     }
+
+    var isWidthValue: Bool {
+        let leaf = keyPath.lowercased().split(separator: ".").last.map(String.init) ?? keyPath.lowercased()
+        return leaf == "width"
+    }
 }

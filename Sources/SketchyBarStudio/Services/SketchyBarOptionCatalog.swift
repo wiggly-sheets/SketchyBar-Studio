@@ -40,11 +40,11 @@ struct SketchyBarOptionCatalog {
         }
 
         if leaf == "updates" {
-            return options(["on", "off", "when_shown"], keeping: currentValue)
+            return ["on", "off", "when_shown"]
         }
 
         if leaf == "width" {
-            return options(["dynamic"], keeping: currentValue)
+            return []
         }
 
         if leaf == "image" || leaf == "string" {

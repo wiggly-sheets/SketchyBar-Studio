@@ -203,6 +203,8 @@ private struct EditableValueRow: View {
     private var editor: some View {
         if value.isFontValue {
             fontEditor
+        } else if value.isWidthValue {
+            widthEditor
         } else if value.hasSuggestedValues {
             Picker("Value", selection: Binding(get: { value.draftValue }, set: onChange)) {
                 ForEach(value.suggestedValues, id: \.self) { option in
@@ -214,6 +216,32 @@ private struct EditableValueRow: View {
         } else {
             manualEditor
         }
+    }
+
+    private var widthEditor: some View {
+        HStack {
+            Picker(
+                "Width mode",
+                selection: Binding(
+                    get: { value.draftValue == "dynamic" ? "dynamic" : "custom" },
+                    set: { onChange($0 == "dynamic" ? "dynamic" : numericFallback) }
+                )
+            ) {
+                Text("dynamic").tag("dynamic")
+                Text("number").tag("custom")
+            }
+            .labelsHidden()
+            .frame(maxWidth: 140)
+
+            TextField("Width", text: Binding(get: { value.draftValue == "dynamic" ? "" : value.draftValue }, set: onChange))
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 110)
+                .disabled(value.draftValue == "dynamic")
+        }
+    }
+
+    private var numericFallback: String {
+        Double(value.originalValue) == nil ? "0" : value.originalValue
     }
 
     private var fontEditor: some View {

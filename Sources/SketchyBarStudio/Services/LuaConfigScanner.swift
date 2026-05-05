@@ -1,7 +1,7 @@
 import Foundation
 
 struct LuaConfigScanner {
-    private let assignmentPattern = #"^\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_\.]*)\s*=\s*("[^"]*"|'[^']*'|true|false|-?\d+(?:\.\d+)?|0x[0-9A-Fa-f]+|#[0-9A-Fa-f]{6,8})\s*(?:,|--.*)?$"#
+    private let assignmentPattern = #"^\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_\.]*)\s*=\s*("[^"]*"|'[^']*'|true|false|-?\d+(?:\.\d+)?|0x[0-9A-Fa-f]+|#[0-9A-Fa-f]{6,8}|dynamic)\s*(?:,|--.*)?$"#
     private let optionCatalog = SketchyBarOptionCatalog()
 
     func scan(fileURL: URL) -> [LuaEditableValue] {
@@ -30,7 +30,7 @@ struct LuaConfigScanner {
             let valueEnd = lineStart + line.distance(from: line.startIndex, to: valueRange.upperBound)
             let keyPath = String(line[keyRange])
             let id = "\(fileURL.path):\(lineNumber):\(keyPath)"
-            let displayValue = displayValue(for: rawValue, keyPath: keyPath)
+            let displayValue = normalizedDisplayValue(displayValue(for: rawValue, keyPath: keyPath), keyPath: keyPath)
 
             results.append(
                 LuaEditableValue(
@@ -103,6 +103,21 @@ struct LuaConfigScanner {
             return normalized
         }
         return rawValue
+    }
+
+    private func normalizedDisplayValue(_ value: String, keyPath: String) -> String {
+        let leaf = keyPath.lowercased().split(separator: ".").last.map(String.init) ?? keyPath.lowercased()
+        if leaf == "updates" {
+            switch value.lowercased() {
+            case "true", "yes", "1":
+                return "on"
+            case "false", "no", "0":
+                return "off"
+            default:
+                return value
+            }
+        }
+        return value
     }
 
     private func serializedValue(_ value: LuaEditableValue) -> String {

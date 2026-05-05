@@ -33,7 +33,7 @@ struct ShellConfigScanner {
 
                 let keyPath = String(line[keyRange])
                 let rawValue = String(line[valueRange])
-                let displayValue = displayValue(for: rawValue, keyPath: keyPath)
+                let displayValue = normalizedDisplayValue(displayValue(for: rawValue, keyPath: keyPath), keyPath: keyPath)
                 let valueStart = lineStart + line.distance(from: line.startIndex, to: valueRange.lowerBound)
                 let valueEnd = lineStart + line.distance(from: line.startIndex, to: valueRange.upperBound)
 
@@ -109,6 +109,21 @@ struct ShellConfigScanner {
             return normalized
         }
         return rawValue
+    }
+
+    private func normalizedDisplayValue(_ value: String, keyPath: String) -> String {
+        let leaf = keyPath.lowercased().split(separator: ".").last.map(String.init) ?? keyPath.lowercased()
+        if leaf == "updates" {
+            switch value.lowercased() {
+            case "true", "yes", "1":
+                return "on"
+            case "false", "no", "0":
+                return "off"
+            default:
+                return value
+            }
+        }
+        return value
     }
 
     private func serializedValue(_ value: LuaEditableValue) -> String {
