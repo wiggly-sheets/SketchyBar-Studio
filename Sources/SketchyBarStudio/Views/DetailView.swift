@@ -32,61 +32,112 @@ private struct EditableFileView: View {
     @ObservedObject var store: SketchyBarStore
     let file: ConfigFile
     let theme: AppTheme
+    @State private var selectedValueID: LuaEditableValue.ID?
+    @State private var codePreviewVersion = 0
+    @AppStorage("detail.showCodePreview") private var showCodePreview = true
 
     var body: some View {
+        HSplitView {
+            editorPane
+                .frame(minWidth: 520)
+
+            if showCodePreview {
+                CodePreviewView(
+                    file: file,
+                    selectedLine: selectedValue?.lineNumber,
+                    highlightedLines: Set(file.values.filter { $0.draftValue != $0.originalValue }.map(\.lineNumber)),
+                    theme: theme,
+                    refreshToken: codePreviewVersion
+                )
+                .frame(minWidth: 360)
+            }
+        }
+        .onChange(of: file.id) { _, _ in
+            selectedValueID = nil
+            codePreviewVersion += 1
+        }
+    }
+
+    private var editorPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(file.displayName)
-                            .font(.title2)
-                            .fontWeight(.semibold)
-                        Text(file.url.path)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-
-                    Spacer()
-
-                    Button {
-                        store.discardSelectedChanges()
-                    } label: {
-                        Label("Discard", systemImage: "arrow.uturn.backward")
-                    }
-                    .disabled(!file.hasUnsavedChanges)
-
-                    Menu {
-                        Button("Reveal in Finder") {
-                            store.revealSelectedFile()
-                        }
-                        Button("Open in Default Editor") {
-                            store.openSelectedFileExternally()
-                        }
-                    } label: {
-                        Label("File Actions", systemImage: "ellipsis.circle")
-                    }
-
-                    Button {
-                        store.saveSelectedFile()
-                    } label: {
-                        Label("Save File", systemImage: "square.and.arrow.down")
-                    }
-                    .keyboardShortcut("s", modifiers: .command)
-                }
+                header
 
                 LazyVStack(spacing: 10) {
                     ForEach(filteredValues) { value in
                         EditableValueRow(
                             value: value,
                             theme: theme,
-                            onChange: { store.update(valueID: value.id, draftValue: $0) }
+                            isSelected: selectedValueID == value.id,
+                            onSelect: {
+                                selectedValueID = value.id
+                            },
+                            onChange: {
+                                store.update(valueID: value.id, draftValue: $0)
+                            }
                         )
                     }
                 }
             }
             .padding(24)
         }
+    }
+
+    private var header: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(file.displayName)
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Text(file.url.path)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Button {
+                showCodePreview.toggle()
+            } label: {
+                Label(showCodePreview ? "Hide Code" : "Show Code", systemImage: showCodePreview ? "sidebar.right" : "sidebar.right")
+            }
+            .help(showCodePreview ? "Hide code preview" : "Show code preview")
+
+            Button {
+                store.discardSelectedChanges()
+                codePreviewVersion += 1
+            } label: {
+                Label("Discard", systemImage: "arrow.uturn.backward")
+            }
+            .disabled(!file.hasUnsavedChanges)
+
+            Menu {
+                Button("Reveal in Finder") {
+                    store.revealSelectedFile()
+                }
+                Button("Open in Default Editor") {
+                    store.openSelectedFileExternally()
+                }
+            } label: {
+                Label("File Actions", systemImage: "ellipsis.circle")
+            }
+
+            Button {
+                store.saveSelectedFile()
+                codePreviewVersion += 1
+            } label: {
+                Label("Save File", systemImage: "square.and.arrow.down")
+            }
+            .keyboardShortcut("s", modifiers: .command)
+        }
+    }
+
+    private var selectedValue: LuaEditableValue? {
+        guard let selectedValueID else {
+            return nil
+        }
+        return file.values.first { $0.id == selectedValueID }
     }
 
     private var filteredValues: [LuaEditableValue] {
@@ -108,6 +159,8 @@ private struct EditableFileView: View {
 private struct EditableValueRow: View {
     let value: LuaEditableValue
     let theme: AppTheme
+    let isSelected: Bool
+    let onSelect: () -> Void
     let onChange: (String) -> Void
 
     var body: some View {
@@ -135,11 +188,15 @@ private struct EditableValueRow: View {
             }
         }
         .padding(12)
-        .background(theme.surface.opacity(0.28), in: RoundedRectangle(cornerRadius: 8))
+        .background(theme.surface.opacity(isSelected ? 0.52 : 0.28), in: RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(theme.accent.opacity(0.18), lineWidth: 1)
+                .stroke(theme.accent.opacity(isSelected ? 0.72 : 0.18), lineWidth: isSelected ? 1.5 : 1)
         )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onSelect()
+        }
     }
 
     @ViewBuilder
@@ -211,6 +268,96 @@ private struct EditableValueRow: View {
         case .string:
             TextField("Value", text: Binding(get: { value.draftValue }, set: onChange))
                 .textFieldStyle(.roundedBorder)
+        }
+    }
+}
+
+private struct CodePreviewView: View {
+    let file: ConfigFile
+    let selectedLine: Int?
+    let highlightedLines: Set<Int>
+    let theme: AppTheme
+    let refreshToken: Int
+    @State private var lines: [String] = []
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label("Code", systemImage: "chevron.left.forwardslash.chevron.right")
+                    .font(.headline)
+
+                Spacer()
+
+                Text(file.kind.rawValue)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            ScrollView([.vertical, .horizontal]) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                        CodeLineView(
+                            number: index + 1,
+                            text: line,
+                            isSelected: selectedLine == index + 1,
+                            isChanged: highlightedLines.contains(index + 1),
+                            theme: theme
+                        )
+                    }
+                }
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(theme.background.opacity(0.45))
+        .onAppear(perform: loadLines)
+        .onChange(of: file.id) { _, _ in loadLines() }
+        .onChange(of: refreshToken) { _, _ in loadLines() }
+    }
+
+    private func loadLines() {
+        let contents = (try? String(contentsOf: file.url, encoding: .utf8)) ?? ""
+        lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    }
+}
+
+private struct CodeLineView: View {
+    let number: Int
+    let text: String
+    let isSelected: Bool
+    let isChanged: Bool
+    let theme: AppTheme
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text("\(number)")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 42, alignment: .trailing)
+
+            Text(text.isEmpty ? " " : text)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .foregroundStyle(.primary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(background)
+    }
+
+    @ViewBuilder
+    private var background: some View {
+        if isSelected {
+            theme.accent.opacity(0.24)
+        } else if isChanged {
+            Color.orange.opacity(0.16)
+        } else {
+            Color.clear
         }
     }
 }
