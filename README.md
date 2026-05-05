@@ -32,7 +32,33 @@ SketchyBar Studio discovers your existing SketchyBar setup, presents editable va
 
 ## Install
 
-Until signed releases exist, build locally:
+SketchyBar Studio is currently distributed as unsigned preview builds. You have three install options.
+
+### Option 1: Download the Release Zip
+
+1. Go to the GitHub Releases page.
+2. Download `SketchyBarStudio-universal.app.zip`.
+3. Unzip it.
+4. Move `SketchyBarStudio.app` to `/Applications`.
+
+### Option 2: Homebrew Cask from Custom Tap
+
+A custom Homebrew tap can install the release zip as a cask:
+
+```bash
+brew tap YOUR-USER/sketchybar-studio
+brew install --cask sketchybar-studio
+```
+
+Or in one command:
+
+```bash
+brew install --cask YOUR-USER/sketchybar-studio/sketchybar-studio
+```
+
+Replace `YOUR-USER` with the GitHub account that hosts the tap.
+
+### Option 3: Build from Source
 
 ```bash
 git clone https://github.com/YOUR-USER/sketchybar-studio.git
@@ -40,18 +66,25 @@ cd sketchybar-studio
 ./script/build_and_run.sh
 ```
 
-For a distributable local `.app` bundle:
+For a local `.app` bundle:
 
 ```bash
 ./script/build_and_run.sh --package
 open dist/SketchyBarStudio.app
 ```
 
+For a universal release bundle that supports Apple Silicon and Intel Macs:
+
+```bash
+./script/build_and_run.sh --universal-package
+lipo -info dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
+```
+
 ## Opening Unsigned Builds
 
-Early GitHub release builds are unsigned and not notarized. macOS may block the app after download because the zip is quarantined.
+Early GitHub release builds are unsigned and not notarized. macOS may block the app no matter how you installed it: release zip, Homebrew cask, or local source build.
 
-Try right-clicking `SketchyBarStudio.app` and choosing **Open** first. If macOS still blocks it, remove the quarantine attribute manually:
+Try opening it through **System Settings > Privacy & Security** after the first blocked launch, or right-click `SketchyBarStudio.app` and choose **Open**. If macOS still blocks it, remove the quarantine attribute manually:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/SketchyBarStudio.app
