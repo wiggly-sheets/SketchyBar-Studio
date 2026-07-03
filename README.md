@@ -32,6 +32,13 @@ SketchyBar Studio discovers your existing SketchyBar setup, presents editable va
 
 <img width="1425" height="1045" alt="SCR-20260505-lilj" src="https://github.com/user-attachments/assets/8554a595-df01-480f-86d6-be08b555d6e7" />
 
+## Inspiration
+
+SketchyBar Studio is inspired by:
+
+- [SketchyBar](https://github.com/FelixKratz/SketchyBar) - the menu bar customization tool this app edits and supports.
+- [SbarLua](https://github.com/FelixKratz/SbarLua) - the Lua API that powers many modern SketchyBar configs.
+
 ## Install
 
 SketchyBar Studio is currently distributed as unsigned preview builds. You have three install options.
@@ -57,8 +64,6 @@ Or in one command:
 ```bash
 brew install --cask wiggly-sheets/sketchybar-studio/sketchybar-studio
 ```
-
-Replace `YOUR-USER` with the GitHub account that hosts the tap.
 
 ### Option 3: Build from Source
 

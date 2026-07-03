@@ -7,20 +7,88 @@ struct SettingsView: View {
     @State private var confirmLiveSwitch = false
 
     var body: some View {
+        TabView {
+            GeneralSettingsTab(store: store)
+                .tabItem { Label("General", systemImage: "gearshape") }
+
+            ConfigLibrarySettingsTab(
+                store: store,
+                configRootText: $configRootText,
+                confirmLiveSwitch: $confirmLiveSwitch
+            )
+            .tabItem { Label("Configs", systemImage: "folder.badge.gearshape") }
+
+            CurrentConfigSettingsTab(store: store, configRootText: $configRootText)
+                .tabItem { Label("Current", systemImage: "checkmark.circle") }
+        }
+        .padding()
+        .frame(width: 760, height: 560)
+        .confirmationDialog(
+            "Make selected config live?",
+            isPresented: $confirmLiveSwitch,
+            titleVisibility: .visible
+        ) {
+            Button("Make Live", role: .destructive) {
+                store.activateSelectedConfigAsLiveSymlink()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This backs up any real ~/.config/sketchybar folder, replaces ~/.config/sketchybar with a symlink to the selected config, then reloads SketchyBar.")
+        }
+        .onAppear {
+            configRootText = store.configRoot.path
+            store.newConfigPath = store.configRoot.path
+        }
+    }
+}
+
+private struct GeneralSettingsTab: View {
+    @ObservedObject var store: SketchyBarStore
+
+    var body: some View {
         Form {
-            Picker("App theme", selection: $store.appTheme) {
-                ForEach(AppTheme.allCases) { theme in
-                    Text(theme.rawValue).tag(theme)
+            Section("Appearance") {
+                Picker("App theme", selection: $store.appTheme) {
+                    ForEach(AppTheme.allCases) { theme in
+                        Text(theme.rawValue).tag(theme)
+                    }
                 }
             }
+        }
+        .formStyle(.grouped)
+        .padding(.top)
+    }
+}
 
-            Section("Config Library") {
-                Picker("Editing config", selection: selectedConfigBinding) {
+private struct ConfigLibrarySettingsTab: View {
+    @ObservedObject var store: SketchyBarStore
+    @Binding var configRootText: String
+    @Binding var confirmLiveSwitch: Bool
+
+    var body: some View {
+        Form {
+            Section("Editing") {
+                Picker("Selected config", selection: selectedConfigBinding) {
                     ForEach(store.configs) { config in
                         Text(config.name).tag(Optional(config.id))
                     }
                 }
 
+                HStack {
+                    Label(store.isSelectedConfigLive ? "Selected config is live" : "Selected config is not live", systemImage: store.isSelectedConfigLive ? "checkmark.circle.fill" : "circle")
+                    Spacer()
+                    Text("~/.config/sketchybar")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button(store.isSelectedConfigLive ? "Already Live" : "Make Selected Live") {
+                    confirmLiveSwitch = true
+                }
+                .disabled(store.isSelectedConfigLive)
+            }
+
+            Section("Library") {
                 ForEach(store.configs) { config in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -46,10 +114,10 @@ struct SettingsView: View {
                         .disabled(store.configs.count <= 1)
                     }
                 }
+            }
 
-                Divider()
-
-                TextField("Config name", text: $store.newConfigName)
+            Section("Add Config") {
+                TextField("Name", text: $store.newConfigName)
 
                 LabeledContent("Folder") {
                     HStack {
@@ -57,79 +125,19 @@ struct SettingsView: View {
                         Button {
                             chooseConfigFolder()
                         } label: {
-                            Label("Choose Folder...", systemImage: "folder")
+                            Label("Choose", systemImage: "folder")
                         }
                     }
                 }
 
-                HStack {
-                    Button("Add Config") {
-                        store.addConfig(name: store.newConfigName, path: store.newConfigPath, selectAfterAdd: true)
-                        configRootText = store.configRoot.path
-                    }
-
-                    Button(store.isSelectedConfigLive ? "Already Live" : "Make Selected Live") {
-                        confirmLiveSwitch = true
-                    }
-                    .disabled(store.isSelectedConfigLive)
-                    .help("Backs up current ~/.config/sketchybar if needed, then points it at selected config with a symlink and reloads SketchyBar.")
-                }
-            }
-
-            Section("Live Status") {
-                HStack {
-                    Label(store.isSelectedConfigLive ? "Selected config is live" : "Selected config is not live", systemImage: store.isSelectedConfigLive ? "checkmark.circle.fill" : "circle")
-                    Spacer()
-                    Text("~/.config/sketchybar")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Section("Current Config") {
-                LabeledContent("Path") {
-                    HStack {
-                        TextField("SketchyBar config folder", text: $configRootText)
-                            .onSubmit {
-                                store.updateConfigRoot(configRootText)
-                            }
-
-                        Button {
-                            chooseCurrentConfigFolder()
-                        } label: {
-                            Label("Choose Folder...", systemImage: "folder")
-                        }
-                    }
-                }
-
-                Button("Use This Folder") {
-                    store.updateConfigRoot(configRootText)
-                }
-
-                Button("Reveal Config Folder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([store.configRoot])
+                Button("Add & Use") {
+                    store.addConfig(name: store.newConfigName, path: store.newConfigPath, selectAfterAdd: true)
+                    configRootText = store.configRoot.path
                 }
             }
         }
         .formStyle(.grouped)
-        .padding()
-        .frame(width: 680)
-        .confirmationDialog(
-            "Make selected config live?",
-            isPresented: $confirmLiveSwitch,
-            titleVisibility: .visible
-        ) {
-            Button("Make Live", role: .destructive) {
-                store.activateSelectedConfigAsLiveSymlink()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This backs up any real ~/.config/sketchybar folder, replaces ~/.config/sketchybar with a symlink to the selected config, then reloads SketchyBar.")
-        }
-        .onAppear {
-            configRootText = store.configRoot.path
-            store.newConfigPath = store.configRoot.path
-        }
+        .padding(.top)
     }
 
     private var selectedConfigBinding: Binding<ConfigWorkspace.ID?> {
@@ -152,6 +160,42 @@ struct SettingsView: View {
             }
         }
     }
+}
+
+private struct CurrentConfigSettingsTab: View {
+    @ObservedObject var store: SketchyBarStore
+    @Binding var configRootText: String
+
+    var body: some View {
+        Form {
+            Section("Location") {
+                LabeledContent("Path") {
+                    HStack {
+                        TextField("SketchyBar config folder", text: $configRootText)
+                            .onSubmit { store.updateConfigRoot(configRootText) }
+
+                        Button {
+                            chooseCurrentConfigFolder()
+                        } label: {
+                            Label("Choose", systemImage: "folder")
+                        }
+                    }
+                }
+
+                HStack {
+                    Button("Use This Folder") {
+                        store.updateConfigRoot(configRootText)
+                    }
+
+                    Button("Reveal Folder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([store.configRoot])
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.top)
+    }
 
     private func chooseCurrentConfigFolder() {
         chooseFolder(startingAt: store.configRoot) { url in
@@ -159,19 +203,19 @@ struct SettingsView: View {
             store.updateConfigRoot(url.path)
         }
     }
+}
 
-    private func chooseFolder(startingAt url: URL, handler: (URL) -> Void) {
-        let panel = NSOpenPanel()
-        panel.title = "Choose SketchyBar Config Folder"
-        panel.prompt = "Choose"
-        panel.message = "Select a SketchyBar config folder."
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = url
+private func chooseFolder(startingAt url: URL, handler: (URL) -> Void) {
+    let panel = NSOpenPanel()
+    panel.title = "Choose SketchyBar Config Folder"
+    panel.prompt = "Choose"
+    panel.message = "Select a SketchyBar config folder."
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.directoryURL = url
 
-        if panel.runModal() == .OK, let url = panel.url {
-            handler(url)
-        }
+    if panel.runModal() == .OK, let url = panel.url {
+        handler(url)
     }
 }

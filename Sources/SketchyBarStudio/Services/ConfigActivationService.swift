@@ -1,5 +1,10 @@
 import Foundation
 
+enum MoveDirection {
+    case up
+    case down
+}
+
 struct ConfigActivationService {
     func reference(for fileURL: URL, rootURL: URL) -> ActivationReference? {
         guard canToggle(fileURL: fileURL, rootURL: rootURL) else {
@@ -29,6 +34,41 @@ struct ConfigActivationService {
         }
 
         return nil
+    }
+
+
+    func moveReference(for file: ConfigFile, direction: MoveDirection) throws {
+        guard let reference = file.activationReference else { return }
+        let contents = try String(contentsOf: reference.entrypointURL, encoding: .utf8)
+        var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let index = reference.lineNumber - 1
+        let targetIndex = direction == .up ? index - 1 : index + 1
+        guard lines.indices.contains(index), lines.indices.contains(targetIndex) else { return }
+        lines.swapAt(index, targetIndex)
+        try lines.joined(separator: "\n").write(to: reference.entrypointURL, atomically: true, encoding: .utf8)
+    }
+
+    func moveReference(for file: ConfigFile, before targetFile: ConfigFile) throws {
+        guard let source = file.activationReference,
+              let target = targetFile.activationReference,
+              source.entrypointURL == target.entrypointURL else {
+            return
+        }
+
+        let contents = try String(contentsOf: source.entrypointURL, encoding: .utf8)
+        var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let sourceIndex = source.lineNumber - 1
+        let targetIndex = target.lineNumber - 1
+        guard lines.indices.contains(sourceIndex),
+              lines.indices.contains(targetIndex),
+              sourceIndex != targetIndex else {
+            return
+        }
+
+        let line = lines.remove(at: sourceIndex)
+        let insertionIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex
+        lines.insert(line, at: insertionIndex)
+        try lines.joined(separator: "\n").write(to: source.entrypointURL, atomically: true, encoding: .utf8)
     }
 
     func setActive(_ isActive: Bool, for file: ConfigFile) throws {

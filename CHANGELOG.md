@@ -6,7 +6,7 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ## [Unreleased]
 
-## [0.1.1] - Unreleased
+## [1.0.0] - 2026-07-03
 
 ### Added
 
@@ -17,10 +17,18 @@ This project follows a human-readable changelog style and aims to use semantic v
 - Live config status indicator.
 - Confirmation before switching the live config symlink.
 - Confirmation before restoring a profile snapshot.
+- `AGENTS.md` contributor guidance for future development work.
+- Read-only code preview improvements with wrapping, system UI font, dynamic spacing, and lightweight Lua/sketchybarrc syntax highlighting.
+- Theme-aware syntax colors for the code preview.
 
 ### Changed
 
 - Profiles now belong to selected config instead of one global profile pool.
+- Settings window now uses topic-based tabs for a cleaner configuration flow.
+- Item editor values are grouped into practical sections such as item, icon, label, background, popup, and scripts.
+- Sidebar organization now better follows SketchyBar config folders and groups items by left, center, right, or unpositioned bar placement.
+- Loader-backed items can be reordered from the sidebar by updating their entrypoint order.
+- README now includes project inspiration links for SketchyBar and SbarLua.
 
 ## [0.1.0] - 2026-05-05
 

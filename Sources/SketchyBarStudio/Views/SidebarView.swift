@@ -15,7 +15,10 @@ struct SidebarView: View {
                             ForEach(group.files) { file in
                                 ConfigFileRow(
                                     file: file,
-                                    onActiveChange: { store.setActive($0, fileID: file.id) }
+                                    onMoveUp: { store.moveItem(fileID: file.id, direction: .up) },
+                                    onMoveDown: { store.moveItem(fileID: file.id, direction: .down) },
+                                    onActiveChange: { store.setActive($0, fileID: file.id) },
+                                    onDropFileID: { droppedID in store.moveItem(fileID: droppedID, before: file.id) }
                                 )
                                     .tag(file.id)
                             }
@@ -24,8 +27,14 @@ struct SidebarView: View {
                                 SidebarFolderNodeView(
                                     folder: folder,
                                     expansionBinding: expansionBinding,
+                                    onMove: { file, direction in
+                                        store.moveItem(fileID: file.id, direction: direction)
+                                    },
                                     onActiveChange: { file, isActive in
                                         store.setActive(isActive, fileID: file.id)
+                                    },
+                                    onDrop: { droppedID, targetFile in
+                                        store.moveItem(fileID: droppedID, before: targetFile.id)
                                     }
                                 )
                             }
@@ -77,7 +86,9 @@ struct SidebarView: View {
 private struct SidebarFolderNodeView: View {
     let folder: SidebarFolderNode
     let expansionBinding: (String) -> Binding<Bool>
+    let onMove: (ConfigFile, MoveDirection) -> Void
     let onActiveChange: (ConfigFile, Bool) -> Void
+    let onDrop: (ConfigFile.ID, ConfigFile) -> Void
 
     var body: some View {
         DisclosureGroup(
@@ -86,7 +97,10 @@ private struct SidebarFolderNodeView: View {
                 ForEach(folder.files) { file in
                     ConfigFileRow(
                         file: file,
-                        onActiveChange: { onActiveChange(file, $0) }
+                        onMoveUp: { onMove(file, .up) },
+                        onMoveDown: { onMove(file, .down) },
+                        onActiveChange: { onActiveChange(file, $0) },
+                        onDropFileID: { droppedID in onDrop(droppedID, file) }
                     )
                         .tag(file.id)
                 }
@@ -95,7 +109,9 @@ private struct SidebarFolderNodeView: View {
                     SidebarFolderNodeView(
                         folder: child,
                         expansionBinding: expansionBinding,
-                        onActiveChange: onActiveChange
+                        onMove: onMove,
+                        onActiveChange: onActiveChange,
+                        onDrop: onDrop
                     )
                 }
             },
@@ -109,7 +125,10 @@ private struct SidebarFolderNodeView: View {
 
 private struct ConfigFileRow: View {
     let file: ConfigFile
+    let onMoveUp: () -> Void
+    let onMoveDown: () -> Void
     let onActiveChange: (Bool) -> Void
+    let onDropFileID: (ConfigFile.ID) -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -129,6 +148,15 @@ private struct ConfigFileRow: View {
 
             Spacer(minLength: 6)
 
+            if file.activationReference != nil {
+                Button { onMoveUp() } label: { Image(systemName: "chevron.up") }
+                    .buttonStyle(.plain)
+                    .help("Move earlier in loader")
+                Button { onMoveDown() } label: { Image(systemName: "chevron.down") }
+                    .buttonStyle(.plain)
+                    .help("Move later in loader")
+            }
+
             Toggle(
                 "Active",
                 isOn: Binding(
@@ -142,6 +170,12 @@ private struct ConfigFileRow: View {
             .help(file.activationReference == nil ? "No init/sketchybarrc reference found" : "Comment or uncomment reference in entrypoint")
         }
         .opacity(file.isActive ? 1 : 0.45)
+        .draggable(file.id)
+        .dropDestination(for: String.self) { droppedIDs, _ in
+            guard let droppedID = droppedIDs.first else { return false }
+            onDropFileID(droppedID)
+            return true
+        }
     }
 }
 
@@ -420,6 +454,10 @@ private struct SidebarTreeBuilder {
             components.removeFirst()
         }
 
+        if category == .items {
+            components.insert(file.sidebarBarPositionFolder, at: 0)
+        }
+
         return components
     }
 
@@ -468,13 +506,23 @@ private final class SidebarFolderBox {
         child.insert(file: file, folderComponents: Array(folderComponents.dropFirst()))
     }
 
+    static func sortRank(_ title: String) -> String {
+        switch title {
+        case "Left": return "0"
+        case "Center": return "1"
+        case "Right": return "2"
+        case "Unpositioned": return "3"
+        default: return "9-" + title.lowercased()
+        }
+    }
+
     var node: SidebarFolderNode {
         SidebarFolderNode(
             id: "folder.\(path)",
             title: title,
             folders: childFolders.values
                 .map(\.node)
-                .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending },
+                .sorted { SidebarFolderBox.sortRank($0.title) < SidebarFolderBox.sortRank($1.title) },
             files: childFiles.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
         )
     }
@@ -487,6 +535,20 @@ private extension ConfigFile {
 
     var sidebarTitle: String {
         displayName.split(separator: "/").last.map(String.init) ?? displayName
+    }
+
+    var sidebarBarPositionFolder: String {
+        let position = values.first { value in
+            let leaf = value.keyPath.lowercased().split(separator: ".").last.map(String.init) ?? value.keyPath.lowercased()
+            return leaf == "position"
+        }?.draftValue.lowercased()
+
+        switch position {
+        case "left": return "Left"
+        case "center": return "Center"
+        case "right": return "Right"
+        default: return "Unpositioned"
+        }
     }
 
     var rowDetail: String {

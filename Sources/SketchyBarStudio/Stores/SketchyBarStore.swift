@@ -236,6 +236,31 @@ final class SketchyBarStore: ObservableObject {
         }
     }
 
+    func moveItem(fileID: ConfigFile.ID, direction: MoveDirection) {
+        guard let file = files.first(where: { $0.id == fileID }) else { return }
+        do {
+            try activationService.moveReference(for: file, direction: direction)
+            statusMessage = "Moved \(file.displayName) \(direction == .up ? "up" : "down")."
+            reload()
+        } catch {
+            statusMessage = "Move failed: \(error.localizedDescription)"
+        }
+    }
+
+    func moveItem(fileID: ConfigFile.ID, before targetFileID: ConfigFile.ID) {
+        guard let file = files.first(where: { $0.id == fileID }),
+              let targetFile = files.first(where: { $0.id == targetFileID }),
+              file.id != targetFile.id else { return }
+
+        do {
+            try activationService.moveReference(for: file, before: targetFile)
+            statusMessage = "Moved \(file.displayName) before \(targetFile.displayName)."
+            reload()
+        } catch {
+            statusMessage = "Move failed: \(error.localizedDescription)"
+        }
+    }
+
     func setActive(_ isActive: Bool, fileID: ConfigFile.ID) {
         guard let file = files.first(where: { $0.id == fileID }) else { return }
 

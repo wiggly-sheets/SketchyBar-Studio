@@ -25,18 +25,30 @@ enum AppTheme: String, CaseIterable, Identifiable {
         Color(hex: palette.muted)
     }
 
-    private var palette: (background: String, surface: String, accent: String, muted: String) {
+    var syntaxString: Color {
+        Color(hex: palette.string)
+    }
+
+    var syntaxNumber: Color {
+        Color(hex: palette.number)
+    }
+
+    var syntaxVariable: Color {
+        Color(hex: palette.variable)
+    }
+
+    private var palette: (background: String, surface: String, accent: String, muted: String, string: String, number: String, variable: String) {
         switch self {
         case .nord:
-            return ("#2e3440", "#3b4252", "#88c0d0", "#81a1c1")
+            return ("#2e3440", "#3b4252", "#88c0d0", "#81a1c1", "#a3be8c", "#b48ead", "#ebcb8b")
         case .dracula:
-            return ("#282a36", "#343746", "#bd93f9", "#6272a4")
+            return ("#282a36", "#343746", "#bd93f9", "#6272a4", "#f1fa8c", "#ffb86c", "#8be9fd")
         case .monokai:
-            return ("#272822", "#3e3d32", "#a6e22e", "#75715e")
+            return ("#272822", "#3e3d32", "#a6e22e", "#75715e", "#e6db74", "#ae81ff", "#66d9ef")
         case .tokyoNight:
-            return ("#1a1b26", "#24283b", "#7aa2f7", "#565f89")
+            return ("#1a1b26", "#24283b", "#7aa2f7", "#565f89", "#9ece6a", "#ff9e64", "#7dcfff")
         case .catppuccin:
-            return ("#1e1e2e", "#313244", "#cba6f7", "#6c7086")
+            return ("#1e1e2e", "#313244", "#cba6f7", "#6c7086", "#a6e3a1", "#fab387", "#89dceb")
         }
     }
 }
