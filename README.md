@@ -52,16 +52,19 @@ SketchyBar Studio is currently distributed as unsigned preview builds. You have 
 
 ### Option 2: Homebrew Cask from Custom Tap
 
-A custom Homebrew tap can install the release zip as a cask:
+A custom Homebrew tap can install the release DMG as a cask. Homebrew may require trusting custom taps before installing casks from them:
 
 ```bash
 brew tap wiggly-sheets/sketchybar-studio
+brew trust wiggly-sheets/sketchybar-studio
 brew install --cask sketchybar-studio
 ```
 
 Or in one command:
 
 ```bash
+brew tap wiggly-sheets/sketchybar-studio
+brew trust wiggly-sheets/sketchybar-studio
 brew install --cask wiggly-sheets/sketchybar-studio/sketchybar-studio
 ```
 
