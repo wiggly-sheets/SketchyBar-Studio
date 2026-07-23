@@ -59,7 +59,9 @@ struct ShellConfigScanner {
         return results
     }
 
-    func save(values: [LuaEditableValue], to fileURL: URL) throws {
+    private let backupService = ConfigBackupService()
+
+    func save(values: [LuaEditableValue], to fileURL: URL, rootURL: URL) throws {
         var contents = try String(contentsOf: fileURL, encoding: .utf8)
 
         for value in values.sorted(by: { $0.valueStartOffset > $1.valueStartOffset }) {
@@ -68,12 +70,7 @@ struct ShellConfigScanner {
             contents.replaceSubrange(start..<end, with: serializedValue(value))
         }
 
-        let backupURL = fileURL.deletingLastPathComponent()
-            .appendingPathComponent("\(fileURL.lastPathComponent).studio-backup")
-        if FileManager.default.fileExists(atPath: backupURL.path) {
-            try FileManager.default.removeItem(at: backupURL)
-        }
-        try FileManager.default.copyItem(at: fileURL, to: backupURL)
+        _ = try backupService.backup(fileURL: fileURL, rootURL: rootURL)
         try contents.write(to: fileURL, atomically: true, encoding: .utf8)
     }
 

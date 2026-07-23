@@ -6,6 +6,8 @@ enum MoveDirection {
 }
 
 struct ConfigActivationService {
+    private let backupService = ConfigBackupService()
+
     func reference(for fileURL: URL, rootURL: URL) -> ActivationReference? {
         guard canToggle(fileURL: fileURL, rootURL: rootURL) else {
             return nil
@@ -45,6 +47,7 @@ struct ConfigActivationService {
         let targetIndex = direction == .up ? index - 1 : index + 1
         guard lines.indices.contains(index), lines.indices.contains(targetIndex) else { return }
         lines.swapAt(index, targetIndex)
+        _ = try backupService.backup(fileURL: reference.entrypointURL, rootURL: file.rootURL)
         try lines.joined(separator: "\n").write(to: reference.entrypointURL, atomically: true, encoding: .utf8)
     }
 
@@ -68,6 +71,7 @@ struct ConfigActivationService {
         let line = lines.remove(at: sourceIndex)
         let insertionIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex
         lines.insert(line, at: insertionIndex)
+        _ = try backupService.backup(fileURL: source.entrypointURL, rootURL: file.rootURL)
         try lines.joined(separator: "\n").write(to: source.entrypointURL, atomically: true, encoding: .utf8)
     }
 
@@ -84,6 +88,7 @@ struct ConfigActivationService {
         }
 
         lines[index] = isActive ? uncomment(lines[index]) : comment(lines[index], entrypointURL: reference.entrypointURL)
+        _ = try backupService.backup(fileURL: reference.entrypointURL, rootURL: file.rootURL)
         try lines.joined(separator: "\n").write(to: reference.entrypointURL, atomically: true, encoding: .utf8)
     }
 
@@ -100,6 +105,7 @@ struct ConfigActivationService {
             options: [.skipsHiddenFiles]
         ) {
             for case let url as URL in enumerator {
+                guard !isBackupFile(url, rootURL: rootURL) else { continue }
                 let name = url.lastPathComponent.lowercased()
                 let ext = url.pathExtension.lowercased()
                 if name == "init.lua" ||
@@ -116,6 +122,13 @@ struct ConfigActivationService {
         return Array(Set(urls))
             .filter { FileManager.default.fileExists(atPath: $0.path) }
             .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    private func isBackupFile(_ url: URL, rootURL: URL) -> Bool {
+        let rootPath = rootURL.standardizedFileURL.path
+        let filePath = url.standardizedFileURL.path
+        let backupPrefix = (rootPath.hasSuffix("/") ? rootPath : rootPath + "/") + "backups/"
+        return filePath.hasPrefix(backupPrefix)
     }
 
     private func isCommented(_ line: String) -> Bool {

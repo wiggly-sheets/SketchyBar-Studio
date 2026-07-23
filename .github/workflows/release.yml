@@ -1,4 +1,4 @@
-name: Release Build
+name: Release
 
 on:
   workflow_dispatch:
@@ -6,33 +6,98 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
-  package:
-    name: Package universal app
+  release:
+    name: Build DMG and publish release
     runs-on: macos-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set release version
+        id: version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "dmg_name=SketchyBarStudio-$VERSION-universal.dmg" >> "$GITHUB_OUTPUT"
+
       - name: Show toolchain
         run: |
           swift --version
           xcodebuild -version
 
+      - name: Setup Node for create-dmg
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Build universal app bundle
+        env:
+          SKETCHYBAR_STUDIO_VERSION: ${{ steps.version.outputs.version }}
+          SKETCHYBAR_STUDIO_BUILD: ${{ github.run_number }}
         run: bash ./script/build_and_run.sh --universal-package
 
-      - name: Verify universal binary
+      - name: Verify universal binary and bundle version
         run: |
           file dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
           lipo dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio -verify_arch arm64 x86_64
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/SketchyBarStudio.app/Contents/Info.plist)" = "${{ steps.version.outputs.version }}"
 
-      - name: Zip app
-        run: ditto -c -k --keepParent dist/SketchyBarStudio.app SketchyBarStudio-universal.app.zip
+      - name: Build DMG with create-dmg
+        run: |
+          npx --yes create-dmg@8.1.0 --overwrite --no-code-sign --no-version-in-filename --dmg-title="SketchyBar Studio" dist/SketchyBarStudio.app dist
+          mv "dist/SketchyBar Studio.dmg" "dist/${{ steps.version.outputs.dmg_name }}"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: SketchyBarStudio-universal-app
-          path: SketchyBarStudio-universal.app.zip
+      - name: Generate checksum
+        id: checksum
+        run: |
+          SHA256="$(shasum -a 256 "dist/${{ steps.version.outputs.dmg_name }}" | awk '{print $1}')"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          printf '%s  %s\n' "$SHA256" "${{ steps.version.outputs.dmg_name }}" > "dist/${{ steps.version.outputs.dmg_name }}.sha256"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DMG_NAME: ${{ steps.version.outputs.dmg_name }}
+          SHA256: ${{ steps.checksum.outputs.sha256 }}
+        run: |
+          cat > release-notes.md <<EOF
+          # SketchyBar Studio $VERSION
+
+          ## Download
+
+          - Download the attached universal DMG for macOS.
+          - GitHub automatically provides source code archives for this tag.
+
+          ## Homebrew
+
+          ```bash
+          brew tap wiggly-sheets/sketchybar-studio
+          brew trust wiggly-sheets/sketchybar-studio
+          brew install --cask sketchybar-studio
+          ```
+
+          ## Notes
+
+          - Universal binary includes Apple Silicon and Intel slices.
+          - Build is unsigned and not notarized. macOS may require opening through System Settings > Privacy & Security, right-clicking Open, or removing quarantine with `xattr` if you trust the download source.
+
+          DMG SHA-256:
+
+          ```
+          $SHA256  $DMG_NAME
+          ```
+          EOF
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "dist/$DMG_NAME" "dist/$DMG_NAME.sha256" --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "SketchyBar Studio $VERSION" --notes-file release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" "dist/$DMG_NAME" "dist/$DMG_NAME.sha256" --title "SketchyBar Studio $VERSION" --notes-file release-notes.md
+          fi

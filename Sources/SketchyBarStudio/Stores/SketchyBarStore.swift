@@ -188,7 +188,7 @@ final class SketchyBarStore: ObservableObject {
 
         for file in changedFiles {
             do {
-                try saveValues(file.values, to: file.url, kind: file.kind)
+                try saveValues(file.values, to: file.url, rootURL: file.rootURL, kind: file.kind)
             } catch {
                 statusMessage = "Save failed for \(file.displayName): \(error.localizedDescription)"
                 return
@@ -303,19 +303,19 @@ final class SketchyBarStore: ObservableObject {
         }
     }
 
-    private func saveValues(_ values: [LuaEditableValue], to url: URL, kind: ConfigFileKind) throws {
+    private func saveValues(_ values: [LuaEditableValue], to url: URL, rootURL: URL, kind: ConfigFileKind) throws {
         switch kind {
         case .lua:
-            try luaScanner.save(values: values, to: url)
+            try luaScanner.save(values: values, to: url, rootURL: rootURL)
         case .shell, .sketchybarRC:
-            try shellScanner.save(values: values, to: url)
+            try shellScanner.save(values: values, to: url, rootURL: rootURL)
         }
     }
 
     private func save(file: ConfigFile) {
         do {
-            try saveValues(file.values, to: file.url, kind: file.kind)
-            statusMessage = "Saved \(file.displayName) and wrote a .studio-backup copy."
+            try saveValues(file.values, to: file.url, rootURL: file.rootURL, kind: file.kind)
+            statusMessage = "Saved \(file.displayName) and backed up original under backups/."
             reload()
         } catch {
             statusMessage = "Save failed: \(error.localizedDescription)"

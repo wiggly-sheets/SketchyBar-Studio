@@ -1,8 +1,8 @@
 # Release Checklist
 
 1. Update `CHANGELOG.md`.
-2. Confirm version/tag name.
-3. Run:
+2. Confirm version/tag name, for example `v1.0.1`.
+3. Run local checks:
 
    ```bash
    swift build
@@ -18,11 +18,19 @@
    - font picker
    - activation toggle
    - Save & Apply
-6. Create tag:
+   - backup mirror under `backups/`
+6. Commit release changes.
+7. Create and push tag:
 
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag -a v1.0.1 -m "SketchyBar Studio 1.0.1"
+   git push origin master
+   git push origin v1.0.1
    ```
 
-7. Download GitHub Actions release artifact and smoke test it.
+8. GitHub Actions `Release` workflow will automatically:
+   - build the universal app
+   - create a DMG with `create-dmg@8.1.0`
+   - upload the DMG and checksum
+   - create or update the GitHub release
+9. Download the release DMG and smoke test it.

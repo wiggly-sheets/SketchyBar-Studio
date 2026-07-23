@@ -18,8 +18,16 @@ struct SketchyBarConfigLocator {
 
         return enumerator
             .compactMap { $0 as? URL }
+            .filter { !isBackupFile($0, rootURL: rootURL) }
             .filter { kind(for: $0) != nil }
             .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    private func isBackupFile(_ url: URL, rootURL: URL) -> Bool {
+        let rootPath = rootURL.standardizedFileURL.path
+        let filePath = url.standardizedFileURL.path
+        let backupPrefix = (rootPath.hasSuffix("/") ? rootPath : rootPath + "/") + "backups/"
+        return filePath.hasPrefix(backupPrefix)
     }
 
     func kind(for url: URL) -> ConfigFileKind? {

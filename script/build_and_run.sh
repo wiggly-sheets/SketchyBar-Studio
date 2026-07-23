@@ -16,6 +16,17 @@ APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON="$ROOT_DIR/Assets/SketchyBarStudio.icns"
 
+APP_VERSION="${SKETCHYBAR_STUDIO_VERSION:-}"
+if [[ -z "$APP_VERSION" ]]; then
+  APP_VERSION="$(git -C "$ROOT_DIR" describe --tags --exact-match 2>/dev/null | sed 's/^v//' || true)"
+fi
+if [[ -z "$APP_VERSION" ]]; then
+  APP_VERSION="$(git -C "$ROOT_DIR" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+fi
+APP_VERSION="${APP_VERSION:-0.0.0}"
+APP_VERSION="${APP_VERSION#v}"
+APP_BUILD="${SKETCHYBAR_STUDIO_BUILD:-$(git -C "$ROOT_DIR" rev-list --count HEAD 2>/dev/null || echo 1)}"
+
 SWIFT_CONFIGURATION="debug"
 UNIVERSAL_BUILD="false"
 
@@ -53,6 +64,10 @@ build_bundle() {
   <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
   <string>SketchyBar Studio</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$APP_VERSION</string>
+  <key>CFBundleVersion</key>
+  <string>$APP_BUILD</string>
   <key>CFBundleIconFile</key>
   <string>SketchyBarStudio</string>
   <key>CFBundlePackageType</key>
