@@ -66,8 +66,8 @@ jobs:
           DMG_NAME: ${{ steps.version.outputs.dmg_name }}
           SHA256: ${{ steps.checksum.outputs.sha256 }}
         run: |
-          cat > release-notes.md <<EOF
-          # SketchyBar Studio $VERSION
+          cat > release-notes.md <<'EOF'
+          # SketchyBar Studio __VERSION__
 
           ## Download
 
@@ -90,9 +90,20 @@ jobs:
           DMG SHA-256:
 
           ```
-          $SHA256  $DMG_NAME
+          __SHA256__  __DMG_NAME__
           ```
           EOF
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path("release-notes.md")
+          text = path.read_text()
+          text = text.replace("__VERSION__", os.environ["VERSION"])
+          text = text.replace("__SHA256__", os.environ["SHA256"])
+          text = text.replace("__DMG_NAME__", os.environ["DMG_NAME"])
+          path.write_text(text)
+          PY
 
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "dist/$DMG_NAME" "dist/$DMG_NAME.sha256" --clobber
