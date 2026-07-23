@@ -6,6 +6,22 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ## [Unreleased]
 
+### Added
+
+- Added SwiftPM regression tests for backup mirroring and activation matching.
+- CI now runs `swift test` in addition to build and package checks.
+
+### Changed
+
+- Optimized activation lookup so config reload reads loader files once per reload instead of once per editable file.
+- Config discovery now skips the `backups/` subtree before descending into it.
+- Lua and shell scanners reuse compiled regexes instead of recompiling on every file scan.
+
+### Fixed
+
+- `Save & Apply` no longer reloads SketchyBar after a failed save.
+- Activation matching now prefers the longest matching token, avoiding collisions such as `space.lua` versus `spaces.lua`.
+
 ## [1.0.0] - 2026-07-03
 
 ### Added

@@ -6,6 +6,7 @@
 
    ```bash
    swift build
+   swift test
    ./script/build_and_run.sh --universal-package
    lipo -info dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
    ```

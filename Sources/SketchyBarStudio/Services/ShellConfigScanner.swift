@@ -1,12 +1,15 @@
 import Foundation
 
 struct ShellConfigScanner {
+    private static let assignmentRegex = try? NSRegularExpression(
+        pattern: #"([A-Za-z_][A-Za-z0-9_\.]*)=("[^"]*"|'[^']*'|[^ \t\\]+)"#
+    )
+
     private let optionCatalog = SketchyBarOptionCatalog()
-    private let assignmentPattern = #"([A-Za-z_][A-Za-z0-9_\.]*)=("[^"]*"|'[^']*'|[^ \t\\]+)"#
 
     func scan(fileURL: URL) -> [LuaEditableValue] {
         guard let contents = try? String(contentsOf: fileURL, encoding: .utf8),
-              let regex = try? NSRegularExpression(pattern: assignmentPattern) else {
+              let regex = Self.assignmentRegex else {
             return []
         }
 

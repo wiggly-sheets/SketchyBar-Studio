@@ -10,24 +10,35 @@ struct SketchyBarConfigLocator {
     func configFiles(in rootURL: URL) -> [URL] {
         guard let enumerator = FileManager.default.enumerator(
             at: rootURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) else {
             return []
         }
 
-        return enumerator
-            .compactMap { $0 as? URL }
-            .filter { !isBackupFile($0, rootURL: rootURL) }
-            .filter { kind(for: $0) != nil }
-            .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+        var urls: [URL] = []
+        for case let url as URL in enumerator {
+            if isBackupDirectory(url, rootURL: rootURL) {
+                enumerator.skipDescendants()
+                continue
+            }
+
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+                  kind(for: url) != nil else {
+                continue
+            }
+            urls.append(url)
+        }
+
+        return urls.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
-    private func isBackupFile(_ url: URL, rootURL: URL) -> Bool {
+    private func isBackupDirectory(_ url: URL, rootURL: URL) -> Bool {
         let rootPath = rootURL.standardizedFileURL.path
         let filePath = url.standardizedFileURL.path
-        let backupPrefix = (rootPath.hasSuffix("/") ? rootPath : rootPath + "/") + "backups/"
-        return filePath.hasPrefix(backupPrefix)
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard filePath.hasPrefix(prefix) else { return false }
+        return String(filePath.dropFirst(prefix.count)) == "backups"
     }
 
     func kind(for url: URL) -> ConfigFileKind? {

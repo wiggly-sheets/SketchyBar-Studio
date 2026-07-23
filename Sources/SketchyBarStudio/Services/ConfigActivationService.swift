@@ -9,35 +9,62 @@ struct ConfigActivationService {
     private let backupService = ConfigBackupService()
 
     func reference(for fileURL: URL, rootURL: URL) -> ActivationReference? {
-        guard canToggle(fileURL: fileURL, rootURL: rootURL) else {
-            return nil
-        }
+        references(for: [fileURL], rootURL: rootURL)[fileURL.path]
+    }
 
-        let candidates = entrypoints(in: rootURL)
-        let fileTokens = matchTokens(fileURL: fileURL, rootURL: rootURL)
+    func references(for fileURLs: [URL], rootURL: URL) -> [String: ActivationReference] {
+        var pending = fileURLs
+            .filter { canToggle(fileURL: $0, rootURL: rootURL) }
+            .map { ActivationLookupCandidate(fileURL: $0, tokens: matchTokens(fileURL: $0, rootURL: rootURL)) }
+            .filter { !$0.tokens.isEmpty }
+        var results: [String: ActivationReference] = [:]
 
-        for entrypoint in candidates {
-            guard let contents = try? String(contentsOf: entrypoint, encoding: .utf8) else {
+        for entrypoint in entrypoints(in: rootURL) {
+            guard !pending.isEmpty,
+                  let contents = try? String(contentsOf: entrypoint, encoding: .utf8) else {
                 continue
             }
 
-            var lineNumber = 1
-            for line in contents.split(separator: "\n", omittingEmptySubsequences: false) {
+            for (offset, line) in contents.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                guard !pending.isEmpty else { return results }
                 let text = String(line)
-                if matchesReferenceLine(text, tokens: fileTokens, entrypointURL: entrypoint) {
-                    return ActivationReference(
-                        entrypointURL: entrypoint,
-                        lineNumber: lineNumber,
-                        isActive: !isCommented(text)
-                    )
+                guard let normalized = normalizedReferenceLine(text, entrypointURL: entrypoint) else {
+                    continue
                 }
-                lineNumber += 1
+
+                guard let matchIndex = bestMatchIndex(in: pending, normalizedLine: normalized) else {
+                    continue
+                }
+
+                let candidate = pending.remove(at: matchIndex)
+                results[candidate.fileURL.path] = ActivationReference(
+                    entrypointURL: entrypoint,
+                    lineNumber: offset + 1,
+                    isActive: !isCommented(text)
+                )
             }
         }
 
-        return nil
+        return results
     }
 
+    private func bestMatchIndex(in candidates: [ActivationLookupCandidate], normalizedLine: String) -> Int? {
+        var bestIndex: Int?
+        var bestTokenLength = 0
+
+        for (index, candidate) in candidates.enumerated() {
+            guard let token = candidate.tokens.first(where: { normalizedLine.contains($0) }) else {
+                continue
+            }
+
+            if token.count > bestTokenLength {
+                bestTokenLength = token.count
+                bestIndex = index
+            }
+        }
+
+        return bestIndex
+    }
 
     func moveReference(for file: ConfigFile, direction: MoveDirection) throws {
         guard let reference = file.activationReference else { return }
@@ -93,19 +120,28 @@ struct ConfigActivationService {
     }
 
     private func entrypoints(in rootURL: URL) -> [URL] {
-        var urls = [
+        let fixedEntrypoints = [
             rootURL.appendingPathComponent("init.lua"),
             rootURL.appendingPathComponent("sketchybarrc"),
             rootURL.appendingPathComponent(".sketchybarrc")
         ]
+        var urls = Set(fixedEntrypoints)
 
         if let enumerator = FileManager.default.enumerator(
             at: rootURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
             options: [.skipsHiddenFiles]
         ) {
             for case let url as URL in enumerator {
-                guard !isBackupFile(url, rootURL: rootURL) else { continue }
+                if isBackupDirectory(url, rootURL: rootURL) {
+                    enumerator.skipDescendants()
+                    continue
+                }
+
+                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+                    continue
+                }
+
                 let name = url.lastPathComponent.lowercased()
                 let ext = url.pathExtension.lowercased()
                 if name == "init.lua" ||
@@ -114,21 +150,19 @@ struct ConfigActivationService {
                     ext == "sh" ||
                     ext == "bash" ||
                     ext == "zsh" {
-                    urls.append(url)
+                    urls.insert(url)
                 }
             }
         }
 
-        return Array(Set(urls))
+        return urls
             .filter { FileManager.default.fileExists(atPath: $0.path) }
             .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
-    private func isBackupFile(_ url: URL, rootURL: URL) -> Bool {
-        let rootPath = rootURL.standardizedFileURL.path
-        let filePath = url.standardizedFileURL.path
-        let backupPrefix = (rootPath.hasSuffix("/") ? rootPath : rootPath + "/") + "backups/"
-        return filePath.hasPrefix(backupPrefix)
+    private func isBackupDirectory(_ url: URL, rootURL: URL) -> Bool {
+        let relative = relativePath(for: url, rootURL: rootURL)
+        return relative == "backups"
     }
 
     private func isCommented(_ line: String) -> Bool {
@@ -162,7 +196,7 @@ struct ConfigActivationService {
     }
 
     private func matchTokens(fileURL: URL, rootURL: URL) -> [String] {
-        let relative = fileURL.path.replacingOccurrences(of: rootURL.path + "/", with: "")
+        let relative = relativePath(for: fileURL, rootURL: rootURL)
         let noExtension = (relative as NSString).deletingPathExtension
         let dotted = noExtension.replacingOccurrences(of: "/", with: ".")
         let baseName = fileURL.deletingPathExtension().lastPathComponent
@@ -181,11 +215,11 @@ struct ConfigActivationService {
         return Array(Set(tokens.filter { !$0.isEmpty })).sorted { $0.count > $1.count }
     }
 
-    private func matchesReferenceLine(_ line: String, tokens: [String], entrypointURL: URL) -> Bool {
+    private func normalizedReferenceLine(_ line: String, entrypointURL: URL) -> String? {
         let uncommented = uncomment(line)
         let normalized = normalizedToken(uncommented)
         guard !normalized.isEmpty else {
-            return false
+            return nil
         }
 
         if entrypointURL.pathExtension.lowercased() == "lua" {
@@ -193,7 +227,7 @@ struct ConfigActivationService {
                     normalized.contains("dofile(") ||
                     normalized.contains("loadfile(") ||
                     normalized.contains("sbar.exec(") else {
-                return false
+                return nil
             }
         } else {
             guard normalized.contains("source ") ||
@@ -202,15 +236,15 @@ struct ConfigActivationService {
                     normalized.contains("zsh ") ||
                     normalized.contains("sh ") ||
                     normalized.contains("/") else {
-                return false
+                return nil
             }
         }
 
-        return tokens.contains { normalized.contains($0) }
+        return normalized
     }
 
     private func canToggle(fileURL: URL, rootURL: URL) -> Bool {
-        let relative = fileURL.path.replacingOccurrences(of: rootURL.path + "/", with: "").lowercased()
+        let relative = relativePath(for: fileURL, rootURL: rootURL).lowercased()
         let coreFiles: Set<String> = [
             "init.lua",
             "bar.lua",
@@ -222,6 +256,14 @@ struct ConfigActivationService {
         ]
 
         return !coreFiles.contains(relative)
+    }
+
+    private func relativePath(for fileURL: URL, rootURL: URL) -> String {
+        let rootPath = rootURL.standardizedFileURL.path
+        let filePath = fileURL.standardizedFileURL.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard filePath.hasPrefix(prefix) else { return fileURL.lastPathComponent }
+        return String(filePath.dropFirst(prefix.count))
     }
 
     private func normalizedToken(_ value: String) -> String {
@@ -240,4 +282,9 @@ struct ConfigActivationService {
             .replacingOccurrences(of: ".zsh", with: "")
             .replacingOccurrences(of: "_", with: "-")
     }
+}
+
+private struct ActivationLookupCandidate {
+    let fileURL: URL
+    let tokens: [String]
 }

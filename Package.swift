@@ -14,6 +14,11 @@ let package = Package(
         .executableTarget(
             name: "SketchyBarStudio",
             path: "Sources/SketchyBarStudio"
+        ),
+        .testTarget(
+            name: "SketchyBarStudioTests",
+            dependencies: ["SketchyBarStudio"],
+            path: "Tests/SketchyBarStudioTests"
         )
     ]
 )

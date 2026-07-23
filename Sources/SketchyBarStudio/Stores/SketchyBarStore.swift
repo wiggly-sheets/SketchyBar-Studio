@@ -65,7 +65,9 @@ final class SketchyBarStore: ObservableObject {
     }
 
     func reload() {
-        let scannedFiles = locator.configFiles(in: configRoot).compactMap { url -> ConfigFile? in
+        let configURLs = locator.configFiles(in: configRoot)
+        let activationReferences = activationService.references(for: configURLs, rootURL: configRoot)
+        let scannedFiles = configURLs.compactMap { url -> ConfigFile? in
             guard let kind = locator.kind(for: url) else {
                 return nil
             }
@@ -75,7 +77,7 @@ final class SketchyBarStore: ObservableObject {
                 rootURL: configRoot,
                 kind: kind,
                 values: scanValues(url: url, kind: kind),
-                activationReference: activationService.reference(for: url, rootURL: configRoot)
+                activationReference: activationReferences[url.path]
             )
         }
 
@@ -179,11 +181,12 @@ final class SketchyBarStore: ObservableObject {
         save(file: selectedFile)
     }
 
-    func saveAllChangedFiles() {
+    @discardableResult
+    func saveAllChangedFiles() -> Bool {
         let changedFiles = files.filter(\.hasUnsavedChanges)
         guard !changedFiles.isEmpty else {
             statusMessage = "No unsaved changes."
-            return
+            return true
         }
 
         for file in changedFiles {
@@ -191,16 +194,17 @@ final class SketchyBarStore: ObservableObject {
                 try saveValues(file.values, to: file.url, rootURL: file.rootURL, kind: file.kind)
             } catch {
                 statusMessage = "Save failed for \(file.displayName): \(error.localizedDescription)"
-                return
+                return false
             }
         }
 
         statusMessage = "Saved \(changedFiles.count) changed files."
         reload()
+        return true
     }
 
     func saveAllAndApply() {
-        saveAllChangedFiles()
+        guard saveAllChangedFiles() else { return }
         applySketchyBarReload()
     }
 
