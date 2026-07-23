@@ -6,6 +6,8 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-22
+
 ### Added
 
 - Added SwiftPM regression tests for backup mirroring and activation matching.
