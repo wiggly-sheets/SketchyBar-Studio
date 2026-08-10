@@ -48,6 +48,28 @@ final class ConfigBackupTests: XCTestCase {
         XCTAssertEqual(references[clockURL.path]?.isActive, false)
     }
 
+    func testActivationLookupRecognizesLuaRequireWithoutParentheses() throws {
+        let root = try makeConfigRoot()
+        let batteryURL = root.appendingPathComponent("items/battery.lua")
+        try write("width = 42\n", to: batteryURL)
+        try write("require \"items.battery\"\n", to: root.appendingPathComponent("init.lua"))
+
+        let references = ConfigActivationService().references(for: [batteryURL], rootURL: root)
+
+        XCTAssertEqual(references[batteryURL.path]?.lineNumber, 1)
+        XCTAssertEqual(references[batteryURL.path]?.isActive, true)
+    }
+
+    func testLuaScannerFindsPositionInCompactItemTable() throws {
+        let root = try makeConfigRoot()
+        let fileURL = root.appendingPathComponent("items/battery.lua")
+        try write("sbar.add(\"item\", \"battery\", { position = \"right\", drawing = true })\n", to: fileURL)
+
+        let values = LuaConfigScanner().scan(fileURL: fileURL)
+
+        XCTAssertEqual(values.map(\.keyPath), ["position"])
+        XCTAssertEqual(values.map(\.draftValue), ["right"])
+    }
 
     func testActivationLookupPrefersLongestMatchingToken() throws {
         let root = try makeConfigRoot()
@@ -62,7 +84,6 @@ final class ConfigBackupTests: XCTestCase {
         XCTAssertEqual(references[spacesURL.path]?.lineNumber, 1)
         XCTAssertEqual(references[spaceURL.path]?.lineNumber, 2)
     }
-
 
     private func makeConfigRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory

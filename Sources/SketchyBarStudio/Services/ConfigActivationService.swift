@@ -224,6 +224,7 @@ struct ConfigActivationService {
 
         if entrypointURL.pathExtension.lowercased() == "lua" {
             guard normalized.contains("require(") ||
+                    normalized.contains("require ") ||
                     normalized.contains("dofile(") ||
                     normalized.contains("loadfile(") ||
                     normalized.contains("sbar.exec(") else {

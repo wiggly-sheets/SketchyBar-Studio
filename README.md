@@ -1,126 +1,188 @@
-<p align="center">
-  <img src="Assets/SketchyBarStudioLogo.svg" width="144" alt="SketchyBar Studio logo">
-</p>
+<div align="center">
 
-# SketchyBar Studio
+  <img src="Assets/SketchyBarStudioLogo.svg" width="144" alt="SketchyBar Studio logo" />
 
-Native macOS companion app for editing SketchyBar configs without hand-editing every value.
+  <h1>SketchyBar Studio</h1>
 
-SketchyBar Studio discovers your existing SketchyBar setup, presents editable values in a native GUI, and keeps file writes conservative so your config stays yours.
+  <p><b>Edit your SketchyBar config. Keep it yours.</b></p>
+
+  <p>
+    A native macOS editor for existing SketchyBar configurations.<br/>
+    Safer edits, clearer structure, and backups before every write.
+  </p>
+
+  <p>
+    <a href="https://github.com/wiggly-sheets/SketchyBar-Studio/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/wiggly-sheets/SketchyBar-Studio/ci.yml?branch=master&label=build" alt="Build status" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/wiggly-sheets/SketchyBar-Studio?color=blue" alt="License: MIT" /></a>
+    <a href="https://github.com/wiggly-sheets/SketchyBar-Studio/releases/latest"><img src="https://img.shields.io/github/v/release/wiggly-sheets/SketchyBar-Studio?label=latest&color=red" alt="Latest release" /></a>
+  </p>
+
+  <p>
+    <a href="https://github.com/wiggly-sheets/SketchyBar-Studio/releases/latest"><b>Download</b></a>
+    &nbsp;·&nbsp;
+    <a href="#installation">Install guide</a>
+    &nbsp;·&nbsp;
+    <a href="#build-from-source">Build from source</a>
+    &nbsp;·&nbsp;
+    <a href="#safety">Safety</a>
+  </p>
+
+  <img width="1425" height="1045" alt="SketchyBar Studio editing a SketchyBar configuration" src="https://github.com/user-attachments/assets/8554a595-df01-480f-86d6-be08b555d6e7" />
+
+</div>
+
+---
+
+SketchyBar Studio helps you explore and edit the SketchyBar setup you already have, without turning your configuration into an app-owned project. It follows your folder structure, provides native controls for common values, and keeps writes narrow and backed up.
+
+> [!NOTE]
+> Your configuration remains ordinary Lua, `sketchybarrc`, and shell files. Studio does not replace the files or take ownership of them.
+
+---
 
 ## Features
 
-- Open a SketchyBar config folder, defaulting to `~/.config/sketchybar`.
-- Support Lua config files plus old-school `sketchybarrc`, `.sketchybarrc`, and shell script files.
-- Browse config files in path-first sidebar groups.
-- Activate/deactivate items by commenting or uncommenting matching loader lines.
-- Edit scalar values with purpose-built controls:
-  - dropdowns for known SketchyBar choices
-  - native color picker with opacity, saved as `0xAARRGGBB`
-  - native macOS font panel, saved as SketchyBar font syntax
-  - toggles for booleans
-- Save `.studio-backup` copies before writing.
-- Manage multiple config folders from a Config Library.
-- Save profiles as full config folder snapshots scoped to each config.
-- Switch the live SketchyBar config with a symlink-based `Make Selected Live` action.
-- Search files and values.
-- Show changed values only.
-- Save all changes and apply with `sketchybar --reload`.
-- Choose code-inspired app themes: Nord, Dracula, Monokai, Tokyo Night, Catppuccin.
+### Your configuration, made navigable
 
-## Screenshots
+- Opens `~/.config/sketchybar` by default, or any other SketchyBar config folder.
+- Supports Lua files alongside `sketchybarrc`, `.sketchybarrc`, and shell-based configurations.
+- Presents a path-first sidebar: `items`, `widgets`, `bar`, `themes`, and `scripts`, including nested folders. Item folders named `left`, `center`, or `right` are recognized directly; otherwise items are grouped from their simple `position` values, including compact Lua item tables.
+- Finds files and editable values with search, and can show only unsaved changes.
+- Keeps a read-only, hideable code preview close to the editor.
 
-<img width="1425" height="1045" alt="SCR-20260505-lilj" src="https://github.com/user-attachments/assets/8554a595-df01-480f-86d6-be08b555d6e7" />
+### Purpose-built editing
 
-## Inspiration
+- Uses dropdowns for known SketchyBar options and toggles for ordinary booleans.
+- Includes an interactive draft bar preview: drag items to reorder them or move them between left, center, and right; drag a numeric-width handle to resize; and adjust available left/right padding without writing files until you save.
+- Provides a built-in source editor for complete Lua and `sketchybarrc` files, with optional Vim-style navigation (`h/j/k/l`, words, line start/end, `i`/`a`, Escape). Source saves use the same backup protection as structured edits.
+- Opens the native macOS color picker, saving colors as `0xAARRGGBB`.
+- Opens the native macOS font panel, saving SketchyBar font syntax.
+- Groups controls into practical sections such as item, icon, label, background, popup, and scripts.
+- Normalizes boolean-style values to `true` and `false`, while preserving SketchyBar-specific choices such as `updates = on/off/when_shown`.
 
-SketchyBar Studio is inspired by:
+### Activation and ordering
 
-- [SketchyBar](https://github.com/FelixKratz/SketchyBar) - the menu bar customization tool this app edits and supports.
-- [SbarLua](https://github.com/FelixKratz/SbarLua) - the Lua API that powers many modern SketchyBar configs.
+- Turns loader-backed items on or off by commenting or uncommenting their loader references.
+- Detects common Lua and shell loader patterns in `init.lua`, `sketchybarrc`, `.sketchybarrc`, and related loader files.
+- Reorders items when Studio can identify concrete activation references; complex loader code is left alone.
+- Avoids offering core entrypoints and theme files as activatable items.
 
-## Install
+### Config library and profiles
 
-SketchyBar Studio is currently distributed as unsigned preview builds. You have three install options.
+- Keeps a library of config folders, including symlinked configs in dotfiles repositories.
+- Saves and restores full config-folder snapshots as per-config profiles.
+- Can make a selected config live by pointing `~/.config/sketchybar` at it, with a confirmation step and backup of an existing real folder.
+- Saves all edits and optionally runs `sketchybar --reload` to apply them.
 
-### Option 1: Download the Release Zip
+### Native macOS experience
 
-1. Go to the GitHub Releases page.
-2. Download `SketchyBarStudio-universal.app.zip`.
-3. Unzip it.
-4. Move `SketchyBarStudio.app` to `/Applications`.
+- Built as a native SwiftUI app for macOS 14 and later.
+- Uses familiar macOS controls, including file panels, color picker, font panel, settings, and split views.
+- Includes Nord, Dracula, Monokai, Tokyo Night, and Catppuccin app-only themes.
 
-### Option 2: Homebrew Cask from Custom Tap
+---
 
-A custom Homebrew tap can install the release DMG as a cask. Homebrew may require trusting custom taps before installing casks from them:
+## Download
+
+<div align="center">
+
+<a href="https://github.com/wiggly-sheets/SketchyBar-Studio/releases/latest"><img src="https://img.shields.io/badge/download-SketchyBar%20Studio-2EA043?style=flat&logo=apple&logoColor=white" alt="Download SketchyBar Studio" /></a>
+
+</div>
+
+---
+
+## Installation
+
+SketchyBar Studio is distributed as an unsigned preview build. You can install the universal DMG release or build it yourself.
+
+### Install from a release
+
+1. Download the universal `.dmg` from the [latest release](https://github.com/wiggly-sheets/SketchyBar-Studio/releases/latest).
+2. Open the DMG and drag **SketchyBar Studio** to your Applications folder.
+3. Open the app from Applications.
+
+### Opening an unsigned build
+
+Because preview builds are not signed or notarized, macOS may block the first launch. Open **System Settings → Privacy & Security** after that attempt and choose **Open Anyway**, or Control-click the app and choose **Open**.
+
+If macOS still blocks an app that you downloaded from a source you trust, remove its quarantine attribute:
 
 ```bash
-brew tap wiggly-sheets/sketchybar-studio
-brew trust wiggly-sheets/sketchybar-studio
-brew install --cask sketchybar-studio
+xattr -dr com.apple.quarantine /Applications/SketchyBarStudio.app
 ```
 
-Or in one command:
+If the app lives elsewhere, use its actual path instead.
+
+---
+
+## Safety
+
+SketchyBar Studio is deliberately conservative about config changes.
+
+| What Studio does | What that means |
+| --- | --- |
+| Makes copies under `backups/` before writing | You have a local backup of the original file before an edit is saved. |
+| Edits simple scalar assignments | Complex Lua tables and computed values are not silently rewritten. |
+| Follows folders and symlinks | A config stored in a dotfiles repository remains in place. |
+| Changes loader order only when references are clear | Unusual or complex loader logic is not inferred or rewritten. |
+
+You can use the GUI for routine changes and keep the code preview open whenever you want to verify the underlying configuration.
+
+---
+
+## Build from source
+
+### Requirements
+
+- macOS 14 or later
+- Xcode with Swift 5.9 or later
+- [SketchyBar](https://github.com/FelixKratz/SketchyBar) installed when testing live reload behavior
+
+### Clone and run
 
 ```bash
-brew tap wiggly-sheets/sketchybar-studio
-brew trust wiggly-sheets/sketchybar-studio
-brew install --cask wiggly-sheets/sketchybar-studio/sketchybar-studio
-```
-
-### Option 3: Build from Source
-
-```bash
-git clone https://github.com/wiggly-sheets/sketchybar-studio.git
-cd sketchybar-studio
+git clone https://github.com/wiggly-sheets/SketchyBar-Studio.git
+cd SketchyBar-Studio
 ./script/build_and_run.sh
 ```
 
-For a local `.app` bundle:
+To build without launching:
 
 ```bash
+swift build
 ./script/build_and_run.sh --package
-open dist/SketchyBarStudio.app
 ```
 
-For a universal release bundle that supports Apple Silicon and Intel Macs:
+The packaged app is written to `dist/SketchyBarStudio.app`.
+
+### Build a universal app
+
+To package a release-style app for both Apple Silicon and Intel Macs:
 
 ```bash
 ./script/build_and_run.sh --universal-package
 lipo -info dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
 ```
 
-## Opening Unsigned Builds
+---
 
-Early GitHub release builds are unsigned and not notarized. macOS may block the app no matter how you installed it: release zip, Homebrew cask, or local source build.
+## Known limits
 
-Try opening it through **System Settings > Privacy & Security** after the first blocked launch, or right-click `SketchyBarStudio.app` and choose **Open**. If macOS still blocks it, remove the quarantine attribute manually:
+- Lua editing intentionally targets simple scalar assignments first; tables and computed values remain read-only context.
+- Shell support covers common `key=value` SketchyBar property assignments.
+- Unusual loader patterns may require future activation-detection support.
 
-```bash
-xattr -dr com.apple.quarantine /Applications/SketchyBarStudio.app
-```
+## Inspiration
 
-If you run it from another folder, replace `/Applications/SketchyBarStudio.app` with the actual app path.
+SketchyBar Studio is built for the ecosystem around:
 
-Only run this command for apps you downloaded from a source you trust.
-
-## Known Limits
-
-- The Lua editor intentionally edits simple scalar assignments first. Complex tables and computed values stay untouched.
-- Shell support handles common `key=value` SketchyBar property assignments.
-- Activation detection looks for references in `init.lua`, `sketchybarrc`, and `.sketchybarrc`; unusual loaders may need later pattern support.
-
-## Run
-
-```bash
-./script/build_and_run.sh
-```
-
-Xcode can also open the Swift package directly.
+- [SketchyBar](https://github.com/FelixKratz/SketchyBar) — the macOS menu bar customization tool it edits and supports.
+- [SbarLua](https://github.com/FelixKratz/SbarLua) — the Lua API used by many modern SketchyBar configurations.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull-request guidance.
 
 ## License
 

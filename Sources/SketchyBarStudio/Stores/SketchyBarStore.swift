@@ -27,6 +27,7 @@ final class SketchyBarStore: ObservableObject {
     private let configLibraryService = ConfigLibraryService()
     private let configSwitchService = ConfigSwitchService()
     private let profileService = ProfileArchiveService()
+    private let backupService = ConfigBackupService()
 
     init() {
         let defaultRoot = locator.defaultConfigRoot
@@ -224,6 +225,21 @@ final class SketchyBarStore: ObservableObject {
     func openSelectedFileExternally() {
         guard let selectedFile else { return }
         NSWorkspace.shared.open(selectedFile.url)
+    }
+
+    func contents(of file: ConfigFile) -> String {
+        (try? String(contentsOf: file.url, encoding: .utf8)) ?? ""
+    }
+
+    func saveRawContents(_ contents: String, for file: ConfigFile) {
+        do {
+            _ = try backupService.backup(fileURL: file.url, rootURL: file.rootURL)
+            try contents.write(to: file.url, atomically: true, encoding: .utf8)
+            statusMessage = "Saved source for \(file.displayName) and backed up original under backups/."
+            reload()
+        } catch {
+            statusMessage = "Source save failed: \(error.localizedDescription)"
+        }
     }
 
     func applySketchyBarReload() {

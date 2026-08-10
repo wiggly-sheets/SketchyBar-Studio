@@ -454,11 +454,26 @@ private struct SidebarTreeBuilder {
             components.removeFirst()
         }
 
-        if category == .items {
+        if category == .items, let folderPosition = itemPositionFolder(in: components) {
+            components[0] = folderPosition
+        } else if category == .items {
             components.insert(file.sidebarBarPositionFolder, at: 0)
         }
 
         return components
+    }
+
+    private func itemPositionFolder(in components: [String]) -> String? {
+        guard let first = components.first?.lowercased() else {
+            return nil
+        }
+
+        switch first {
+        case "left": return "Left"
+        case "center": return "Center"
+        case "right": return "Right"
+        default: return nil
+        }
     }
 
     private func shouldDropCategoryFolder(_ folder: String?) -> Bool {

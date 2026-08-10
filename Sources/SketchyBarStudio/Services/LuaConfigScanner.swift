@@ -2,7 +2,7 @@ import Foundation
 
 struct LuaConfigScanner {
     private static let assignmentRegex = try? NSRegularExpression(
-        pattern: #"^\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_\.]*)\s*=\s*("[^"]*"|'[^']*'|true|false|-?\d+(?:\.\d+)?|0x[0-9A-Fa-f]+|#[0-9A-Fa-f]{6,8}|dynamic)\s*(?:,|--.*)?$"#
+        pattern: #"(?:^|[,{;])\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_\.]*)\s*=\s*("[^"]*"|'[^']*'|true|false|-?\d+(?:\.\d+)?|0x[0-9A-Fa-f]+|#[0-9A-Fa-f]{6,8}|dynamic)"#
     )
 
     private let optionCatalog = SketchyBarOptionCatalog()

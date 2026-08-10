@@ -5,6 +5,9 @@ struct DetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            BarPreviewView(store: store, theme: store.appTheme)
+                .padding()
+
             if let file = store.selectedFile {
                 EditableFileView(store: store, file: file, theme: store.appTheme)
             } else {
@@ -34,7 +37,9 @@ private struct EditableFileView: View {
     let theme: AppTheme
     @State private var selectedValueID: LuaEditableValue.ID?
     @State private var codePreviewVersion = 0
+    @State private var sourceEditorHasUnsavedChanges = false
     @AppStorage("detail.showCodePreview") private var showCodePreview = true
+    @AppStorage("detail.showSourceEditor") private var showSourceEditor = false
 
     var body: some View {
         HSplitView {
@@ -62,26 +67,34 @@ private struct EditableFileView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                if showSourceEditor {
+                    SourceEditorView(
+                        store: store,
+                        file: file,
+                        theme: theme,
+                        hasUnsavedChanges: $sourceEditorHasUnsavedChanges
+                    )
+                } else {
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        ForEach(groupedValues) { group in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(group.title)
+                                    .font(.headline)
+                                    .foregroundStyle(theme.accent)
 
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    ForEach(groupedValues) { group in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(group.title)
-                                .font(.headline)
-                                .foregroundStyle(theme.accent)
-
-                            ForEach(group.values) { value in
-                                EditableValueRow(
-                                    value: value,
-                                    theme: theme,
-                                    isSelected: selectedValueID == value.id,
-                                    onSelect: {
-                                        selectedValueID = value.id
-                                    },
-                                    onChange: {
-                                        store.update(valueID: value.id, draftValue: $0)
-                                    }
-                                )
+                                ForEach(group.values) { value in
+                                    EditableValueRow(
+                                        value: value,
+                                        theme: theme,
+                                        isSelected: selectedValueID == value.id,
+                                        onSelect: {
+                                            selectedValueID = value.id
+                                        },
+                                        onChange: {
+                                            store.update(valueID: value.id, draftValue: $0)
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -111,6 +124,18 @@ private struct EditableFileView: View {
                 Label(showCodePreview ? "Hide Code" : "Show Code", systemImage: showCodePreview ? "sidebar.right" : "sidebar.right")
             }
             .help(showCodePreview ? "Hide code preview" : "Show code preview")
+
+            Button {
+                showSourceEditor.toggle()
+            } label: {
+                Label(showSourceEditor ? "Use Controls" : "Edit Source", systemImage: "chevron.left.forwardslash.chevron.right")
+            }
+            .disabled(file.hasUnsavedChanges || sourceEditorHasUnsavedChanges)
+            .help(
+                file.hasUnsavedChanges || sourceEditorHasUnsavedChanges
+                    ? "Save or discard edits before switching editing modes"
+                    : (showSourceEditor ? "Return to structured controls" : "Edit the complete source file")
+            )
 
             Button {
                 store.discardSelectedChanges()
