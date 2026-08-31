@@ -41,9 +41,10 @@ For release sanity:
 
 ```bash
 lipo -info dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
+codesign --verify --deep --strict dist/SketchyBarStudio.app
 ```
 
-The package is unsigned unless signing is added later. README documents Gatekeeper quarantine removal for trusted preview builds.
+The package is ad-hoc signed after the complete bundle is assembled, but it is not Developer ID signed or notarized. README documents Gatekeeper quarantine removal for trusted preview builds.
 
 ## Coding Rules
 
@@ -52,7 +53,7 @@ The package is unsigned unless signing is added later. README documents Gatekeep
 - Prefer typed helpers over string hacking when adding parsing or value normalization.
 - Use `FileManager`, `URL`, and line-based rewrites carefully; preserve newlines and indentation.
 - Never run destructive git commands or delete user config files.
-- When editing user SketchyBar configs, keep `.studio-backup` behavior intact.
+- When editing user SketchyBar configs, keep the mirrored `backups/` behavior intact.
 - Use native macOS affordances before custom UI.
 - Avoid adding external Swift package dependencies unless the benefit is clear and CI/release impact is handled.
 

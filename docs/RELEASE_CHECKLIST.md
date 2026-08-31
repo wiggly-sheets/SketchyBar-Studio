@@ -1,7 +1,7 @@
 # Release Checklist
 
 1. Update `CHANGELOG.md`.
-2. Confirm version/tag name, for example `v1.0.1`.
+2. Confirm the `vX.Y.Z` version/tag name.
 3. Run local checks:
 
    ```bash
@@ -9,6 +9,7 @@
    swift test
    ./script/build_and_run.sh --universal-package
    lipo -info dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
+   codesign --verify --deep --strict dist/SketchyBarStudio.app
    ```
 
 4. Manually open `dist/SketchyBarStudio.app`.
@@ -24,9 +25,9 @@
 7. Create and push tag:
 
    ```bash
-   git tag -a v1.0.1 -m "SketchyBar Studio 1.0.1"
+   git tag -a vX.Y.Z -m "SketchyBar Studio X.Y.Z"
    git push origin master
-   git push origin v1.0.1
+   git push origin vX.Y.Z
    ```
 
 8. GitHub Actions `Release` workflow will automatically:

@@ -37,7 +37,6 @@ private struct EditableFileView: View {
     let theme: AppTheme
     @State private var selectedValueID: LuaEditableValue.ID?
     @State private var codePreviewVersion = 0
-    @State private var sourceEditorHasUnsavedChanges = false
     @AppStorage("detail.showCodePreview") private var showCodePreview = true
     @AppStorage("detail.showSourceEditor") private var showSourceEditor = false
 
@@ -71,8 +70,7 @@ private struct EditableFileView: View {
                     SourceEditorView(
                         store: store,
                         file: file,
-                        theme: theme,
-                        hasUnsavedChanges: $sourceEditorHasUnsavedChanges
+                        theme: theme
                     )
                 } else {
                     LazyVStack(alignment: .leading, spacing: 16) {
@@ -130,9 +128,9 @@ private struct EditableFileView: View {
             } label: {
                 Label(showSourceEditor ? "Use Controls" : "Edit Source", systemImage: "chevron.left.forwardslash.chevron.right")
             }
-            .disabled(file.hasUnsavedChanges || sourceEditorHasUnsavedChanges)
+            .disabled(store.hasUnsavedChanges(fileID: file.id))
             .help(
-                file.hasUnsavedChanges || sourceEditorHasUnsavedChanges
+                store.hasUnsavedChanges(fileID: file.id)
                     ? "Save or discard edits before switching editing modes"
                     : (showSourceEditor ? "Return to structured controls" : "Edit the complete source file")
             )
@@ -143,7 +141,7 @@ private struct EditableFileView: View {
             } label: {
                 Label("Discard", systemImage: "arrow.uturn.backward")
             }
-            .disabled(!file.hasUnsavedChanges)
+            .disabled(!store.hasUnsavedChanges(fileID: file.id))
 
             Menu {
                 Button("Reveal in Finder") {
@@ -157,8 +155,9 @@ private struct EditableFileView: View {
             }
 
             Button {
-                store.saveSelectedFile()
-                codePreviewVersion += 1
+                if store.saveSelectedFile() {
+                    codePreviewVersion += 1
+                }
             } label: {
                 Label("Save File", systemImage: "square.and.arrow.down")
             }
@@ -418,6 +417,7 @@ private struct CodePreviewView: View {
         .background(theme.background.opacity(0.45))
         .onAppear(perform: loadLines)
         .onChange(of: file.id) { _, _ in loadLines() }
+        .onChange(of: file) { _, _ in loadLines() }
         .onChange(of: refreshToken) { _, _ in loadLines() }
     }
 

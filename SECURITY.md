@@ -4,7 +4,7 @@ SketchyBar Studio edits local configuration files and may run `sketchybar --relo
 
 ## Supported Versions
 
-Security fixes target the latest unreleased/main branch until tagged releases begin.
+Security fixes target the latest release and the current `master` branch.
 
 ## Reporting a Vulnerability
 
@@ -22,7 +22,7 @@ Please include:
 
 The app should:
 
-- write `.studio-backup` files before modifying configs
+- write mirrored copies under the selected config's `backups/` folder before modifying configs
 - avoid destructive rewrites
 - preserve unrelated file content
 - ask the system to run only expected local tools, such as `sketchybar --reload`

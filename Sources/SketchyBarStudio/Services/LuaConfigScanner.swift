@@ -2,7 +2,7 @@ import Foundation
 
 struct LuaConfigScanner {
     private static let assignmentRegex = try? NSRegularExpression(
-        pattern: #"(?:^|[,{;])\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_\.]*)\s*=\s*("[^"]*"|'[^']*'|true|false|-?\d+(?:\.\d+)?|0x[0-9A-Fa-f]+|#[0-9A-Fa-f]{6,8}|dynamic)"#
+        pattern: #"(?:^|[,{;])\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_\.]*)\s*=\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|true|false|-?\d+(?:\.\d+)?|0x[0-9A-Fa-f]+|#[0-9A-Fa-f]{6,8}|dynamic)"#
     )
 
     private let optionCatalog = SketchyBarOptionCatalog()
@@ -19,36 +19,36 @@ struct LuaConfigScanner {
         contents.enumerateSubstrings(in: contents.startIndex..<contents.endIndex, options: [.byLines, .substringNotRequired]) { _, lineRange, _, _ in
             let line = String(contents[lineRange])
             let nsLine = NSRange(line.startIndex..<line.endIndex, in: line)
-
-            guard let match = regex.firstMatch(in: line, range: nsLine),
-                  let keyRange = Range(match.range(at: 1), in: line),
-                  let valueRange = Range(match.range(at: 2), in: line) else {
-                lineNumber += 1
-                return
-            }
-
-            let rawValue = String(line[valueRange])
             let lineStart = contents.distance(from: contents.startIndex, to: lineRange.lowerBound)
-            let valueStart = lineStart + line.distance(from: line.startIndex, to: valueRange.lowerBound)
-            let valueEnd = lineStart + line.distance(from: line.startIndex, to: valueRange.upperBound)
-            let keyPath = String(line[keyRange])
-            let id = "\(fileURL.path):\(lineNumber):\(keyPath)"
-            let displayValue = normalizedDisplayValue(displayValue(for: rawValue, keyPath: keyPath), keyPath: keyPath)
+            for match in regex.matches(in: line, range: nsLine) {
+                guard let keyRange = Range(match.range(at: 1), in: line),
+                      let valueRange = Range(match.range(at: 2), in: line) else {
+                    continue
+                }
 
-            results.append(
-                LuaEditableValue(
-                    id: id,
-                    fileURL: fileURL,
-                    keyPath: keyPath,
-                    lineNumber: lineNumber,
-                    kind: kind(for: rawValue, keyPath: keyPath),
-                    originalValue: displayValue,
-                    draftValue: displayValue,
-                    suggestedValues: optionCatalog.suggestedValues(for: keyPath, currentValue: displayValue),
-                    valueStartOffset: valueStart,
-                    valueEndOffset: valueEnd
+                let rawValue = String(line[valueRange])
+                let valueStart = lineStart + line.distance(from: line.startIndex, to: valueRange.lowerBound)
+                let valueEnd = lineStart + line.distance(from: line.startIndex, to: valueRange.upperBound)
+                let keyPath = String(line[keyRange])
+                let id = "\(fileURL.path):\(lineNumber):\(keyPath):\(valueStart)"
+                let displayValue = normalizedDisplayValue(displayValue(for: rawValue, keyPath: keyPath), keyPath: keyPath)
+
+                results.append(
+                    LuaEditableValue(
+                        id: id,
+                        fileURL: fileURL,
+                        keyPath: keyPath,
+                        lineNumber: lineNumber,
+                        kind: kind(for: rawValue, keyPath: keyPath),
+                        originalValue: displayValue,
+                        draftValue: displayValue,
+                        suggestedValues: optionCatalog.suggestedValues(for: keyPath, currentValue: displayValue),
+                        valueStartOffset: valueStart,
+                        valueEndOffset: valueEnd,
+                        sourceSnapshot: contents
+                    )
                 )
-            )
+            }
 
             lineNumber += 1
         }
@@ -59,9 +59,16 @@ struct LuaConfigScanner {
     private let backupService = ConfigBackupService()
 
     func save(values: [LuaEditableValue], to fileURL: URL, rootURL: URL) throws {
+        let changedValues = values.filter { $0.draftValue != $0.originalValue }
+        guard !changedValues.isEmpty else { return }
         var contents = try String(contentsOf: fileURL, encoding: .utf8)
+        guard changedValues.allSatisfy({
+            $0.fileURL.standardizedFileURL == fileURL.standardizedFileURL && $0.sourceSnapshot == contents
+        }) else {
+            throw ConfigSourceSaveError.sourceChanged(fileURL)
+        }
 
-        for value in values.sorted(by: { $0.valueStartOffset > $1.valueStartOffset }) {
+        for value in changedValues.sorted(by: { $0.valueStartOffset > $1.valueStartOffset }) {
             let start = contents.index(contents.startIndex, offsetBy: value.valueStartOffset)
             let end = contents.index(contents.startIndex, offsetBy: value.valueEndOffset)
             contents.replaceSubrange(start..<end, with: serializedValue(value))
@@ -123,7 +130,8 @@ struct LuaConfigScanner {
     private func serializedValue(_ value: LuaEditableValue) -> String {
         switch value.kind {
         case .string:
-            return "\"\(escapeLuaString(value.draftValue))\""
+            let delimiter: Character = originalSerializedValue(for: value).first == "'" ? "'" : "\""
+            return "\(delimiter)\(escapeLexicalString(value.draftValue, delimiter: delimiter))\(delimiter)"
         case .number:
             return value.draftValue
         case .color:
@@ -133,9 +141,38 @@ struct LuaConfigScanner {
         }
     }
 
-    private func escapeLuaString(_ string: String) -> String {
-        string
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
+    private func originalSerializedValue(for value: LuaEditableValue) -> Substring {
+        let start = value.sourceSnapshot.index(value.sourceSnapshot.startIndex, offsetBy: value.valueStartOffset)
+        let end = value.sourceSnapshot.index(value.sourceSnapshot.startIndex, offsetBy: value.valueEndOffset)
+        return value.sourceSnapshot[start..<end]
+    }
+
+    private func escapeLexicalString(_ string: String, delimiter: Character) -> String {
+        var escaped = ""
+        var index = string.startIndex
+
+        while index < string.endIndex {
+            let character = string[index]
+            if character == "\\" {
+                escaped.append(character)
+                let nextIndex = string.index(after: index)
+                if nextIndex < string.endIndex {
+                    escaped.append(string[nextIndex])
+                    index = string.index(after: nextIndex)
+                } else {
+                    escaped.append("\\")
+                    index = nextIndex
+                }
+                continue
+            }
+
+            if character == delimiter {
+                escaped.append("\\")
+            }
+            escaped.append(character)
+            index = string.index(after: index)
+        }
+
+        return escaped
     }
 }

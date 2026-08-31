@@ -20,12 +20,19 @@ APP_VERSION="${SKETCHYBAR_STUDIO_VERSION:-}"
 if [[ -z "$APP_VERSION" ]]; then
   APP_VERSION="$(git -C "$ROOT_DIR" describe --tags --exact-match 2>/dev/null | sed 's/^v//' || true)"
 fi
-if [[ -z "$APP_VERSION" ]]; then
-  APP_VERSION="$(git -C "$ROOT_DIR" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
-fi
 APP_VERSION="${APP_VERSION:-0.0.0}"
 APP_VERSION="${APP_VERSION#v}"
 APP_BUILD="${SKETCHYBAR_STUDIO_BUILD:-$(git -C "$ROOT_DIR" rev-list --count HEAD 2>/dev/null || echo 1)}"
+
+if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "invalid app version '$APP_VERSION' (expected X.Y.Z)" >&2
+  exit 2
+fi
+
+if [[ ! "$APP_BUILD" =~ ^[0-9]+$ ]]; then
+  echo "invalid app build '$APP_BUILD' (expected an integer)" >&2
+  exit 2
+fi
 
 SWIFT_CONFIGURATION="debug"
 UNIVERSAL_BUILD="false"
@@ -79,12 +86,18 @@ build_bundle() {
 </dict>
 </plist>
 PLIST
+
+  # SwiftPM ad-hoc signs the standalone executable. Re-sign the completed
+  # bundle so Info.plist and resources are sealed by one coherent identity.
+  /usr/bin/codesign --force --sign - --identifier "$BUNDLE_ID" "$APP_BUNDLE"
 }
 
 verify_bundle() {
   test -x "$APP_BINARY"
   test -f "$INFO_PLIST"
   test -f "$APP_RESOURCES/SketchyBarStudio.icns"
+  /usr/bin/plutil -lint "$INFO_PLIST" >/dev/null
+  /usr/bin/codesign --verify --deep --strict "$APP_BUNDLE"
 }
 
 open_app() {

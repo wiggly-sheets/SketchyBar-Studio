@@ -94,7 +94,15 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 
 ## Installation
 
-SketchyBar Studio is distributed as an unsigned preview build. You can install the universal DMG release or build it yourself.
+SketchyBar Studio preview builds are ad-hoc signed, but not Developer ID signed or notarized. You can install the universal DMG release or build it yourself.
+
+### Install with Homebrew
+
+```bash
+brew tap wiggly-sheets/sketchybar-studio
+brew trust wiggly-sheets/sketchybar-studio
+brew install --cask sketchybar-studio
+```
 
 ### Install from a release
 
@@ -102,9 +110,9 @@ SketchyBar Studio is distributed as an unsigned preview build. You can install t
 2. Open the DMG and drag **SketchyBar Studio** to your Applications folder.
 3. Open the app from Applications.
 
-### Opening an unsigned build
+### Opening a preview build
 
-Because preview builds are not signed or notarized, macOS may block the first launch. Open **System Settings → Privacy & Security** after that attempt and choose **Open Anyway**, or Control-click the app and choose **Open**.
+Because preview builds are not Developer ID signed or notarized, macOS may block the first launch. Open **System Settings → Privacy & Security** after that attempt and choose **Open Anyway**, or Control-click the app and choose **Open**.
 
 If macOS still blocks an app that you downloaded from a source you trust, remove its quarantine attribute:
 

@@ -12,7 +12,7 @@ struct BarPreviewView: View {
                     .font(.headline)
                     .foregroundStyle(theme.accent)
 
-                Text("Drag items to reorder or change position. Changes stay unsaved until you save.")
+                Text("\(items.count) active items. Scroll each section; drag changes stay staged until Save.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -23,28 +23,19 @@ struct BarPreviewView: View {
                 }
             }
 
-            GeometryReader { proxy in
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(theme.surface.opacity(0.85))
-                        .overlay(alignment: .bottom) {
-                            Rectangle()
-                                .fill(theme.accent.opacity(0.55))
-                                .frame(height: 1)
-                        }
-
-                    HStack(spacing: 12) {
-                        previewColumn(.left)
-                        Spacer(minLength: 36)
-                        previewColumn(.right)
-                    }
-                    .padding(.horizontal, 14)
-
-                    previewColumn(.center)
-                        .frame(maxWidth: max(120, proxy.size.width * 0.42))
+            HStack(spacing: 8) {
+                ForEach(BarPreviewPosition.allCases) { position in
+                    previewColumn(position)
                 }
             }
-            .frame(height: 72)
+            .padding(8)
+            .frame(height: 102)
+            .background(theme.surface.opacity(0.85), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(theme.accent.opacity(0.55))
+                    .frame(height: 1)
+            }
         }
         .padding(16)
         .background(theme.background.opacity(0.34), in: RoundedRectangle(cornerRadius: 12))
@@ -59,40 +50,51 @@ struct BarPreviewView: View {
     }
 
     private var items: [BarPreviewItem] {
-        store.files
+        store.filesInPreviewOrder
             .filter { $0.isActive }
             .compactMap(BarPreviewItem.init(file:))
-            .sorted { lhs, rhs in
-                let lhsLine = lhs.file.activationReference?.lineNumber ?? .max
-                let rhsLine = rhs.file.activationReference?.lineNumber ?? .max
-                return lhsLine == rhsLine ? lhs.title < rhs.title : lhsLine < rhsLine
-            }
     }
 
     @ViewBuilder
     private func previewColumn(_ position: BarPreviewPosition) -> some View {
         let columnItems = items.filter { $0.position == position }
-        HStack(spacing: 4) {
-            ForEach(columnItems) { item in
-                PreviewBarItem(
-                    item: item,
-                    isSelected: selectedItemID == item.id,
-                    theme: theme,
-                    onSelect: {
-                        selectedItemID = item.id
-                        store.selectedFileID = item.id
-                    },
-                    onResize: { width in
-                        update(item.widthValue, to: width)
-                    },
-                    onDrop: { droppedID in
-                        move(droppedID, before: item.id, to: position)
-                    }
-                )
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Text(position.title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text("\(columnItems.count)")
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
             }
+
+            ScrollView(.horizontal) {
+                HStack(spacing: 4) {
+                    ForEach(columnItems) { item in
+                        PreviewBarItem(
+                            item: item,
+                            isSelected: selectedItemID == item.id,
+                            theme: theme,
+                            onSelect: {
+                                selectedItemID = item.id
+                                store.selectedFileID = item.id
+                            },
+                            onResize: { width in
+                                update(item.widthValue, to: width)
+                            },
+                            onDrop: { droppedID in
+                                move(droppedID, before: item.id, to: position)
+                            }
+                        )
+                    }
+                }
+                .frame(minWidth: 64, minHeight: 44, alignment: position.alignment)
+            }
+            .scrollIndicators(.visible)
         }
-        .frame(minWidth: 64, minHeight: 38, alignment: position.alignment)
-        .padding(4)
+        .frame(maxWidth: .infinity, minHeight: 74, alignment: .topLeading)
+        .padding(.horizontal, 6)
         .background(theme.background.opacity(columnItems.isEmpty ? 0.12 : 0), in: RoundedRectangle(cornerRadius: 7))
         .dropDestination(for: String.self) { droppedIDs, _ in
             guard let droppedID = droppedIDs.first else { return false }
@@ -120,10 +122,13 @@ struct BarPreviewView: View {
     }
 }
 
-private enum BarPreviewPosition: String {
+private enum BarPreviewPosition: String, CaseIterable, Identifiable {
     case left
     case center
     case right
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
 
     var alignment: Alignment {
         switch self {
@@ -160,7 +165,11 @@ private struct BarPreviewItem: Identifiable {
         widthValue = file.values.first { $0.leafKey == "width" }
         leftPaddingValue = file.values.first { $0.leafKey == "padding_left" }
         rightPaddingValue = file.values.first { $0.leafKey == "padding_right" }
-        title = file.values.first { $0.leafKey == "label" || $0.leafKey == "icon" }?.draftValue ?? file.displayName
+        let configuredTitle = file.values
+            .first(where: { $0.leafKey == "label" || $0.leafKey == "icon" })?
+            .draftValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        title = configuredTitle.flatMap { $0.isEmpty ? nil : $0 } ?? file.url.deletingPathExtension().lastPathComponent
     }
 }
 
@@ -178,6 +187,7 @@ private struct PreviewBarItem: View {
             Text(item.title)
                 .lineLimit(1)
                 .font(.caption.weight(.medium))
+                .help(item.file.displayName)
 
             if item.widthValue != nil {
                 Rectangle()
@@ -205,7 +215,7 @@ private struct PreviewBarItem: View {
 
     private var displayWidth: CGFloat? {
         guard let width = numericValue(item.widthValue) else { return nil }
-        return CGFloat(max(54, min(width, 240)))
+        return CGFloat(max(48, min(width, 150)))
     }
 
     private var resizeGesture: some Gesture {
@@ -269,7 +279,7 @@ private func numericValue(_ value: LuaEditableValue?) -> Double? {
 }
 
 private func previewPadding(_ value: LuaEditableValue?) -> CGFloat {
-    CGFloat(max(0, min(numericValue(value) ?? 0, 60)))
+    CGFloat(max(0, min(numericValue(value) ?? 0, 18)))
 }
 
 private func format(_ value: Double) -> String {

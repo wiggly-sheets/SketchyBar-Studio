@@ -5,8 +5,29 @@ enum MoveDirection {
     case down
 }
 
+enum ActivationUpdateError: LocalizedError {
+    case referenceChanged(URL)
+
+    var errorDescription: String? {
+        switch self {
+        case .referenceChanged(let entrypointURL):
+            return "Loader references in \(entrypointURL.lastPathComponent) changed on disk. Reload before updating their order or activation."
+        }
+    }
+}
+
 struct ConfigActivationService {
     private let backupService = ConfigBackupService()
+    private static let luaLoaderPatterns = [
+        #"^\s*require\s*\(\s*["']([^"']+)["']\s*\)\s*;?\s*(?:--.*)?$"#,
+        #"^\s*require\s+["']([^"']+)["']\s*;?\s*(?:--.*)?$"#,
+        #"^\s*(?:dofile|loadfile)\s*\(\s*["']([^"']+)["']\s*\)\s*(?:\(\s*\))?\s*;?\s*(?:--.*)?$"#,
+        #"^\s*sbar\.exec\s*\(\s*["']([^"']+)["']\s*\)\s*;?\s*(?:--.*)?$"#
+    ].compactMap { try? NSRegularExpression(pattern: $0) }
+    private static let shellLoaderPatterns = [
+        #"^\s*(?:source|\.)\s+(?:\"([^\"]+)\"|'([^']+)'|([^\s;#]+))\s*;?\s*(?:#.*)?$"#,
+        #"^\s*(?:bash|zsh|sh)\s+(?:\"([^\"]+)\"|'([^']+)'|([^\s;#]+))\s*;?\s*(?:#.*)?$"#
+    ].compactMap { try? NSRegularExpression(pattern: $0) }
 
     func reference(for fileURL: URL, rootURL: URL) -> ActivationReference? {
         references(for: [fileURL], rootURL: rootURL)[fileURL.path]
@@ -15,8 +36,8 @@ struct ConfigActivationService {
     func references(for fileURLs: [URL], rootURL: URL) -> [String: ActivationReference] {
         var pending = fileURLs
             .filter { canToggle(fileURL: $0, rootURL: rootURL) }
-            .map { ActivationLookupCandidate(fileURL: $0, tokens: matchTokens(fileURL: $0, rootURL: rootURL)) }
-            .filter { !$0.tokens.isEmpty }
+            .map { ActivationLookupCandidate(fileURL: $0, targets: matchTargets(fileURL: $0, rootURL: rootURL)) }
+            .filter { !$0.targets.isEmpty }
         var results: [String: ActivationReference] = [:]
 
         for entrypoint in entrypoints(in: rootURL) {
@@ -28,11 +49,15 @@ struct ConfigActivationService {
             for (offset, line) in contents.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
                 guard !pending.isEmpty else { return results }
                 let text = String(line)
-                guard let normalized = normalizedReferenceLine(text, entrypointURL: entrypoint) else {
+                guard let target = loaderTarget(in: text, entrypointURL: entrypoint) else {
                     continue
                 }
 
-                guard let matchIndex = bestMatchIndex(in: pending, normalizedLine: normalized) else {
+                guard let matchIndex = bestMatchIndex(
+                    in: pending,
+                    loaderTarget: target,
+                    rootURL: rootURL
+                ) else {
                     continue
                 }
 
@@ -48,22 +73,14 @@ struct ConfigActivationService {
         return results
     }
 
-    private func bestMatchIndex(in candidates: [ActivationLookupCandidate], normalizedLine: String) -> Int? {
-        var bestIndex: Int?
-        var bestTokenLength = 0
-
-        for (index, candidate) in candidates.enumerated() {
-            guard let token = candidate.tokens.first(where: { normalizedLine.contains($0) }) else {
-                continue
-            }
-
-            if token.count > bestTokenLength {
-                bestTokenLength = token.count
-                bestIndex = index
-            }
-        }
-
-        return bestIndex
+    private func bestMatchIndex(
+        in candidates: [ActivationLookupCandidate],
+        loaderTarget: String,
+        rootURL: URL
+    ) -> Int? {
+        let parsedTargets = normalizedTargetForms(loaderTarget, rootURL: rootURL)
+        let matches = candidates.indices.filter { !candidates[$0].targets.isDisjoint(with: parsedTargets) }
+        return matches.count == 1 ? matches[0] : nil
     }
 
     func moveReference(for file: ConfigFile, direction: MoveDirection) throws {
@@ -71,11 +88,27 @@ struct ConfigActivationService {
         let contents = try String(contentsOf: reference.entrypointURL, encoding: .utf8)
         var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let index = reference.lineNumber - 1
-        let targetIndex = direction == .up ? index - 1 : index + 1
-        guard lines.indices.contains(index), lines.indices.contains(targetIndex) else { return }
+        guard lines.indices.contains(index),
+              line(lines[index], references: file, entrypointURL: reference.entrypointURL) else {
+            throw ActivationUpdateError.referenceChanged(reference.entrypointURL)
+        }
+
+        let loaderIndices = lines.indices.filter {
+            loaderTarget(in: lines[$0], entrypointURL: reference.entrypointURL) != nil
+        }
+        guard let currentPosition = loaderIndices.firstIndex(of: index) else {
+            throw ActivationUpdateError.referenceChanged(reference.entrypointURL)
+        }
+        let targetPosition = direction == .up ? currentPosition - 1 : currentPosition + 1
+        guard loaderIndices.indices.contains(targetPosition) else { return }
+        let targetIndex = loaderIndices[targetPosition]
         lines.swapAt(index, targetIndex)
-        _ = try backupService.backup(fileURL: reference.entrypointURL, rootURL: file.rootURL)
-        try lines.joined(separator: "\n").write(to: reference.entrypointURL, atomically: true, encoding: .utf8)
+        try writeIfChanged(
+            lines: lines,
+            originalContents: contents,
+            entrypointURL: reference.entrypointURL,
+            rootURL: file.rootURL
+        )
     }
 
     func moveReference(for file: ConfigFile, before targetFile: ConfigFile) throws {
@@ -94,12 +127,100 @@ struct ConfigActivationService {
               sourceIndex != targetIndex else {
             return
         }
+        guard line(lines[sourceIndex], references: file, entrypointURL: source.entrypointURL),
+              line(lines[targetIndex], references: targetFile, entrypointURL: target.entrypointURL) else {
+            throw ActivationUpdateError.referenceChanged(source.entrypointURL)
+        }
 
-        let line = lines.remove(at: sourceIndex)
-        let insertionIndex = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex
-        lines.insert(line, at: insertionIndex)
-        _ = try backupService.backup(fileURL: source.entrypointURL, rootURL: file.rootURL)
-        try lines.joined(separator: "\n").write(to: source.entrypointURL, atomically: true, encoding: .utf8)
+        let loaderIndices = lines.indices.filter {
+            loaderTarget(in: lines[$0], entrypointURL: source.entrypointURL) != nil
+        }
+        guard let sourcePosition = loaderIndices.firstIndex(of: sourceIndex),
+              let targetPosition = loaderIndices.firstIndex(of: targetIndex) else {
+            throw ActivationUpdateError.referenceChanged(source.entrypointURL)
+        }
+
+        var loaderLines = loaderIndices.map { lines[$0] }
+        let movedLine = loaderLines.remove(at: sourcePosition)
+        let insertionPosition = sourcePosition < targetPosition ? targetPosition - 1 : targetPosition
+        loaderLines.insert(movedLine, at: insertionPosition)
+        for (lineIndex, loaderLine) in zip(loaderIndices, loaderLines) {
+            lines[lineIndex] = loaderLine
+        }
+        try writeIfChanged(
+            lines: lines,
+            originalContents: contents,
+            entrypointURL: source.entrypointURL,
+            rootURL: file.rootURL
+        )
+    }
+
+    func moveReferences(in files: [ConfigFile], to orderedFileIDs: [ConfigFile.ID]) throws {
+        var orderByID: [ConfigFile.ID: Int] = [:]
+        for (index, id) in orderedFileIDs.enumerated() where orderByID[id] == nil {
+            orderByID[id] = index
+        }
+
+        let eligibleFiles = files.filter {
+            $0.activationReference != nil && orderByID[$0.id] != nil
+        }
+        let filesByRoot = Dictionary(grouping: eligibleFiles) { $0.rootURL.standardizedFileURL.path }
+
+        for rootFiles in filesByRoot.values {
+            guard let rootURL = rootFiles.first?.rootURL else { continue }
+            let currentReferences = references(for: rootFiles.map(\.url), rootURL: rootURL)
+            for file in rootFiles where currentReferences[file.url.path] == nil {
+                throw ActivationUpdateError.referenceChanged(
+                    file.activationReference?.entrypointURL ?? rootURL
+                )
+            }
+
+            let filesByEntrypoint = Dictionary(grouping: rootFiles) { file in
+                currentReferences[file.url.path]!.entrypointURL.standardizedFileURL.path
+            }
+            for entrypointFiles in filesByEntrypoint.values {
+                guard let firstFile = entrypointFiles.first,
+                      let entrypointURL = currentReferences[firstFile.url.path]?.entrypointURL else {
+                    continue
+                }
+
+                let desiredFiles = entrypointFiles.sorted {
+                    orderByID[$0.id, default: .max] < orderByID[$1.id, default: .max]
+                }
+                guard desiredFiles.count > 1 else { continue }
+                let contents = try String(contentsOf: entrypointURL, encoding: .utf8)
+                var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+                var lineByFileID: [ConfigFile.ID: String] = [:]
+                var loaderSlots: [Int] = []
+
+                for file in desiredFiles {
+                    guard let reference = currentReferences[file.url.path] else {
+                        throw ActivationUpdateError.referenceChanged(entrypointURL)
+                    }
+                    let lineIndex = reference.lineNumber - 1
+                    guard lines.indices.contains(lineIndex),
+                          line(lines[lineIndex], references: file, entrypointURL: entrypointURL) else {
+                        throw ActivationUpdateError.referenceChanged(entrypointURL)
+                    }
+                    loaderSlots.append(lineIndex)
+                    lineByFileID[file.id] = lines[lineIndex]
+                }
+
+                loaderSlots.sort()
+                for (lineIndex, file) in zip(loaderSlots, desiredFiles) {
+                    guard let loaderLine = lineByFileID[file.id] else {
+                        throw ActivationUpdateError.referenceChanged(entrypointURL)
+                    }
+                    lines[lineIndex] = loaderLine
+                }
+                try writeIfChanged(
+                    lines: lines,
+                    originalContents: contents,
+                    entrypointURL: entrypointURL,
+                    rootURL: rootURL
+                )
+            }
+        }
     }
 
     func setActive(_ isActive: Bool, for file: ConfigFile) throws {
@@ -110,59 +231,50 @@ struct ConfigActivationService {
         let contents = try String(contentsOf: reference.entrypointURL, encoding: .utf8)
         var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let index = reference.lineNumber - 1
-        guard lines.indices.contains(index) else {
-            return
+        guard lines.indices.contains(index),
+              line(lines[index], references: file, entrypointURL: reference.entrypointURL) else {
+            throw ActivationUpdateError.referenceChanged(reference.entrypointURL)
         }
 
         lines[index] = isActive ? uncomment(lines[index]) : comment(lines[index], entrypointURL: reference.entrypointURL)
-        _ = try backupService.backup(fileURL: reference.entrypointURL, rootURL: file.rootURL)
-        try lines.joined(separator: "\n").write(to: reference.entrypointURL, atomically: true, encoding: .utf8)
+        try writeIfChanged(
+            lines: lines,
+            originalContents: contents,
+            entrypointURL: reference.entrypointURL,
+            rootURL: file.rootURL
+        )
+    }
+
+    private func line(_ line: String, references file: ConfigFile, entrypointURL: URL) -> Bool {
+        guard let target = loaderTarget(in: line, entrypointURL: entrypointURL) else {
+            return false
+        }
+        return !matchTargets(fileURL: file.url, rootURL: file.rootURL)
+            .isDisjoint(with: normalizedTargetForms(target, rootURL: file.rootURL))
+    }
+
+    private func writeIfChanged(
+        lines: [String],
+        originalContents: String,
+        entrypointURL: URL,
+        rootURL: URL
+    ) throws {
+        let updatedContents = lines.joined(separator: "\n")
+        guard updatedContents != originalContents else { return }
+        _ = try backupService.backup(fileURL: entrypointURL, rootURL: rootURL)
+        try updatedContents.write(to: entrypointURL, atomically: true, encoding: .utf8)
     }
 
     private func entrypoints(in rootURL: URL) -> [URL] {
-        let fixedEntrypoints = [
+        [
             rootURL.appendingPathComponent("init.lua"),
             rootURL.appendingPathComponent("sketchybarrc"),
-            rootURL.appendingPathComponent(".sketchybarrc")
+            rootURL.appendingPathComponent(".sketchybarrc"),
+            rootURL.appendingPathComponent("init.sh"),
+            rootURL.appendingPathComponent("loader.sh")
         ]
-        var urls = Set(fixedEntrypoints)
-
-        if let enumerator = FileManager.default.enumerator(
-            at: rootURL,
-            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) {
-            for case let url as URL in enumerator {
-                if isBackupDirectory(url, rootURL: rootURL) {
-                    enumerator.skipDescendants()
-                    continue
-                }
-
-                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
-                    continue
-                }
-
-                let name = url.lastPathComponent.lowercased()
-                let ext = url.pathExtension.lowercased()
-                if name == "init.lua" ||
-                    name == "sketchybarrc" ||
-                    name == ".sketchybarrc" ||
-                    ext == "sh" ||
-                    ext == "bash" ||
-                    ext == "zsh" {
-                    urls.insert(url)
-                }
-            }
-        }
-
-        return urls
             .filter { FileManager.default.fileExists(atPath: $0.path) }
             .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-    }
-
-    private func isBackupDirectory(_ url: URL, rootURL: URL) -> Bool {
-        let relative = relativePath(for: url, rootURL: rootURL)
-        return relative == "backups"
     }
 
     private func isCommented(_ line: String) -> Bool {
@@ -195,53 +307,92 @@ struct ConfigActivationService {
         return indent + rest
     }
 
-    private func matchTokens(fileURL: URL, rootURL: URL) -> [String] {
+    private func matchTargets(fileURL: URL, rootURL: URL) -> Set<String> {
         let relative = relativePath(for: fileURL, rootURL: rootURL)
         let noExtension = (relative as NSString).deletingPathExtension
         let dotted = noExtension.replacingOccurrences(of: "/", with: ".")
         let baseName = fileURL.deletingPathExtension().lastPathComponent
 
-        var tokens = [
-            normalizedToken(fileURL.lastPathComponent),
-            normalizedToken(relative),
-            normalizedToken(noExtension),
-            normalizedToken(dotted)
-        ]
-
-        if baseName.count >= 4 {
-            tokens.append(normalizedToken(baseName))
-        }
-
-        return Array(Set(tokens.filter { !$0.isEmpty })).sorted { $0.count > $1.count }
+        return Set([
+            fileURL.lastPathComponent.lowercased(),
+            relative.lowercased(),
+            noExtension.lowercased(),
+            dotted.lowercased(),
+            baseName.lowercased()
+        ].filter { !$0.isEmpty })
     }
 
-    private func normalizedReferenceLine(_ line: String, entrypointURL: URL) -> String? {
-        let uncommented = uncomment(line)
-        let normalized = normalizedToken(uncommented)
-        guard !normalized.isEmpty else {
-            return nil
+    private func loaderTarget(in line: String, entrypointURL: URL) -> String? {
+        let isLua = entrypointURL.pathExtension.lowercased() == "lua"
+        var statement = line.trimmingCharacters(in: .whitespaces)
+
+        if isLua, statement.hasPrefix("--") {
+            statement.removeFirst(2)
+            statement = statement.trimmingCharacters(in: .whitespaces)
+        } else if !isLua, statement.hasPrefix("#") {
+            statement.removeFirst()
+            statement = statement.trimmingCharacters(in: .whitespaces)
         }
 
-        if entrypointURL.pathExtension.lowercased() == "lua" {
-            guard normalized.contains("require(") ||
-                    normalized.contains("require ") ||
-                    normalized.contains("dofile(") ||
-                    normalized.contains("loadfile(") ||
-                    normalized.contains("sbar.exec(") else {
-                return nil
+        let patterns = isLua ? Self.luaLoaderPatterns : Self.shellLoaderPatterns
+        let range = NSRange(statement.startIndex..<statement.endIndex, in: statement)
+        for pattern in patterns {
+            guard let match = pattern.firstMatch(in: statement, range: range) else {
+                continue
             }
-        } else {
-            guard normalized.contains("source ") ||
-                    normalized.contains(". ") ||
-                    normalized.contains("bash ") ||
-                    normalized.contains("zsh ") ||
-                    normalized.contains("sh ") ||
-                    normalized.contains("/") else {
-                return nil
+
+            for captureIndex in 1..<match.numberOfRanges where match.range(at: captureIndex).location != NSNotFound {
+                if let captureRange = Range(match.range(at: captureIndex), in: statement) {
+                    return String(statement[captureRange])
+                }
             }
         }
 
-        return normalized
+        return nil
+    }
+
+    private func normalizedTargetForms(_ loaderTarget: String, rootURL: URL) -> Set<String> {
+        var target = loaderTarget.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let commandPrefixes = ["source ", ". ", "bash ", "zsh ", "sh "]
+        if let prefix = commandPrefixes.first(where: { target.hasPrefix($0) }) {
+            target.removeFirst(prefix.count)
+            target = target.trimmingCharacters(in: .whitespaces)
+        }
+
+        if (target.hasPrefix("\"") && target.hasSuffix("\"")) ||
+            (target.hasPrefix("'") && target.hasSuffix("'")) {
+            target = String(target.dropFirst().dropLast())
+        }
+
+        let rootPath = rootURL.standardizedFileURL.path.lowercased()
+        let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        if target.hasPrefix(rootPrefix) {
+            target.removeFirst(rootPrefix.count)
+        }
+
+        let configPrefixes = [
+            "$config_dir/",
+            "${config_dir}/",
+            "$sketchybar_config_dir/",
+            "${sketchybar_config_dir}/",
+            "$home/.config/sketchybar/",
+            "${home}/.config/sketchybar/",
+            "~/.config/sketchybar/"
+        ]
+        if let prefix = configPrefixes.first(where: { target.hasPrefix($0) }) {
+            target.removeFirst(prefix.count)
+        }
+        while target.hasPrefix("./") {
+            target.removeFirst(2)
+        }
+
+        guard !target.isEmpty else { return [] }
+        var forms: Set<String> = [target]
+        let pathExtension = (target as NSString).pathExtension
+        if ["lua", "sh", "bash", "zsh"].contains(pathExtension) {
+            forms.insert((target as NSString).deletingPathExtension)
+        }
+        return forms
     }
 
     private func canToggle(fileURL: URL, rootURL: URL) -> Bool {
@@ -253,7 +404,9 @@ struct ConfigActivationService {
             "theme.lua",
             "themes.lua",
             "sketchybarrc",
-            ".sketchybarrc"
+            ".sketchybarrc",
+            "init.sh",
+            "loader.sh"
         ]
 
         return !coreFiles.contains(relative)
@@ -267,25 +420,9 @@ struct ConfigActivationService {
         return String(filePath.dropFirst(prefix.count))
     }
 
-    private func normalizedToken(_ value: String) -> String {
-        value
-            .lowercased()
-            .replacingOccurrences(of: "\"", with: "")
-            .replacingOccurrences(of: "'", with: "")
-            .replacingOccurrences(of: "./", with: "")
-            .replacingOccurrences(of: "$config_dir/", with: "")
-            .replacingOccurrences(of: "$CONFIG_DIR/", with: "")
-            .replacingOccurrences(of: "${config_dir}/", with: "")
-            .replacingOccurrences(of: "${CONFIG_DIR}/", with: "")
-            .replacingOccurrences(of: ".lua", with: "")
-            .replacingOccurrences(of: ".sh", with: "")
-            .replacingOccurrences(of: ".bash", with: "")
-            .replacingOccurrences(of: ".zsh", with: "")
-            .replacingOccurrences(of: "_", with: "-")
-    }
 }
 
 private struct ActivationLookupCandidate {
     let fileURL: URL
-    let tokens: [String]
+    let targets: Set<String>
 }

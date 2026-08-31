@@ -67,8 +67,8 @@ final class ConfigBackupTests: XCTestCase {
 
         let values = LuaConfigScanner().scan(fileURL: fileURL)
 
-        XCTAssertEqual(values.map(\.keyPath), ["position"])
-        XCTAssertEqual(values.map(\.draftValue), ["right"])
+        XCTAssertEqual(values.map(\.keyPath), ["position", "drawing"])
+        XCTAssertEqual(values.map(\.draftValue), ["right", "true"])
     }
 
     func testActivationLookupPrefersLongestMatchingToken() throws {

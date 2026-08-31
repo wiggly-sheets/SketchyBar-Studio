@@ -15,6 +15,7 @@ struct SidebarView: View {
                             ForEach(group.files) { file in
                                 ConfigFileRow(
                                     file: file,
+                                    unsavedChangeCount: store.unsavedChangeCount(fileID: file.id),
                                     onMoveUp: { store.moveItem(fileID: file.id, direction: .up) },
                                     onMoveDown: { store.moveItem(fileID: file.id, direction: .down) },
                                     onActiveChange: { store.setActive($0, fileID: file.id) },
@@ -27,6 +28,7 @@ struct SidebarView: View {
                                 SidebarFolderNodeView(
                                     folder: folder,
                                     expansionBinding: expansionBinding,
+                                    unsavedChangeCount: { store.unsavedChangeCount(fileID: $0) },
                                     onMove: { file, direction in
                                         store.moveItem(fileID: file.id, direction: direction)
                                     },
@@ -64,7 +66,7 @@ struct SidebarView: View {
     private var sidebarGroups: [SidebarFileGroup] {
         let filtered = store.files.filter { file in
             file.matchesSearch(store.searchText) &&
-                (!store.showModifiedOnly || file.hasUnsavedChanges)
+                (!store.showModifiedOnly || store.hasUnsavedChanges(fileID: file.id))
         }
         return SidebarGrouper.group(files: filtered)
     }
@@ -86,6 +88,7 @@ struct SidebarView: View {
 private struct SidebarFolderNodeView: View {
     let folder: SidebarFolderNode
     let expansionBinding: (String) -> Binding<Bool>
+    let unsavedChangeCount: (ConfigFile.ID) -> Int
     let onMove: (ConfigFile, MoveDirection) -> Void
     let onActiveChange: (ConfigFile, Bool) -> Void
     let onDrop: (ConfigFile.ID, ConfigFile) -> Void
@@ -97,6 +100,7 @@ private struct SidebarFolderNodeView: View {
                 ForEach(folder.files) { file in
                     ConfigFileRow(
                         file: file,
+                        unsavedChangeCount: unsavedChangeCount(file.id),
                         onMoveUp: { onMove(file, .up) },
                         onMoveDown: { onMove(file, .down) },
                         onActiveChange: { onActiveChange(file, $0) },
@@ -109,6 +113,7 @@ private struct SidebarFolderNodeView: View {
                     SidebarFolderNodeView(
                         folder: child,
                         expansionBinding: expansionBinding,
+                        unsavedChangeCount: unsavedChangeCount,
                         onMove: onMove,
                         onActiveChange: onActiveChange,
                         onDrop: onDrop
@@ -125,6 +130,7 @@ private struct SidebarFolderNodeView: View {
 
 private struct ConfigFileRow: View {
     let file: ConfigFile
+    let unsavedChangeCount: Int
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
     let onActiveChange: (Bool) -> Void
@@ -140,7 +146,7 @@ private struct ConfigFileRow: View {
                 Text(file.sidebarTitle)
                     .lineLimit(1)
                     .foregroundStyle(file.isActive ? .primary : .secondary)
-                Text(file.rowDetail)
+                Text(rowDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -176,6 +182,13 @@ private struct ConfigFileRow: View {
             onDropFileID(droppedID)
             return true
         }
+    }
+
+    private var rowDetail: String {
+        if unsavedChangeCount > 0 {
+            return "\(unsavedChangeCount) unsaved \(unsavedChangeCount == 1 ? "change" : "changes")"
+        }
+        return "\(file.editableCount) \(file.kind.rawValue) values"
     }
 }
 
@@ -444,35 +457,28 @@ private struct SidebarTreeBuilder {
 
     private func relativeFolderComponents(for file: ConfigFile) -> [String] {
         var components = file.sidebarPathComponents
-        guard components.count > 1 else {
-            return []
-        }
-
+        guard !components.isEmpty else { return [] }
         components.removeLast()
 
         if shouldDropCategoryFolder(components.first) {
             components.removeFirst()
         }
 
-        if category == .items, let folderPosition = itemPositionFolder(in: components) {
-            components[0] = folderPosition
-        } else if category == .items {
+        if category == .items, components.isEmpty {
             components.insert(file.sidebarBarPositionFolder, at: 0)
+        } else if category == .items {
+            components = components.map(normalizedPositionFolder)
         }
 
         return components
     }
 
-    private func itemPositionFolder(in components: [String]) -> String? {
-        guard let first = components.first?.lowercased() else {
-            return nil
-        }
-
-        switch first {
+    private func normalizedPositionFolder(_ component: String) -> String {
+        switch component.lowercased() {
         case "left": return "Left"
         case "center": return "Center"
         case "right": return "Right"
-        default: return nil
+        default: return component
         }
     }
 
@@ -523,11 +529,11 @@ private final class SidebarFolderBox {
 
     static func sortRank(_ title: String) -> String {
         switch title {
-        case "Left": return "0"
-        case "Center": return "1"
-        case "Right": return "2"
-        case "Unpositioned": return "3"
-        default: return "9-" + title.lowercased()
+        case "Left": return "8-0"
+        case "Center": return "8-1"
+        case "Right": return "8-2"
+        case "Unpositioned": return "8-3"
+        default: return "0-" + title.lowercased()
         }
     }
 
@@ -566,11 +572,4 @@ private extension ConfigFile {
         }
     }
 
-    var rowDetail: String {
-        let changedCount = values.filter { $0.draftValue != $0.originalValue }.count
-        if changedCount > 0 {
-            return "\(changedCount) changed of \(editableCount) values"
-        }
-        return "\(editableCount) \(kind.rawValue) values"
-    }
 }

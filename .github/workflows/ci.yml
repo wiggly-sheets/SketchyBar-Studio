@@ -37,3 +37,5 @@ jobs:
           test -x dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
           test -f dist/SketchyBarStudio.app/Contents/Resources/SketchyBarStudio.icns
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' dist/SketchyBarStudio.app/Contents/Info.plist | grep SketchyBarStudio
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/SketchyBarStudio.app/Contents/Info.plist)" = "0.0.0"
+          codesign --verify --deep --strict dist/SketchyBarStudio.app

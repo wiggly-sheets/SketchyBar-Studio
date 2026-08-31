@@ -7,6 +7,17 @@ enum LuaValueKind: String, Codable, CaseIterable {
     case color = "Color"
 }
 
+enum ConfigSourceSaveError: LocalizedError {
+    case sourceChanged(URL)
+
+    var errorDescription: String? {
+        switch self {
+        case .sourceChanged(let fileURL):
+            return "\(fileURL.lastPathComponent) changed on disk. Reload it before saving so external edits are not overwritten."
+        }
+    }
+}
+
 struct LuaEditableValue: Identifiable, Hashable {
     let id: String
     let fileURL: URL
@@ -18,6 +29,7 @@ struct LuaEditableValue: Identifiable, Hashable {
     let suggestedValues: [String]
     let valueStartOffset: Int
     let valueEndOffset: Int
+    let sourceSnapshot: String
 
     var displayLine: String {
         "Line \(lineNumber)"

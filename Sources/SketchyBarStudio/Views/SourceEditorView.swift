@@ -5,9 +5,6 @@ struct SourceEditorView: View {
     @ObservedObject var store: SketchyBarStore
     let file: ConfigFile
     let theme: AppTheme
-    @State private var contents = ""
-    @State private var savedContents = ""
-    @Binding var hasUnsavedChanges: Bool
     @AppStorage("sourceEditor.vimMotions") private var vimMotionsEnabled = false
     @State private var vimMode: VimMode = .insert
 
@@ -36,43 +33,58 @@ struct SourceEditorView: View {
                 }
 
                 Button("Revert") {
-                    contents = savedContents
+                    store.discardSourceChanges(for: file)
                 }
-                .disabled(contents == savedContents)
+                .disabled(!store.sourceHasUnsavedChanges(for: file))
 
                 Button("Save Source") {
-                    store.saveRawContents(contents, for: file)
-                    savedContents = contents
-                    hasUnsavedChanges = false
+                    store.saveRawContents(for: file)
                 }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
-                .disabled(contents == savedContents)
+                .disabled(!store.sourceHasUnsavedChanges(for: file))
             }
 
-            VimTextEditor(
-                text: $contents,
-                vimMotionsEnabled: vimMotionsEnabled,
-                mode: $vimMode,
-                theme: theme
-            )
-            .frame(minHeight: 420)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            if !store.canEditSource(for: file) {
+                ContentUnavailableView(
+                    "Control Edits Are Unsaved",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text("Save or discard the control edits before editing this file's complete source.")
+                )
+                .frame(minHeight: 420)
+            } else if let error = store.sourceLoadError(for: file) {
+                ContentUnavailableView(
+                    "Source Could Not Be Loaded",
+                    systemImage: "doc.badge.ellipsis",
+                    description: Text(error)
+                )
+                .frame(minHeight: 420)
+            } else {
+                VimTextEditor(
+                    text: sourceBinding,
+                    vimMotionsEnabled: vimMotionsEnabled,
+                    mode: $vimMode,
+                    theme: theme
+                )
+                .frame(minHeight: 420)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
         }
         .padding(24)
-        .onAppear(perform: loadContents)
+        .onAppear(perform: prepareContents)
         .onChange(of: file.id) { _, _ in
-            loadContents()
-        }
-        .onChange(of: contents) { _, newValue in
-            hasUnsavedChanges = newValue != savedContents
+            prepareContents()
         }
     }
 
-    private func loadContents() {
-        let currentContents = store.contents(of: file)
-        contents = currentContents
-        savedContents = currentContents
-        hasUnsavedChanges = false
+    private var sourceBinding: Binding<String> {
+        Binding(
+            get: { store.sourceContents(for: file) },
+            set: { store.updateSourceContents($0, for: file) }
+        )
+    }
+
+    private func prepareContents() {
+        store.prepareSourceEditing(for: file)
         vimMode = vimMotionsEnabled ? .normal : .insert
     }
 }
@@ -122,6 +134,8 @@ private struct VimTextEditor: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? VimTextView else { return }
+        context.coordinator.text = $text
+        context.coordinator.mode = $mode
         if textView.string != text {
             textView.string = text
         }
@@ -163,6 +177,12 @@ private final class VimTextView: NSTextView {
 
         if event.keyCode == 53 {
             setMode(.normal)
+            return
+        }
+
+        let applicationShortcutModifiers: NSEvent.ModifierFlags = [.command, .control, .option, .function]
+        if !event.modifierFlags.intersection(applicationShortcutModifiers).isEmpty {
+            super.keyDown(with: event)
             return
         }
 

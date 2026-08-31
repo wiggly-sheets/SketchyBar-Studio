@@ -1,5 +1,6 @@
 import AppKit
 
+@MainActor
 final class FontPanelController: NSObject {
     static let shared = FontPanelController()
 

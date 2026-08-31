@@ -2,7 +2,7 @@ import Foundation
 
 struct ShellConfigScanner {
     private static let assignmentRegex = try? NSRegularExpression(
-        pattern: #"([A-Za-z_][A-Za-z0-9_\.]*)=("[^"]*"|'[^']*'|[^ \t\\]+)"#
+        pattern: #"(?:^|[ \t])([A-Za-z_][A-Za-z0-9_\.]*)=("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:\\.|[^ \t\\])+)"#
     )
 
     private let optionCatalog = SketchyBarOptionCatalog()
@@ -51,7 +51,8 @@ struct ShellConfigScanner {
                         draftValue: displayValue,
                         suggestedValues: optionCatalog.suggestedValues(for: keyPath, currentValue: displayValue),
                         valueStartOffset: valueStart,
-                        valueEndOffset: valueEnd
+                        valueEndOffset: valueEnd,
+                        sourceSnapshot: contents
                     )
                 )
             }
@@ -65,9 +66,16 @@ struct ShellConfigScanner {
     private let backupService = ConfigBackupService()
 
     func save(values: [LuaEditableValue], to fileURL: URL, rootURL: URL) throws {
+        let changedValues = values.filter { $0.draftValue != $0.originalValue }
+        guard !changedValues.isEmpty else { return }
         var contents = try String(contentsOf: fileURL, encoding: .utf8)
+        guard changedValues.allSatisfy({
+            $0.fileURL.standardizedFileURL == fileURL.standardizedFileURL && $0.sourceSnapshot == contents
+        }) else {
+            throw ConfigSourceSaveError.sourceChanged(fileURL)
+        }
 
-        for value in values.sorted(by: { $0.valueStartOffset > $1.valueStartOffset }) {
+        for value in changedValues.sorted(by: { $0.valueStartOffset > $1.valueStartOffset }) {
             let start = contents.index(contents.startIndex, offsetBy: value.valueStartOffset)
             let end = contents.index(contents.startIndex, offsetBy: value.valueEndOffset)
             contents.replaceSubrange(start..<end, with: serializedValue(value))
@@ -129,7 +137,17 @@ struct ShellConfigScanner {
     private func serializedValue(_ value: LuaEditableValue) -> String {
         switch value.kind {
         case .string:
-            return "\"\(value.draftValue.replacingOccurrences(of: "\"", with: "\\\""))\""
+            let original = originalSerializedValue(for: value)
+            if original.first == "'" {
+                return "'\(value.draftValue.replacingOccurrences(of: "'", with: "'\\''"))'"
+            }
+            if original.first == "\"" {
+                return "\"\(escapeDoubleQuotedLexicalString(value.draftValue))\""
+            }
+            if value.draftValue.rangeOfCharacter(from: .whitespacesAndNewlines) == nil {
+                return value.draftValue
+            }
+            return "\"\(escapeDoubleQuotedLexicalString(value.draftValue))\""
         case .number:
             return value.draftValue
         case .color:
@@ -137,5 +155,40 @@ struct ShellConfigScanner {
         case .boolean:
             return SketchyBarBoolean.normalized(value.draftValue) ?? "false"
         }
+    }
+
+    private func originalSerializedValue(for value: LuaEditableValue) -> Substring {
+        let start = value.sourceSnapshot.index(value.sourceSnapshot.startIndex, offsetBy: value.valueStartOffset)
+        let end = value.sourceSnapshot.index(value.sourceSnapshot.startIndex, offsetBy: value.valueEndOffset)
+        return value.sourceSnapshot[start..<end]
+    }
+
+    private func escapeDoubleQuotedLexicalString(_ string: String) -> String {
+        var escaped = ""
+        var index = string.startIndex
+
+        while index < string.endIndex {
+            let character = string[index]
+            if character == "\\" {
+                escaped.append(character)
+                let nextIndex = string.index(after: index)
+                if nextIndex < string.endIndex {
+                    escaped.append(string[nextIndex])
+                    index = string.index(after: nextIndex)
+                } else {
+                    escaped.append("\\")
+                    index = nextIndex
+                }
+                continue
+            }
+
+            if character == "\"" {
+                escaped.append("\\")
+            }
+            escaped.append(character)
+            index = string.index(after: index)
+        }
+
+        return escaped
     }
 }
