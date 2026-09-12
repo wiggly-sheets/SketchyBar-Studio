@@ -130,6 +130,26 @@ final class StoreDraftSafetyTests: XCTestCase {
         )
     }
 
+    func testFilesInPreviewOrderReflectsStagedLoaderReorder() throws {
+        let root = try makeConfigRoot()
+        let firstURL = root.appendingPathComponent("items/first.lua")
+        let secondURL = root.appendingPathComponent("items/second.lua")
+        let loaderURL = root.appendingPathComponent("init.lua")
+        try write("width = 10\n", to: firstURL)
+        try write("width = 20\n", to: secondURL)
+        try write("require(\"items.first\")\n-- setup stays here\nrequire(\"items.second\")\n", to: loaderURL)
+        let store = SketchyBarStore(configRoot: root)
+        let first = try XCTUnwrap(store.files.first { $0.url == firstURL })
+        let second = try XCTUnwrap(store.files.first { $0.url == secondURL })
+
+        store.moveItem(fileID: second.id, before: first.id)
+
+        let previewOrder = store.filesInPreviewOrder
+            .filter { $0.displayName.hasPrefix("items/") }
+            .map(\.displayName)
+        XCTAssertEqual(previewOrder, ["items/second.lua", "items/first.lua"])
+    }
+
     func testDiscardSelectedChangesDoesNotDiscardAnotherFilesDraft() throws {
         let root = try makeConfigRoot()
         let firstURL = root.appendingPathComponent("items/first.lua")

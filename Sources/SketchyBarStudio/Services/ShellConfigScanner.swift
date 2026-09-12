@@ -63,8 +63,6 @@ struct ShellConfigScanner {
         return results
     }
 
-    private let backupService = ConfigBackupService()
-
     func save(values: [LuaEditableValue], to fileURL: URL, rootURL: URL) throws {
         let changedValues = values.filter { $0.draftValue != $0.originalValue }
         guard !changedValues.isEmpty else { return }
@@ -81,7 +79,6 @@ struct ShellConfigScanner {
             contents.replaceSubrange(start..<end, with: serializedValue(value))
         }
 
-        _ = try backupService.backup(fileURL: fileURL, rootURL: rootURL)
         try contents.write(to: fileURL, atomically: true, encoding: .utf8)
     }
 

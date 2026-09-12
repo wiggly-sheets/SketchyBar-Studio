@@ -183,26 +183,25 @@ private struct EditableFileView: View {
     }
 
     private var filteredValues: [LuaEditableValue] {
-        file.values.filter { value in
-            let matchesSearch: Bool
-            let query = store.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if query.isEmpty {
-                matchesSearch = true
-            } else {
-                matchesSearch = value.keyPath.lowercased().contains(query) ||
-                    value.draftValue.lowercased().contains(query)
-            }
-
-            return matchesSearch && (!store.showModifiedOnly || value.draftValue != value.originalValue)
-        }
+        EditableValueGroup.filtered(file.values, searchText: store.searchText, showModifiedOnly: store.showModifiedOnly)
     }
 }
 
-private struct EditableValueGroup: Identifiable {
+struct EditableValueGroup: Identifiable {
     let title: String
     let values: [LuaEditableValue]
 
     var id: String { title }
+
+    static func filtered(_ values: [LuaEditableValue], searchText: String, showModifiedOnly: Bool) -> [LuaEditableValue] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return values.filter { value in
+            let matchesSearch = query.isEmpty ||
+                value.keyPath.lowercased().contains(query) ||
+                value.draftValue.lowercased().contains(query)
+            return matchesSearch && (!showModifiedOnly || value.draftValue != value.originalValue)
+        }
+    }
 
     static func title(for value: LuaEditableValue) -> String {
         let key = value.keyPath.lowercased()
@@ -492,7 +491,7 @@ private struct HighlightedCodeText: View {
     }
 }
 
-private struct CodeToken {
+struct CodeToken {
     let text: String
     let kind: CodeTokenKind
 
@@ -514,7 +513,7 @@ private struct CodeToken {
     }
 }
 
-private enum CodeTokenKind {
+enum CodeTokenKind {
     case plain
     case comment
     case keyword
@@ -524,7 +523,7 @@ private enum CodeTokenKind {
     case flag
 }
 
-private enum CodeSyntaxHighlighter {
+enum CodeSyntaxHighlighter {
     private static let luaKeywords: Set<String> = [
         "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "require", "dofile", "loadfile"
     ]

@@ -2,6 +2,7 @@ import Foundation
 
 struct ConfigSwitchService {
     private let fileManager: FileManager
+    private let replacer: SafeFileReplacer
     private let configuredLiveSketchyBarConfigURL: URL?
 
     init(
@@ -9,6 +10,7 @@ struct ConfigSwitchService {
         liveSketchyBarConfigURL: URL? = nil
     ) {
         self.fileManager = fileManager
+        self.replacer = SafeFileReplacer(fileManager: fileManager)
         self.configuredLiveSketchyBarConfigURL = liveSketchyBarConfigURL
     }
 
@@ -28,7 +30,7 @@ struct ConfigSwitchService {
         if source.path == destination.path {
             return true
         }
-        return isSymlink(destination)
+        return replacer.isSymlink(destination)
             && destination.resolvingSymlinksInPath().standardizedFileURL
                 == source.resolvingSymlinksInPath().standardizedFileURL
     }
@@ -41,7 +43,7 @@ struct ConfigSwitchService {
             return
         }
 
-        guard !isDescendant(source, of: destination) else {
+        guard !replacer.isDescendant(source, of: destination) else {
             throw ConfigSwitchError.unsafeSource(source.path)
         }
 
@@ -51,8 +53,8 @@ struct ConfigSwitchService {
             throw ConfigSwitchError.missingSource(source.path)
         }
 
-        if !isSymlink(destination),
-           isDescendant(resolvedSource, of: destination.resolvingSymlinksInPath().standardizedFileURL) {
+        if !replacer.isSymlink(destination),
+           replacer.isDescendant(resolvedSource, of: destination.resolvingSymlinksInPath().standardizedFileURL) {
             throw ConfigSwitchError.unsafeSource(source.path)
         }
 
@@ -66,70 +68,22 @@ struct ConfigSwitchService {
             ".\(destination.lastPathComponent).studio-switch-\(UUID().uuidString)"
         )
         defer {
-            if itemExists(at: stagedLink) {
+            if replacer.itemExists(at: stagedLink) {
                 try? fileManager.removeItem(at: stagedLink)
             }
         }
         try fileManager.createSymbolicLink(at: stagedLink, withDestinationURL: source)
 
-        let hadExistingConfig = itemExists(at: destination)
-        let replacedSymlink = isSymlink(destination)
-        let displacedConfig = destinationParent.appendingPathComponent(
-            replacedSymlink
-                ? ".\(destination.lastPathComponent).studio-rollback-\(UUID().uuidString)"
-                : "sketchybar.before-studio-switch-\(Self.timestamp())-\(UUID().uuidString)",
-            isDirectory: !replacedSymlink
+        let replacedSymlink = replacer.isSymlink(destination)
+        let displacedPrefix = replacedSymlink
+            ? ".\(destination.lastPathComponent).studio-rollback-"
+            : "sketchybar.before-studio-switch-"
+        try replacer.install(
+            stagedItem: stagedLink,
+            at: destination,
+            keepDisplaced: !replacedSymlink,
+            displacedPrefix: displacedPrefix
         )
-
-        if hadExistingConfig {
-            try fileManager.moveItem(at: destination, to: displacedConfig)
-        }
-
-        do {
-            try fileManager.moveItem(at: stagedLink, to: destination)
-        } catch {
-            guard hadExistingConfig else {
-                throw error
-            }
-
-            do {
-                guard !itemExists(at: destination) else {
-                    throw ConfigSwitchError.rollbackBlocked(displacedConfig.path)
-                }
-                try fileManager.moveItem(at: displacedConfig, to: destination)
-            } catch let rollbackError {
-                throw ConfigSwitchError.rollbackFailed(
-                    backupPath: displacedConfig.path,
-                    reason: rollbackError.localizedDescription
-                )
-            }
-            throw error
-        }
-
-        if replacedSymlink {
-            try? fileManager.removeItem(at: displacedConfig)
-        }
-    }
-
-    private func isSymlink(_ url: URL) -> Bool {
-        (try? fileManager.destinationOfSymbolicLink(atPath: url.path)) != nil
-    }
-
-    private func itemExists(at url: URL) -> Bool {
-        fileManager.fileExists(atPath: url.path) || isSymlink(url)
-    }
-
-    private func isDescendant(_ candidate: URL, of parent: URL) -> Bool {
-        let parentComponents = parent.standardizedFileURL.pathComponents
-        let candidateComponents = candidate.standardizedFileURL.pathComponents
-        return candidateComponents.count > parentComponents.count
-            && candidateComponents.starts(with: parentComponents)
-    }
-
-    private static func timestamp() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return formatter.string(from: .now)
     }
 }
 
@@ -137,8 +91,6 @@ enum ConfigSwitchError: LocalizedError {
     case missingSource(String)
     case unsafeSource(String)
     case unsafeDestination(String)
-    case rollbackBlocked(String)
-    case rollbackFailed(backupPath: String, reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -148,10 +100,6 @@ enum ConfigSwitchError: LocalizedError {
             return "A config inside the live SketchyBar folder cannot replace that folder: \(path)"
         case .unsafeDestination(let path):
             return "Refusing to replace an unsafe live-config destination: \(path)"
-        case .rollbackBlocked(let backupPath):
-            return "The config switch could not roll back because the destination was recreated. The original config remains at \(backupPath)."
-        case .rollbackFailed(let backupPath, let reason):
-            return "The config switch failed and the original config could not be put back. It remains at \(backupPath). \(reason)"
         }
     }
 }

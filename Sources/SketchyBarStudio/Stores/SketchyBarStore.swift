@@ -1,25 +1,11 @@
 import AppKit
 import Foundation
 
-private struct SourceDraft: Equatable {
-    var savedContents: String
-    var contents: String
-    var loadError: String?
-
-    var hasUnsavedChanges: Bool { contents != savedContents }
-}
-
 private enum SourceDraftError: LocalizedError {
-    case changedOnDisk
-    case competingStructuredDraft
     case loaderHasSourceDraft(String)
 
     var errorDescription: String? {
         switch self {
-        case .changedOnDisk:
-            return "The file changed on disk after source editing began. Revert the source draft to load the current file, then reapply your edit."
-        case .competingStructuredDraft:
-            return "This file has both source and control edits. Discard one editing mode before saving so neither draft is overwritten."
         case let .loaderHasSourceDraft(name):
             return "Save or discard the source draft for \(name) before saving loader order changes."
         }
@@ -43,7 +29,7 @@ final class SketchyBarStore: ObservableObject {
         didSet { UserDefaults.standard.set(appTheme.rawValue, forKey: "appTheme") }
     }
 
-    @Published private var sourceDrafts: [ConfigFile.ID: SourceDraft] = [:]
+    private var sessions: [ConfigFile.ID: DocumentSession] = [:]
     @Published private var stagedLoaderOrders: [String: [ConfigFile.ID]] = [:]
 
     private let locator = SketchyBarConfigLocator()
@@ -121,14 +107,13 @@ final class SketchyBarStore: ObservableObject {
     }
 
     func hasUnsavedChanges(fileID: ConfigFile.ID) -> Bool {
-        let structured = files.first { $0.id == fileID }?.hasUnsavedChanges == true
-        let source = sourceDrafts[fileID]?.hasUnsavedChanges == true
-        return structured || source || hasStagedLoaderChange(fileID: fileID)
+        sessions[fileID]?.hasUnsavedChanges == true || hasStagedLoaderChange(fileID: fileID)
     }
 
     func unsavedChangeCount(fileID: ConfigFile.ID) -> Int {
-        let structured = files.first { $0.id == fileID }?.values.filter { $0.draftValue != $0.originalValue }.count ?? 0
-        let source = sourceDrafts[fileID]?.hasUnsavedChanges == true ? 1 : 0
+        guard let session = sessions[fileID] else { return 0 }
+        let structured = session.file.values.filter { $0.draftValue != $0.originalValue }.count
+        let source = session.hasRawDraft ? 1 : 0
         let order = hasStagedLoaderChange(fileID: fileID) ? 1 : 0
         return structured + source + order
     }
@@ -205,41 +190,36 @@ final class SketchyBarStore: ObservableObject {
     }
 
     func update(valueID: LuaEditableValue.ID, draftValue: String) {
-        guard let fileIndex = files.firstIndex(where: { $0.values.contains(where: { $0.id == valueID }) }) else { return }
-        guard sourceDrafts[files[fileIndex].id]?.hasUnsavedChanges != true else {
+        guard let fileID = sessions.first(where: { $0.value.file.values.contains { $0.id == valueID } })?.key else { return }
+        guard sessions[fileID]?.hasRawDraft != true else {
             statusMessage = "Save or revert the source draft before changing this file with controls."
             return
         }
-        var file = files[fileIndex]
-        var values = file.values
-        guard let valueIndex = values.firstIndex(where: { $0.id == valueID }) else { return }
+        guard var session = sessions[fileID], let valueIndex = session.file.values.firstIndex(where: { $0.id == valueID }) else { return }
+        var values = session.file.values
         values[valueIndex].draftValue = draftValue
-        file = ConfigFile(url: file.url, rootURL: file.rootURL, kind: file.kind, values: values, activationReference: file.activationReference)
-        files[fileIndex] = file
+        session.file = ConfigFile(url: session.file.url, rootURL: session.file.rootURL, kind: session.file.kind, values: values, activationReference: session.file.activationReference)
+        sessions[fileID] = session
+        syncFiles()
     }
 
     @discardableResult
     func saveSelectedFile() -> Bool {
-        guard let selectedFile else { return false }
-        let sourceChanged = sourceDrafts[selectedFile.id]?.hasUnsavedChanges == true
-        let structuredChanged = selectedFile.hasUnsavedChanges
+        guard let selectedFile, var session = sessions[selectedFile.id] else { return false }
         let stagedKey = loaderKey(for: selectedFile).flatMap { stagedLoaderOrders[$0] == nil ? nil : $0 }
-        guard !(sourceChanged && structuredChanged) else {
-            statusMessage = SourceDraftError.competingStructuredDraft.localizedDescription
+        guard !(session.hasRawDraft && session.hasStructuredDraft) else {
+            statusMessage = DocumentSessionError.competingDrafts.localizedDescription
             return false
         }
-        guard sourceChanged || structuredChanged || stagedKey != nil else {
+        guard session.hasUnsavedChanges || stagedKey != nil else {
             statusMessage = "No unsaved changes in \(selectedFile.displayName)."
             return true
         }
-
         var fileContentsSaved = false
         do {
-            if sourceChanged {
-                try writeSourceDraft(for: selectedFile)
-                fileContentsSaved = true
-            } else if structuredChanged {
-                try saveValues(selectedFile.values, to: selectedFile.url, rootURL: selectedFile.rootURL, kind: selectedFile.kind)
+            if session.hasUnsavedChanges {
+                try session.save(using: luaScanner, shellScanner: shellScanner, backupService: backupService)
+                sessions[selectedFile.id] = session
                 fileContentsSaved = true
             }
             if let stagedKey { try applyStagedLoaderOrder(forKey: stagedKey) }
@@ -265,19 +245,16 @@ final class SketchyBarStore: ObservableObject {
             return true
         }
         var savedFileIDs: Set<ConfigFile.ID> = []
-        guard !files.contains(where: { $0.hasUnsavedChanges && sourceDrafts[$0.id]?.hasUnsavedChanges == true }) else {
-            statusMessage = SourceDraftError.competingStructuredDraft.localizedDescription
+        guard !files.contains(where: { sessions[$0.id]?.hasRawDraft == true && $0.hasUnsavedChanges }) else {
+            statusMessage = DocumentSessionError.competingDrafts.localizedDescription
             return false
         }
         do {
-            for file in files where changedIDs.contains(file.id) {
-                if sourceDrafts[file.id]?.hasUnsavedChanges == true {
-                    try writeSourceDraft(for: file)
-                    savedFileIDs.insert(file.id)
-                } else if file.hasUnsavedChanges {
-                    try saveValues(file.values, to: file.url, rootURL: file.rootURL, kind: file.kind)
-                    savedFileIDs.insert(file.id)
-                }
+            for fileID in changedIDs {
+                guard var session = sessions[fileID] else { continue }
+                try session.save(using: luaScanner, shellScanner: shellScanner, backupService: backupService)
+                sessions[fileID] = session
+                savedFileIDs.insert(fileID)
             }
             for key in stagedLoaderOrders.keys.sorted() { try applyStagedLoaderOrder(forKey: key) }
             reload(preservingDraftsExcept: savedFileIDs)
@@ -298,7 +275,7 @@ final class SketchyBarStore: ObservableObject {
     func discardSelectedChanges() {
         guard let selectedFile else { return }
         let fileID = selectedFile.id
-        sourceDrafts.removeValue(forKey: fileID)
+        sessions.removeValue(forKey: fileID)
         discardStagedLoaderChange(fileID: fileID)
         reload(preservingDraftsExcept: [fileID])
         selectedFileID = fileID
@@ -310,42 +287,45 @@ final class SketchyBarStore: ObservableObject {
             statusMessage = "Save or discard control edits in \(file.displayName) before editing its source."
             return
         }
-        if let draft = sourceDrafts[file.id], draft.hasUnsavedChanges { return }
-        loadSourceDraft(for: file, reportFailure: true)
+        guard var session = sessions[file.id] else { return }
+        if session.draftContents == nil { session.loadRawDraft() }
+        sessions[file.id] = session
     }
 
     func canEditSource(for file: ConfigFile) -> Bool {
         !file.hasUnsavedChanges
     }
 
-    func sourceContents(for file: ConfigFile) -> String { sourceDrafts[file.id]?.contents ?? "" }
-    func sourceLoadError(for file: ConfigFile) -> String? { sourceDrafts[file.id]?.loadError }
-    func sourceHasUnsavedChanges(for file: ConfigFile) -> Bool { sourceDrafts[file.id]?.hasUnsavedChanges == true }
+    func sourceContents(for file: ConfigFile) -> String { sessions[file.id]?.sourceContents ?? "" }
+    func sourceLoadError(for file: ConfigFile) -> String? { sessions[file.id]?.loadError }
+    func sourceHasUnsavedChanges(for file: ConfigFile) -> Bool { sessions[file.id]?.sourceHasUnsavedChanges == true }
 
     func updateSourceContents(_ contents: String, for file: ConfigFile) {
         guard !file.hasUnsavedChanges else {
             statusMessage = "Save or discard control edits before changing this file's source."
             return
         }
-        if sourceDrafts[file.id] == nil { loadSourceDraft(for: file, reportFailure: false) }
-        guard var draft = sourceDrafts[file.id] else { return }
-        draft.contents = contents
-        sourceDrafts[file.id] = draft
+        guard var session = sessions[file.id] else { return }
+        session.updateSourceContents(contents)
+        sessions[file.id] = session
     }
 
     func discardSourceChanges(for file: ConfigFile) {
-        loadSourceDraft(for: file, reportFailure: true)
-        if sourceDrafts[file.id]?.loadError == nil { statusMessage = "Reverted source edits for \(file.displayName)." }
+        guard var session = sessions[file.id] else { return }
+        session.discardSourceChanges()
+        sessions[file.id] = session
+        if session.loadError == nil { statusMessage = "Reverted source edits for \(file.displayName)." }
     }
 
     @discardableResult
     func saveRawContents(for file: ConfigFile) -> Bool {
-        guard sourceDrafts[file.id]?.hasUnsavedChanges == true else {
+        guard var session = sessions[file.id], session.hasRawDraft else {
             statusMessage = "No unsaved source changes in \(file.displayName)."
             return true
         }
         do {
-            try writeSourceDraft(for: file)
+            try session.save(using: luaScanner, shellScanner: shellScanner, backupService: backupService)
+            sessions[file.id] = session
             reload(preservingDraftsExcept: [file.id])
             statusMessage = "Saved source for \(file.displayName) and backed up the original under backups/."
             return true
@@ -439,17 +419,24 @@ final class SketchyBarStore: ObservableObject {
     }
 
     private func reload(preservingDraftsExcept discardedFileIDs: Set<ConfigFile.ID>) {
-        let oldFilesByID = Dictionary(uniqueKeysWithValues: files.map { ($0.id, $0) })
         let configURLs = locator.configFiles(in: configRoot)
         let activationReferences = activationService.references(for: configURLs, rootURL: configRoot)
-        let scannedFiles = configURLs.compactMap { url -> ConfigFile? in
-            guard let kind = locator.kind(for: url) else { return nil }
+        var nextSessions: [ConfigFile.ID: DocumentSession] = [:]
+        for url in configURLs {
+            guard let kind = locator.kind(for: url) else { continue }
             let scanned = ConfigFile(url: url, rootURL: configRoot, kind: kind, values: scanValues(url: url, kind: kind), activationReference: activationReferences[url.path])
-            guard !discardedFileIDs.contains(scanned.id), let previous = oldFilesByID[scanned.id] else { return scanned }
-            return mergingDrafts(from: previous, into: scanned)
+            if discardedFileIDs.contains(scanned.id) {
+                nextSessions[scanned.id] = DocumentSession.loading(scanned)
+            } else if var existing = sessions[scanned.id] {
+                if !existing.hasRawDraft { existing.refreshFromDisk() }
+                existing.merge(from: scanned)
+                nextSessions[scanned.id] = existing
+            } else {
+                nextSessions[scanned.id] = DocumentSession.loading(scanned)
+            }
         }
-        files = scannedFiles
-        refreshCleanSourceDrafts(availableFiles: scannedFiles)
+        sessions = nextSessions
+        files = configURLs.compactMap { nextSessions[$0.path]?.file }
         pruneStagedLoaderOrders()
         profiles = profileService.listProfiles(for: selectedConfigProfileID)
         if selectedFileID == nil || !files.contains(where: { $0.id == selectedFileID }) { selectedFileID = files.first?.id }
@@ -458,55 +445,18 @@ final class SketchyBarStore: ObservableObject {
             : "Loaded \(files.count) config files from \(selectedConfig?.name ?? configRoot.lastPathComponent)."
     }
 
-    private func mergingDrafts(from previous: ConfigFile, into scanned: ConfigFile) -> ConfigFile {
-        let changedDrafts = Dictionary(uniqueKeysWithValues: previous.values.filter { $0.draftValue != $0.originalValue }.map { ($0.id, $0.draftValue) })
-        let values = scanned.values.map { scannedValue -> LuaEditableValue in
-            guard let draft = changedDrafts[scannedValue.id] else { return scannedValue }
-            var merged = scannedValue
-            merged.draftValue = draft
-            return merged
-        }
-        return ConfigFile(url: scanned.url, rootURL: scanned.rootURL, kind: scanned.kind, values: values, activationReference: scanned.activationReference)
-    }
-
-    private func loadSourceDraft(for file: ConfigFile, reportFailure: Bool) {
-        do {
-            let contents = try String(contentsOf: file.url, encoding: .utf8)
-            sourceDrafts[file.id] = SourceDraft(savedContents: contents, contents: contents, loadError: nil)
-        } catch {
-            sourceDrafts[file.id] = SourceDraft(savedContents: "", contents: "", loadError: error.localizedDescription)
-            if reportFailure { statusMessage = "Could not load source for \(file.displayName): \(error.localizedDescription)" }
-        }
-    }
-
-    private func refreshCleanSourceDrafts(availableFiles: [ConfigFile]) {
-        let availableByID = Dictionary(uniqueKeysWithValues: availableFiles.map { ($0.id, $0) })
-        let cleanFileIDs = sourceDrafts.compactMap { fileID, draft in draft.hasUnsavedChanges ? nil : fileID }
-        for fileID in cleanFileIDs {
-            guard let file = availableByID[fileID] else {
-                sourceDrafts.removeValue(forKey: fileID)
-                continue
-            }
-            loadSourceDraft(for: file, reportFailure: false)
-        }
-    }
-
-    private func writeSourceDraft(for file: ConfigFile) throws {
-        guard var draft = sourceDrafts[file.id], draft.hasUnsavedChanges else { return }
-        let currentContents = try String(contentsOf: file.url, encoding: .utf8)
-        guard currentContents == draft.savedContents else { throw SourceDraftError.changedOnDisk }
-        _ = try backupService.backup(fileURL: file.url, rootURL: file.rootURL)
-        try draft.contents.write(to: file.url, atomically: true, encoding: .utf8)
-        draft.savedContents = draft.contents
-        draft.loadError = nil
-        sourceDrafts[file.id] = draft
+    private func syncFiles() {
+        let orderedIDs = files.map(\.id)
+        var next = orderedIDs.compactMap { sessions[$0]?.file }
+        next.append(contentsOf: sessions.values.map(\.file).filter { !orderedIDs.contains($0.id) })
+        files = next
     }
 
     private func hasUnsavedChanges(in rootURL: URL) -> Bool {
         let rootPath = rootURL.standardizedFileURL.path + "/"
         if files.contains(where: { $0.url.standardizedFileURL.path.hasPrefix(rootPath) && hasUnsavedChanges(fileID: $0.id) }) { return true }
-        return sourceDrafts.contains { fileID, draft in
-            URL(fileURLWithPath: fileID).standardizedFileURL.path.hasPrefix(rootPath) && draft.hasUnsavedChanges
+        return sessions.contains { fileID, session in
+            URL(fileURLWithPath: fileID).standardizedFileURL.path.hasPrefix(rootPath) && session.hasRawDraft
         }
     }
 
@@ -558,7 +508,7 @@ final class SketchyBarStore: ObservableObject {
     }
 
     private func applyStagedLoaderOrder(forKey key: String) throws {
-        if sourceDrafts[key]?.hasUnsavedChanges == true {
+        if sessions[key]?.hasRawDraft == true {
             throw SourceDraftError.loaderHasSourceDraft(URL(fileURLWithPath: key).lastPathComponent)
         }
         guard let desired = stagedLoaderOrders[key], desired.count > 1 else {
@@ -572,7 +522,7 @@ final class SketchyBarStore: ObservableObject {
 
     private func canMutateLoader(for file: ConfigFile) -> Bool {
         guard let entrypointID = file.activationReference?.entrypointURL.path else { return true }
-        guard sourceDrafts[entrypointID]?.hasUnsavedChanges != true else {
+        guard sessions[entrypointID]?.hasRawDraft != true else {
             statusMessage = "Save or discard the source draft for \(URL(fileURLWithPath: entrypointID).lastPathComponent) before changing loader activation."
             return false
         }
@@ -583,13 +533,6 @@ final class SketchyBarStore: ObservableObject {
         switch kind {
         case .lua: return luaScanner.scan(fileURL: url)
         case .shell, .sketchybarRC: return shellScanner.scan(fileURL: url)
-        }
-    }
-
-    private func saveValues(_ values: [LuaEditableValue], to url: URL, rootURL: URL, kind: ConfigFileKind) throws {
-        switch kind {
-        case .lua: try luaScanner.save(values: values, to: url, rootURL: rootURL)
-        case .shell, .sketchybarRC: try shellScanner.save(values: values, to: url, rootURL: rootURL)
         }
     }
 

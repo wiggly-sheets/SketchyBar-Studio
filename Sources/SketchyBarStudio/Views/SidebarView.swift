@@ -255,7 +255,7 @@ private struct ProfilePanel: View {
     }
 }
 
-private enum SidebarCategory: String, CaseIterable {
+enum SidebarCategory: String, CaseIterable {
     case bar
     case items
     case widgets
@@ -310,7 +310,7 @@ private enum SidebarCategory: String, CaseIterable {
     }
 }
 
-private struct SidebarFileGroup: Identifiable {
+struct SidebarFileGroup: Identifiable {
     let category: SidebarCategory
     let files: [ConfigFile]
     let folders: [SidebarFolderNode]
@@ -320,14 +320,14 @@ private struct SidebarFileGroup: Identifiable {
     var systemImage: String { category.systemImage }
 }
 
-private struct SidebarFolderNode: Identifiable {
+struct SidebarFolderNode: Identifiable {
     let id: String
     let title: String
     let folders: [SidebarFolderNode]
     let files: [ConfigFile]
 }
 
-private enum SidebarGrouper {
+enum SidebarGrouper {
     static func group(files: [ConfigFile]) -> [SidebarFileGroup] {
         let categorized = Dictionary(grouping: files) { category(for: $0) }
 

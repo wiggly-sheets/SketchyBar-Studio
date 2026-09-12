@@ -122,7 +122,7 @@ struct BarPreviewView: View {
     }
 }
 
-private enum BarPreviewPosition: String, CaseIterable, Identifiable {
+enum BarPreviewPosition: String, CaseIterable, Identifiable {
     case left
     case center
     case right
@@ -139,7 +139,7 @@ private enum BarPreviewPosition: String, CaseIterable, Identifiable {
     }
 }
 
-private struct BarPreviewItem: Identifiable {
+struct BarPreviewItem: Identifiable {
     let file: ConfigFile
     let position: BarPreviewPosition
     let positionValue: LuaEditableValue?
