@@ -42,7 +42,7 @@ enum SbarLuaItemParser {
 
             let values = table.entries.compactMap { entry -> StructuredItemValue? in
                 guard !entry.path.isEmpty else { return nil }
-                guard entry.kind != .expression, entry.kind != .longString, entry.kind != .nilLiteral else { return nil }
+                guard Self.isEditable(kind: entry.kind) else { return nil }
                 return StructuredItemValue(
                     alias: alias,
                     keyPath: entry.path.joined(separator: "."),
@@ -52,9 +52,29 @@ enum SbarLuaItemParser {
                 )
             }
 
-            items.append(StructuredItem(alias: alias, values: values))
+            // Every value of the table is claimed, also the ones that are
+            // not a single literal. Without the claim, the plain scan
+            // matches the leading literal of an expression, such as the
+            // `"popup."` of `"popup." .. name`.
+            let excludedRanges = table.entries
+                .filter { !Self.isEditable(kind: $0.kind) }
+                .map(\.valueRange)
+
+            items.append(StructuredItem(alias: alias, values: values, excludedRanges: excludedRanges))
         }
 
         return items
+    }
+
+    /// True when the kind of a value is a single literal that the user can
+    /// edit. A value that is built by an expression is not a literal, so
+    /// the user cannot change it without breaking the file.
+    private static func isEditable(kind: LuaLiteralKind) -> Bool {
+        switch kind {
+        case .string, .number, .boolean:
+            return true
+        case .expression, .longString, .nilLiteral:
+            return false
+        }
     }
 }

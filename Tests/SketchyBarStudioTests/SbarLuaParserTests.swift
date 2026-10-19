@@ -147,6 +147,77 @@ final class SbarLuaParserTests: XCTestCase {
         XCTAssertTrue(values.isEmpty)
     }
 
+    // MARK: - Values that are built by an expression
+
+    func testAConcatenatedValueIsNotEditable() throws {
+        let values = try scan("""
+        sbar.add("item", "a", {
+            position = "popup." .. network_bracket.name,
+        })
+        """)
+
+        XCTAssertTrue(values.isEmpty)
+    }
+
+    func testEveryKindOfExpressionIsNotEditable() throws {
+        let values = try scan("""
+        sbar.add("item", "a", {
+            position = "popup." .. network_bracket.name,
+            color = colors.red,
+            family = settings.default,
+            string = icons.wifi.disconnected,
+            label = "a" .. "b",
+            x = 1 + 2,
+            plain = "left",
+        })
+        """)
+
+        XCTAssertEqual(values.map(\.keyPath), ["plain"])
+        XCTAssertEqual(values.map(\.originalValue), ["left"])
+    }
+
+    func testTheLiteralAtTheEndOfAnExpressionIsNotEditable() throws {
+        let values = try scan("""
+        sbar.add("item", "a", {
+            position = network_bracket.name .. "popup.",
+        })
+        """)
+
+        XCTAssertTrue(values.isEmpty)
+    }
+
+    func testALiteralNextToAnExpressionIsStillEditable() throws {
+        let root = try makeConfigRoot()
+        let contents = """
+        sbar.add("item", "a", {
+            position = "popup." .. network_bracket.name,
+            align = "center",
+        })
+        """
+        let fileURL = root.appendingPathComponent("items/network.lua")
+        try write(contents, to: fileURL)
+
+        let scanner = LuaConfigScanner()
+        var values = scanner.scan(fileURL: fileURL)
+        XCTAssertEqual(values.map(\.keyPath), ["align"])
+
+        values[0].draftValue = "right"
+        let updated = scanner.updatedContents(values: values, originalContents: contents)
+        XCTAssertEqual(updated, contents.replacingOccurrences(of: "\"center\"", with: "\"right\""))
+    }
+
+    func testThePlainPathRejectsAPartOfAnExpression() throws {
+        let values = try scan("""
+        local x = "a" .. "b"
+        local y = 1 + 2
+        local z = name .. "c"
+        local w = 1
+        """)
+
+        XCTAssertEqual(values.map(\.keyPath), ["w"])
+        XCTAssertEqual(values.map(\.originalValue), ["1"])
+    }
+
     // MARK: - Several items
 
     func testTwoItemsInOneFileKeepTheirAlias() throws {

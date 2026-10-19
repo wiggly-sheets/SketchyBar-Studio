@@ -21,18 +21,23 @@ struct LuaConfigScanner {
         // of a nested table keep their path. The plain scan fills in the rest
         // of the file and skips the values the parser already found.
         let structured = structuredValues(fileURL: fileURL, contents: contents)
-        let plain = scannedValues(fileURL: fileURL, contents: contents, excluding: structured)
-        let results = (structured + plain).sorted { $0.valueStartOffset < $1.valueStartOffset }
+        let claimed = (structured.values.map { LuaSourceRange(start: $0.valueStartOffset, end: $0.valueEndOffset) }
+            + structured.excludedRanges)
+            .sorted { $0.start < $1.start }
+        let plain = scannedValues(fileURL: fileURL, contents: contents, claiming: claimed)
+        let results = (structured.values + plain).sorted { $0.valueStartOffset < $1.valueStartOffset }
         return LuaEditableValue.assigningStableKeys(results)
     }
 
     /// The values of the SbarLua items of the file, with the key path of
-    /// every value relative to the table of its item.
-    private func structuredValues(fileURL: URL, contents: String) -> [LuaEditableValue] {
-        guard contents.contains("sbar") else { return [] }
+    /// every value relative to the table of its item. The ranges of the
+    /// values that are not a single literal are returned as well, so the
+    /// plain scan does not match a literal inside them.
+    private func structuredValues(fileURL: URL, contents: String) -> (values: [LuaEditableValue], excludedRanges: [LuaSourceRange]) {
+        guard contents.contains("sbar") else { return ([], []) }
 
         let items = SbarLuaItemParser.items(in: contents)
-        guard !items.isEmpty else { return [] }
+        guard !items.isEmpty else { return ([], []) }
 
         let lineStarts = Self.lineStarts(in: contents)
         var results: [LuaEditableValue] = []
@@ -63,20 +68,17 @@ struct LuaConfigScanner {
             }
         }
 
-        return results
+        return (results, items.flatMap(\.excludedRanges))
     }
 
     /// The values of the file that the plain scan finds. The values that the
     /// Lua parser already found are skipped, so a value is never listed
     /// twice.
-    private func scannedValues(fileURL: URL, contents: String, excluding structured: [LuaEditableValue]) -> [LuaEditableValue] {
+    private func scannedValues(fileURL: URL, contents: String, claiming claimed: [LuaSourceRange]) -> [LuaEditableValue] {
         guard let regex = Self.assignmentRegex else {
             return []
         }
 
-        let claimed = structured
-            .map { LuaSourceRange(start: $0.valueStartOffset, end: $0.valueEndOffset) }
-            .sorted { $0.start < $1.start }
         let ignoredRegions = SourceRegions.luaIgnoredRegions(in: contents)
         var results: [LuaEditableValue] = []
         var lineNumber = 1
@@ -98,6 +100,13 @@ struct LuaConfigScanner {
                     continue
                 }
                 guard !isClaimed(start: valueStart, end: valueEnd, in: claimed) else {
+                    continue
+                }
+                // A value that is only a part of an expression, such as the
+                // `"a"` of `"a" .. "b"`, is not a value of its own. Writing
+                // it back would keep only the part that is a literal and
+                // break the file.
+                guard !isPartOfExpression(line: line, valueRange: valueRange) else {
                     continue
                 }
 
@@ -167,6 +176,47 @@ struct LuaConfigScanner {
         if claimed[index].intersects(LuaSourceRange(start: start, end: end)) { return true }
         if index > 0, claimed[index - 1].intersects(LuaSourceRange(start: start, end: end)) { return true }
         return false
+    }
+
+    /// The operators of Lua that are made of two characters.
+    private static let twoCharacterOperators = ["..", "==", "~=", "<=", ">=", "<<", ">>"]
+
+    /// The operators of Lua that are made of one character.
+    private static let oneCharacterOperators: Set<Character> = ["+", "-", "*", "/", "%", "^", "#", "&", "|", "~", "<", ">"]
+
+    /// True when the value is only a part of a larger expression, such as
+    /// the `"a"` of `"a" .. "b"`. Such a value is not a value of its own,
+    /// so it must not be offered as an editable value.
+    private func isPartOfExpression(line: String, valueRange: Range<String.Index>) -> Bool {
+        let before = line[line.startIndex..<valueRange.lowerBound]
+        let after = line[valueRange.upperBound...]
+        return Self.operatorAtEnd(of: before) != nil || Self.operatorAtStart(of: after) != nil
+    }
+
+    /// The operator at the start of the text, when the text starts with an
+    /// operator of Lua. A comment is not an operator.
+    private static func operatorAtStart(of text: Substring) -> String? {
+        var text = text
+        while let first = text.first, first.isWhitespace { text = text.dropFirst() }
+        guard let first = text.first else { return nil }
+        if first == "-", text.dropFirst().first == "-" { return nil }
+        for op in twoCharacterOperators where text.hasPrefix(op) { return op }
+        guard oneCharacterOperators.contains(first) else { return nil }
+        return String(first)
+    }
+
+    /// The operator at the end of the text, when the text ends with an
+    /// operator of Lua. A single `=` is an assignment, so it is not one.
+    private static func operatorAtEnd(of text: Substring) -> String? {
+        var text = text
+        while let last = text.last, last.isWhitespace { text = text.dropLast() }
+        guard let last = text.last else { return nil }
+        guard oneCharacterOperators.contains(last) || last == "." || last == "=" else { return nil }
+        for op in twoCharacterOperators where op.hasSuffix(String(last)) && text.hasSuffix(op) {
+            return op
+        }
+        if last == "=" { return nil }
+        return String(last)
     }
 
     /// The line a character offset belongs to.
