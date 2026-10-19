@@ -16,7 +16,12 @@ struct ConfigBackupService {
     /// Copies the current file into the `backups/` mirror. The backup slot is
     /// replaced in one step, so a failed copy leaves the previous backup in
     /// place instead of emptying it.
-    func backup(fileURL: URL, rootURL: URL) throws -> URL {
+    ///
+    /// `contents` holds the text to store. A caller that already read the
+    /// file passes those bytes, so the backup holds the version that is
+    /// about to be overwritten even when the file changed on disk in the
+    /// meantime. Without it the file is copied from disk.
+    func backup(fileURL: URL, rootURL: URL, contents: String? = nil) throws -> URL {
         let relativePath = try relativePath(for: fileURL, rootURL: rootURL)
         let backupURL = rootURL
             .appendingPathComponent("backups")
@@ -28,16 +33,22 @@ struct ConfigBackupService {
             withIntermediateDirectories: true
         )
 
-        // Copy the real file so the backup is a regular file with real
-        // content even when the live config file is a symlink.
-        let sourceURL = replacer.resolvedFileURL(for: fileURL)
         let temporaryURL = backupURL.deletingLastPathComponent()
             .appendingPathComponent(".\(backupURL.lastPathComponent).tmp-\(UUID().uuidString)")
         defer {
             try? fileManager.removeItem(at: temporaryURL)
         }
 
-        try fileManager.copyItem(at: sourceURL, to: temporaryURL)
+        if let contents {
+            // The backup is a regular file with the given text, also when the
+            // live config file is a symlink.
+            try contents.write(to: temporaryURL, atomically: true, encoding: .utf8)
+        } else {
+            // Copy the real file so the backup is a regular file with real
+            // content even when the live config file is a symlink.
+            let sourceURL = replacer.resolvedFileURL(for: fileURL)
+            try fileManager.copyItem(at: sourceURL, to: temporaryURL)
+        }
 
         if fileManager.fileExists(atPath: backupURL.path) {
             _ = try fileManager.replaceItemAt(backupURL, withItemAt: temporaryURL)

@@ -69,14 +69,21 @@ enum SourceRegions {
 
             if let heredoc {
                 let bodyStart = lineEnd + 1
-                let terminatorEnd = indexOfHeredocTerminator(
+                if let terminatorEnd = indexOfHeredocTerminator(
                     characters,
                     from: bodyStart,
                     delimiter: heredoc.delimiter,
                     stripTabs: heredoc.stripTabs
-                )
-                regions.append(Region(start: bodyStart, end: terminatorEnd))
-                index = terminatorEnd
+                ) {
+                    regions.append(Region(start: bodyStart, end: terminatorEnd))
+                    index = terminatorEnd
+                } else {
+                    // The terminator is missing, so the body is unknown.
+                    // The region stays empty instead of hiding the rest of
+                    // the file.
+                    regions.append(Region(start: bodyStart, end: bodyStart))
+                    index = lineEnd + 1
+                }
                 continue
             }
 
@@ -184,9 +191,17 @@ enum SourceRegions {
                     index += 3
                     continue
                 }
+                // A heredoc starts a word: the `<<` is preceded by
+                // whitespace or it begins the line.
+                guard index == 0 || line[index - 1].isWhitespace else {
+                    index += 2
+                    continue
+                }
                 if let heredoc = parseHeredoc(line, from: index + 2) {
                     return heredoc
                 }
+                index += 2
+                continue
             }
             index += 1
         }
@@ -205,7 +220,9 @@ enum SourceRegions {
         }
 
         var delimiter = ""
+        var isQuoted = false
         if index < line.count, line[index] == "\"" || line[index] == "'" {
+            isQuoted = true
             let quote = line[index]
             index += 1
             while index < line.count, line[index] != quote {
@@ -223,15 +240,21 @@ enum SourceRegions {
         }
 
         guard !delimiter.isEmpty else { return nil }
+        // An unquoted delimiter must be a plain word. A `<<` inside an
+        // expression, such as `count=$((a<<b))`, is not a heredoc.
+        if !isQuoted, !delimiter.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) {
+            return nil
+        }
         return Heredoc(delimiter: delimiter, stripTabs: stripTabs, endIndex: index)
     }
 
+    /// The end of the heredoc body, or nil when the terminator is missing.
     private static func indexOfHeredocTerminator(
         _ characters: [Character],
         from start: Int,
         delimiter: String,
         stripTabs: Bool
-    ) -> Int {
+    ) -> Int? {
         var index = start
         while index < characters.count {
             let lineEnd = indexOfLineEnd(characters, from: index)
@@ -246,6 +269,6 @@ enum SourceRegions {
             }
             index = lineEnd + 1
         }
-        return characters.count
+        return nil
     }
 }

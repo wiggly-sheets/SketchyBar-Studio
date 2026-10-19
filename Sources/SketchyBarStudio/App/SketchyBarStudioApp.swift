@@ -27,14 +27,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            store.saveAllChangedFiles()
-            NSApp.reply(toApplicationShouldTerminate: !store.hasUnsavedChanges)
+            NSApp.reply(toApplicationShouldTerminate: saveAllAndMayTerminate())
         case .alertSecondButtonReturn:
             NSApp.reply(toApplicationShouldTerminate: true)
         default:
             NSApp.reply(toApplicationShouldTerminate: false)
         }
         return .terminateLater
+    }
+
+    /// Saves every change and reports whether the app may quit. A draft
+    /// that could not be saved, such as the draft of a file that is missing
+    /// from disk, keeps the app open and is named in the status message.
+    @MainActor
+    func saveAllAndMayTerminate() -> Bool {
+        guard let store else { return true }
+        store.saveAllChangedFiles()
+        return !store.hasUnsavedChanges
     }
 
     /// Keeps the app alive when the last window closes while drafts exist.
