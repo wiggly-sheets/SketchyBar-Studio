@@ -16,14 +16,17 @@ enum SketchyBarBoolean {
         let key = keyPath.lowercased()
         let leaf = key.split(separator: ".").last.map(String.init) ?? key
         let booleanLeaves: Set<String> = [
+            "cache_scripts",
+            "clip",
             "drawing",
-            "highlight",
-            "ignore_association",
-            "scroll_texts",
-            "sticky",
             "font_smoothing",
+            "horizontal",
+            "ignore_association",
+            "lazy",
+            "scroll_texts",
             "shadow",
-            "horizontal"
+            "show_in_fullscreen",
+            "sticky"
         ]
 
         return booleanLeaves.contains(leaf) || key.hasSuffix(".drawing")

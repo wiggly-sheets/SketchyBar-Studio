@@ -25,43 +25,46 @@ struct SketchyBarColor {
         return String(format: "0x%02x%02x%02x%02x", a, r, g, b)
     }
 
+    /// SketchyBar reads colors as a single 32 bit AARRGGBB word.
     static func parse(_ value: String) -> SketchyBarColor? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleaned = trimmed
-            .replacingOccurrences(of: "0x", with: "")
-            .replacingOccurrences(of: "#", with: "")
+        var digits = trimmed
+        var isHashPrefixed = false
+        if digits.hasPrefix("#") {
+            digits.removeFirst()
+            isHashPrefixed = true
+        } else if digits.lowercased().hasPrefix("0x") {
+            digits.removeFirst(2)
+        }
 
-        guard let integer = UInt64(cleaned, radix: 16) else {
+        guard !digits.isEmpty, digits.allSatisfy({ $0.isHexDigit }) else {
             return nil
         }
 
-        switch cleaned.count {
+        switch digits.count {
+        case 3:
+            guard isHashPrefixed else { return nil }
+            let expanded = digits.map { String(repeating: String($0), count: 2) }.joined()
+            return color(from: expanded, alphaByte: 0xff)
         case 6:
-            return SketchyBarColor(
-                red: Double((integer >> 16) & 0xff) / 255,
-                green: Double((integer >> 8) & 0xff) / 255,
-                blue: Double(integer & 0xff) / 255,
-                alpha: 1
-            )
+            return color(from: digits, alphaByte: 0xff)
         case 8:
-            if trimmed.hasPrefix("#") {
-                return SketchyBarColor(
-                    red: Double((integer >> 24) & 0xff) / 255,
-                    green: Double((integer >> 16) & 0xff) / 255,
-                    blue: Double((integer >> 8) & 0xff) / 255,
-                    alpha: Double(integer & 0xff) / 255
-                )
-            }
-
-            return SketchyBarColor(
-                red: Double((integer >> 16) & 0xff) / 255,
-                green: Double((integer >> 8) & 0xff) / 255,
-                blue: Double(integer & 0xff) / 255,
-                alpha: Double((integer >> 24) & 0xff) / 255
-            )
+            return color(from: digits, alphaByte: nil)
         default:
             return nil
         }
+    }
+
+    private static func color(from digits: String, alphaByte: UInt64?) -> SketchyBarColor {
+        let integer = UInt64(digits, radix: 16) ?? 0
+        let alpha = alphaByte ?? ((integer >> 24) & 0xff)
+
+        return SketchyBarColor(
+            red: Double((integer >> 16) & 0xff) / 255,
+            green: Double((integer >> 8) & 0xff) / 255,
+            blue: Double(integer & 0xff) / 255,
+            alpha: Double(alpha) / 255
+        )
     }
 
     static func sketchyBarHex(from color: Color) -> String {

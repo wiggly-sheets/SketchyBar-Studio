@@ -2,7 +2,7 @@ import Foundation
 
 struct ShellConfigScanner {
     private static let assignmentRegex = try? NSRegularExpression(
-        pattern: #"(?:^|[ \t])([A-Za-z_][A-Za-z0-9_\.]*)=("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:\\.|[^ \t\\])+)"#
+        pattern: #"(?:^|[ \t])([A-Za-z_][A-Za-z0-9_\.]*)=("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:\\.|[^ \t\\])*)"#
     )
 
     private let optionCatalog = SketchyBarOptionCatalog()
@@ -13,6 +13,7 @@ struct ShellConfigScanner {
             return []
         }
 
+        let ignoredRegions = SourceRegions.shellIgnoredRegions(in: contents)
         var results: [LuaEditableValue] = []
         var lineNumber = 1
 
@@ -27,6 +28,7 @@ struct ShellConfigScanner {
             let nsLine = NSRange(line.startIndex..<line.endIndex, in: line)
             let matches = regex.matches(in: line, range: nsLine)
             let lineStart = contents.distance(from: contents.startIndex, to: lineRange.lowerBound)
+            var lineValues: [LuaEditableValue] = []
 
             for match in matches {
                 guard let keyRange = Range(match.range(at: 1), in: line),
@@ -34,19 +36,30 @@ struct ShellConfigScanner {
                     continue
                 }
 
-                let keyPath = String(line[keyRange])
                 let rawValue = String(line[valueRange])
-                let displayValue = normalizedDisplayValue(displayValue(for: rawValue, keyPath: keyPath), keyPath: keyPath)
                 let valueStart = lineStart + line.distance(from: line.startIndex, to: valueRange.lowerBound)
                 let valueEnd = lineStart + line.distance(from: line.startIndex, to: valueRange.upperBound)
+                guard !ignoredRegions.contains(where: { $0.intersects(valueStart, valueEnd) }) else {
+                    continue
+                }
+                guard !rawValue.hasPrefix("("), !rawValue.hasPrefix("["), !rawValue.hasPrefix("{") else {
+                    lineValues.removeAll()
+                    break
+                }
 
-                results.append(
+                let keyPath = String(line[keyRange])
+                let displayValue = SketchyBarValueRules.normalizedDisplayValue(
+                    SketchyBarValueRules.displayValue(for: rawValue, keyPath: keyPath),
+                    keyPath: keyPath
+                )
+
+                lineValues.append(
                     LuaEditableValue(
                         id: "\(fileURL.path):\(lineNumber):\(keyPath):\(valueStart)",
                         fileURL: fileURL,
                         keyPath: keyPath,
                         lineNumber: lineNumber,
-                        kind: kind(for: rawValue, keyPath: keyPath),
+                        kind: SketchyBarValueRules.kind(for: rawValue, keyPath: keyPath),
                         originalValue: displayValue,
                         draftValue: displayValue,
                         suggestedValues: optionCatalog.suggestedValues(for: keyPath, currentValue: displayValue),
@@ -56,6 +69,8 @@ struct ShellConfigScanner {
                     )
                 )
             }
+
+            results.append(contentsOf: lineValues)
 
             lineNumber += 1
         }
@@ -82,75 +97,19 @@ struct ShellConfigScanner {
         try contents.write(to: fileURL, atomically: true, encoding: .utf8)
     }
 
-    private func kind(for rawValue: String, keyPath: String) -> LuaValueKind {
-        let value = displayValue(for: rawValue)
-        if SketchyBarBoolean.isBooleanKey(keyPath), SketchyBarBoolean.normalized(value) != nil {
-            return .boolean
-        }
-        if value.hasPrefix("#") || value.hasPrefix("0x") {
-            return .color
-        }
-        if Double(value) != nil {
-            return .number
-        }
-        return .string
-    }
-
-    private func displayValue(for rawValue: String, keyPath: String? = nil) -> String {
-        if (rawValue.hasPrefix("\"") && rawValue.hasSuffix("\"")) ||
-            (rawValue.hasPrefix("'") && rawValue.hasSuffix("'")) {
-            let unquoted = String(rawValue.dropFirst().dropLast())
-            if let keyPath,
-               SketchyBarBoolean.isBooleanKey(keyPath),
-               let normalized = SketchyBarBoolean.normalized(unquoted) {
-                return normalized
-            }
-            return unquoted
-        }
-
-        if let keyPath,
-           SketchyBarBoolean.isBooleanKey(keyPath),
-           let normalized = SketchyBarBoolean.normalized(rawValue) {
-            return normalized
-        }
-        return rawValue
-    }
-
-    private func normalizedDisplayValue(_ value: String, keyPath: String) -> String {
-        let leaf = keyPath.lowercased().split(separator: ".").last.map(String.init) ?? keyPath.lowercased()
-        if leaf == "updates" {
-            switch value.lowercased() {
-            case "true", "yes", "1":
-                return "on"
-            case "false", "no", "0":
-                return "off"
-            default:
-                return value
-            }
-        }
-        return value
-    }
-
     private func serializedValue(_ value: LuaEditableValue) -> String {
+        let original = String(originalSerializedValue(for: value))
+
         switch value.kind {
         case .string:
-            let original = originalSerializedValue(for: value)
-            if original.first == "'" {
-                return "'\(value.draftValue.replacingOccurrences(of: "'", with: "'\\''"))'"
-            }
-            if original.first == "\"" {
-                return "\"\(escapeDoubleQuotedLexicalString(value.draftValue))\""
-            }
-            if value.draftValue.rangeOfCharacter(from: .whitespacesAndNewlines) == nil {
-                return value.draftValue
-            }
-            return "\"\(escapeDoubleQuotedLexicalString(value.draftValue))\""
+            guard !SketchyBarValueRules.containsLineBreak(value.draftValue) else { return original }
+            return "\"\(escapeDoubleQuotedString(value.draftValue))\""
         case .number:
-            return value.draftValue
+            return SketchyBarValueRules.serializedNumber(value.draftValue, original: original)
         case .color:
-            return SketchyBarColor.parse(value.draftValue)?.sketchyBarHex ?? value.draftValue
+            return SketchyBarValueRules.serializedColor(value.draftValue, original: original)
         case .boolean:
-            return SketchyBarBoolean.normalized(value.draftValue) ?? "false"
+            return SketchyBarValueRules.serializedBoolean(value.draftValue, original: original)
         }
     }
 
@@ -160,30 +119,15 @@ struct ShellConfigScanner {
         return value.sourceSnapshot[start..<end]
     }
 
-    private func escapeDoubleQuotedLexicalString(_ string: String) -> String {
+    /// Escapes the characters that a double quoted shell string would still expand.
+    private func escapeDoubleQuotedString(_ string: String) -> String {
         var escaped = ""
-        var index = string.startIndex
 
-        while index < string.endIndex {
-            let character = string[index]
-            if character == "\\" {
-                escaped.append(character)
-                let nextIndex = string.index(after: index)
-                if nextIndex < string.endIndex {
-                    escaped.append(string[nextIndex])
-                    index = string.index(after: nextIndex)
-                } else {
-                    escaped.append("\\")
-                    index = nextIndex
-                }
-                continue
-            }
-
-            if character == "\"" {
+        for character in string {
+            if character == "\\" || character == "\"" || character == "$" || character == "`" {
                 escaped.append("\\")
             }
             escaped.append(character)
-            index = string.index(after: index)
         }
 
         return escaped

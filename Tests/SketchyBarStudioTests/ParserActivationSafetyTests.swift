@@ -116,7 +116,7 @@ final class ParserActivationSafetyTests: XCTestCase {
         )
     }
 
-    func testShellSavePreservesSingleQuotesAndBackslashesWhenEditingAString() throws {
+    func testShellSaveQuotesAndEscapesStringsWhenEditing() throws {
         let root = try makeConfigRoot()
         let fileURL = root.appendingPathComponent("items/path.sh")
         try write(#"LABEL='C:\tmp'"# + "\n", to: fileURL)
@@ -126,7 +126,7 @@ final class ParserActivationSafetyTests: XCTestCase {
 
         try scanner.save(values: values, to: fileURL, rootURL: root)
 
-        XCTAssertEqual(try String(contentsOf: fileURL, encoding: .utf8), #"LABEL='D:\work'"# + "\n")
+        XCTAssertEqual(try String(contentsOf: fileURL, encoding: .utf8), #"LABEL="D:\\work""# + "\n")
     }
 
     func testShellSaveRejectsSourceChangedSinceScan() throws {
