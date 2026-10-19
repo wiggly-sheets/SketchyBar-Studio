@@ -53,6 +53,7 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 ### Purpose-built editing
 
 - Uses dropdowns for known SketchyBar options and toggles for ordinary booleans.
+- Shows an option reference for every known option: an info button next to the key path opens a popover with the meaning, the type, the accepted values and the default of the option.
 - Includes an interactive draft bar preview: drag items to reorder them or move them between left, center, and right; drag a numeric-width handle to resize; and adjust available left/right padding without writing files until you save.
 - Provides a built-in source editor for complete Lua and `sketchybarrc` files, with optional Vim-style navigation (`h/j/k/l`, words, line start/end, `i`/`a`, Escape). Source saves use the same backup protection as structured edits.
 - Opens the native macOS color picker, saving colors as `0xAARRGGBB`.

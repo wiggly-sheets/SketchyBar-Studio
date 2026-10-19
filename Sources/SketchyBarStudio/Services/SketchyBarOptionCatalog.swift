@@ -23,26 +23,6 @@ struct SketchyBarOptionCatalog {
             return options(values, keeping: currentValue)
         }
 
-        if leaf == "align" {
-            return options(["left", "right", "center"], keeping: currentValue)
-        }
-
-        if leaf == "display" {
-            return options(["all", "main", "active"], keeping: currentValue)
-        }
-
-        if leaf == "hidden" {
-            return options(["off", "on", "current"], keeping: currentValue)
-        }
-
-        if leaf == "topmost" {
-            return options(["off", "on", "window"], keeping: currentValue)
-        }
-
-        if leaf == "updates" {
-            return ["on", "off", "when_shown"]
-        }
-
         if leaf == "width" {
             return []
         }
@@ -54,6 +34,10 @@ struct SketchyBarOptionCatalog {
             if currentValue == "media.artwork" {
                 return options(["media.artwork", "app.<bundle-id>", "app.<name>"], keeping: currentValue)
             }
+        }
+
+        if let doc = SketchyBarOptionDocs.doc(for: keyPath), !doc.values.isEmpty {
+            return options(doc.values, keeping: currentValue)
         }
 
         return []

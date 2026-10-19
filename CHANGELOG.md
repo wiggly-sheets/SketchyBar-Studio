@@ -8,6 +8,8 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ### Added
 
+- Every known SketchyBar option now has a reference entry: an info button next to the key path opens a popover with the meaning, the type, the accepted values and the default of the option. The summary is also part of the tooltip of the value editor.
+- The dropdown suggestions come from the SketchyBar sources instead of a short hand written list, so options such as `symbol_mode`, `anchor` and `cap` now offer their real values.
 - Quitting now asks what to do with unsaved edits: Save All, Discard, or Cancel. Closing the last window keeps the app alive while drafts exist.
 - Files that disappeared from disk keep their session and draft. They are listed in a "Missing Files" section of the sidebar and the draft comes back when the file returns.
 - The structured editor shows a file's read error, marks the sidebar row with a red dot, and disables the value editors and the save button for that file.
