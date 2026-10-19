@@ -84,34 +84,68 @@ struct DocumentSession {
     }
 
     /// Preserves value drafts and the raw draft across a reload: re-parses
-    /// `file` from the freshly scanned `scanned` file, keeping draft values
-    /// whose stable keys still exist. A draft whose stable key vanished from
-    /// the file is kept in the list and flagged as missing instead of being
-    /// dropped. Returns how many drafts were kept that are no longer in the
-    /// file.
+    /// `file` from the freshly scanned `scanned` file, keeping the drafts
+    /// that can still be matched to a value. A draft that cannot be matched
+    /// safely is kept in the list and flagged as missing instead of being
+    /// dropped or applied to another value. Returns how many drafts were
+    /// kept that are no longer in the file.
     @discardableResult
     mutating func merge(from scanned: ConfigFile) -> Int {
-        let drafts = file.values.filter { $0.draftValue != $0.originalValue }
-        let draftsByStableKey = Dictionary(
-            drafts.map { ($0.stableKey, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        let previousValues = file.values.filter { !$0.isMissingFromFile }
+        let drafts = previousValues.filter { $0.draftValue != $0.originalValue }
+        var draftsByTarget: [LuaEditableValue.ID: LuaEditableValue] = [:]
+        var missingDrafts: [LuaEditableValue] = []
+        var takenTargets: Set<LuaEditableValue.ID> = []
+
+        for draft in drafts {
+            guard let target = Self.target(
+                for: draft,
+                in: scanned.values,
+                previousValues: previousValues,
+                taken: takenTargets
+            ) else {
+                var kept = draft
+                kept.isMissingFromFile = true
+                missingDrafts.append(kept)
+                continue
+            }
+            draftsByTarget[target.id] = draft
+            takenTargets.insert(target.id)
+        }
+
         var values = scanned.values.map { scannedValue -> LuaEditableValue in
-            guard let draft = draftsByStableKey[scannedValue.stableKey] else { return scannedValue }
+            guard let draft = draftsByTarget[scannedValue.id] else { return scannedValue }
             var merged = scannedValue
             merged.draftValue = draft.draftValue
             return merged
         }
-        let scannedStableKeys = Set(scanned.values.map(\.stableKey))
-        var missingCount = 0
-        for draft in drafts where !scannedStableKeys.contains(draft.stableKey) {
-            var kept = draft
-            kept.isMissingFromFile = true
-            values.append(kept)
-            missingCount += 1
-        }
+        values.append(contentsOf: missingDrafts)
         file = ConfigFile(url: scanned.url, rootURL: scanned.rootURL, kind: scanned.kind, values: values, activationReference: scanned.activationReference)
-        return missingCount
+        return missingDrafts.count
+    }
+
+    /// The rescanned value a draft belongs to.
+    ///
+    /// A draft only moves to a value that still holds the text the draft was
+    /// made from, so a draft never lands on a value the user did not edit.
+    /// When several values hold that text, the stable key decides which one
+    /// it is, but only when the number of values with that key path did not
+    /// change: a new block with the same option shifts the ordinals, and
+    /// the ordinals then say nothing about the identity of a value.
+    private static func target(
+        for draft: LuaEditableValue,
+        in scanned: [LuaEditableValue],
+        previousValues: [LuaEditableValue],
+        taken: Set<LuaEditableValue.ID>
+    ) -> LuaEditableValue? {
+        let candidates = scanned.filter { $0.keyPath == draft.keyPath }
+        let sameText = candidates.filter { $0.originalValue == draft.originalValue && !taken.contains($0.id) }
+        if sameText.count == 1 { return sameText[0] }
+        guard sameText.count > 1 else { return nil }
+
+        let oldCount = previousValues.filter { $0.keyPath == draft.keyPath }.count
+        guard oldCount == candidates.count else { return nil }
+        return sameText.first { $0.stableKey == draft.stableKey }
     }
 
     /// Marks the file as gone from disk. The session keeps its values and
@@ -130,7 +164,9 @@ struct DocumentSession {
         guard !(hasRawDraft && hasStructuredDraft) else { throw DocumentSessionError.competingDrafts }
         let currentContents = try String(contentsOf: file.url, encoding: .utf8)
         guard currentContents == savedContents else { throw DocumentSessionError.changedOnDisk }
-        _ = try backupService.backup(fileURL: file.url, rootURL: file.rootURL)
+        // The backup holds the bytes that are about to be overwritten, not
+        // whatever another process may have written in the meantime.
+        _ = try backupService.backup(fileURL: file.url, rootURL: file.rootURL, contents: savedContents)
         // Re-read right before the write so an external edit is not lost.
         let finalContents = try String(contentsOf: file.url, encoding: .utf8)
         guard finalContents == savedContents else { throw DocumentSessionError.changedOnDisk }

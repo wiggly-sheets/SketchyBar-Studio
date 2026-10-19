@@ -133,7 +133,7 @@ SketchyBar Studio is deliberately conservative about config changes.
 
 | What Studio does | What that means |
 | --- | --- |
-| Makes copies under `backups/` before writing | You have a local backup of the original file before an edit is saved. |
+| Makes copies under `backups/` before writing | You have a local backup of the original file before an edit is saved. The backup holds the exact text that is about to be overwritten. |
 | Keeps the quoting of a shell value | A value keeps the quotes it had in the file, so `$HOME` still expands and a single quoted value stays literal. |
 | Restores profiles without losing the `backups/` folder | The backup mirror of your config root is still there after a restore. |
 | Edits simple scalar assignments | Complex Lua tables and computed values are not silently rewritten. |
@@ -141,6 +141,8 @@ SketchyBar Studio is deliberately conservative about config changes.
 | Changes loader order only when references are clear | Unusual or complex loader logic is not inferred or rewritten. |
 | Keeps unsaved edits in memory and asks before quitting | Quitting with unsaved edits offers Save All, Discard, or Cancel instead of dropping them. |
 | Keeps drafts when a file changes on disk | A draft follows its value even when lines move, and it is reported when the value is gone. |
+| Never moves a draft to another value | An edit stays on the value it was made on. When that cannot be proven, the draft is reported instead of written to another item. |
+| Says what it could not save | A file that is missing from disk is named in the status message, and its draft stays in memory until the file is back. |
 
 You can use the GUI for routine changes and keep the code preview open whenever you want to verify the underlying configuration.
 

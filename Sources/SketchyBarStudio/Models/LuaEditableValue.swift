@@ -31,7 +31,9 @@ struct LuaEditableValue: Identifiable, Hashable {
     let valueEndOffset: Int
     let sourceSnapshot: String
     /// Identity that survives line shifts: the key path plus the ordinal
-    /// occurrence of that key path inside the file.
+    /// occurrence of that key path inside the file. The ordinal moves when a
+    /// new block with the same option is added, so a stable key on its own
+    /// does not prove that two values are the same value.
     var stableKey: String = ""
     /// True when the key no longer exists in the file on disk. The draft is
     /// kept so the user can see it, but it cannot be written back.

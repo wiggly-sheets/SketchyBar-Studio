@@ -181,7 +181,9 @@ final class SketchyBarStore: ObservableObject {
 
     var unsavedFileCount: Int {
         var changed = stagedChangedFileIDs
-        for file in files where sessions[file.id]?.hasUnsavedChanges == true {
+        // The files that are missing from disk count too, so the save
+        // buttons stay in step with the work that is still open.
+        for file in files + missingFiles where sessions[file.id]?.hasUnsavedChanges == true {
             changed.insert(file.id)
         }
         return changed.count
@@ -351,7 +353,16 @@ final class SketchyBarStore: ObservableObject {
               session.file.values[location.position].id == valueID else { return }
         var values = session.file.values
         values[location.position].draftValue = draftValue
-        session.file = ConfigFile(url: session.file.url, rootURL: session.file.rootURL, kind: session.file.kind, values: values, activationReference: session.file.activationReference)
+        // The flags of the file are kept, so a file that is missing from
+        // disk stays marked as missing after an edit.
+        session.file = ConfigFile(
+            url: session.file.url,
+            rootURL: session.file.rootURL,
+            kind: session.file.kind,
+            values: values,
+            activationReference: session.file.activationReference,
+            isMissingFromDisk: session.file.isMissingFromDisk
+        )
         sessions[fileID] = session
         syncFiles()
     }
@@ -392,13 +403,16 @@ final class SketchyBarStore: ObservableObject {
 
     @discardableResult
     func saveAllChangedFiles() -> Bool {
-        let changedIDs = Set(files.compactMap { hasUnsavedChanges(fileID: $0.id) ? $0.id : nil })
+        // The drafts of files that vanished from disk count too, so the
+        // quit guard does not offer a save that cannot save everything.
+        let changedIDs = Set((files + missingFiles).compactMap { hasUnsavedChanges(fileID: $0.id) ? $0.id : nil })
         guard !changedIDs.isEmpty else {
             statusMessage = "No unsaved changes."
             return true
         }
         var savedFileIDs: Set<ConfigFile.ID> = []
         var droppedDrafts = 0
+        var missingFileNames: [String] = []
         guard !files.contains(where: { sessions[$0.id]?.hasRawDraft == true && $0.hasUnsavedChanges }) else {
             statusMessage = DocumentSessionError.competingDrafts.localizedDescription
             return false
@@ -406,6 +420,12 @@ final class SketchyBarStore: ObservableObject {
         do {
             for fileID in changedIDs {
                 guard var session = sessions[fileID] else { continue }
+                if session.file.isMissingFromDisk {
+                    // There is no file to write, so the draft stays in
+                    // memory and is reported instead of being lost.
+                    missingFileNames.append(session.file.displayName)
+                    continue
+                }
                 droppedDrafts += missingDraftCount(in: session)
                 try session.save(using: luaScanner, shellScanner: shellScanner, backupService: backupService)
                 sessions[fileID] = session
@@ -413,8 +433,9 @@ final class SketchyBarStore: ObservableObject {
             }
             for key in stagedLoaderOrders.keys.sorted() { try applyStagedLoaderOrder(forKey: key) }
             reload(preservingDraftsExcept: savedFileIDs)
-            statusMessage = "Saved \(changedIDs.count) changed \(changedIDs.count == 1 ? "file" : "files")." + droppedDraftSuffix(droppedDrafts)
-            return true
+            statusMessage = savedMessage(savedCount: savedFileIDs.count, missingFileNames: missingFileNames)
+                + droppedDraftSuffix(droppedDrafts)
+            return missingFileNames.isEmpty
         } catch {
             if !savedFileIDs.isEmpty { reload(preservingDraftsExcept: savedFileIDs) }
             statusMessage = "Save All stopped: \(error.localizedDescription)"
@@ -808,6 +829,12 @@ final class SketchyBarStore: ObservableObject {
             .sorted { $0.id < $1.id }
         next.append(contentsOf: leftovers)
         files = next
+        // The files that are missing from disk keep their place in the
+        // sidebar, with the drafts they hold.
+        missingFiles = sessions.values
+            .map(\.file)
+            .filter { $0.isMissingFromDisk }
+            .sorted { $0.id < $1.id }
     }
 
     private func rebuildValueIndex() {
@@ -827,6 +854,19 @@ final class SketchyBarStore: ObservableObject {
     private func droppedDraftSuffix(_ count: Int) -> String {
         guard count > 0 else { return "" }
         return " \(count) edited \(count == 1 ? "value" : "values") no longer \(count == 1 ? "exists" : "exist") in the file and could not be saved."
+    }
+
+    /// The message of a save that lists what was saved and what could not
+    /// be saved because the file is gone.
+    private func savedMessage(savedCount: Int, missingFileNames: [String]) -> String {
+        var message = savedCount == 0
+            ? "No file was saved."
+            : "Saved \(savedCount) \(savedCount == 1 ? "file" : "files")."
+        guard !missingFileNames.isEmpty else { return message }
+        message += " \(missingFileNames.count) \(missingFileNames.count == 1 ? "file is" : "files are") missing from disk and "
+            + "\(missingFileNames.count == 1 ? "its draft was not saved" : "their drafts were not saved"): "
+            + missingFileNames.joined(separator: ", ")
+        return message
     }
 
     /// Two paths point at the same folder when they resolve to the same

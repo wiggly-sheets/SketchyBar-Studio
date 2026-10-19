@@ -46,7 +46,12 @@ This project follows a human-readable changelog style and aims to use semantic v
 - Editing a value no longer makes the app slow down: the preview, the sidebar and the bar preview only rebuild when their inputs change.
 
 - Drafts are matched by a stable key (key path plus its ordinal occurrence) instead of by line number, so saving an unrelated file no longer discards another file's draft when a line above it moved.
+- A draft now stays on the value it was made on. A draft is only carried over to a value that still holds the text the draft was made from, so a new block with the same option no longer moves an edit to another item. A draft that cannot be matched safely is reported and kept instead of being written to another value.
 - An edited value that no longer exists in the file is kept as a draft and reported instead of being dropped.
+- "Save All" now also covers the files that are missing from disk. The status message names every file whose draft could not be saved, the draft stays in memory, and the app keeps running until the draft is saved or discarded.
+- The backup under `backups/.sketchybar-studio/` holds the exact text that is about to be overwritten, not a version another process wrote in the meantime.
+- A file that is missing from disk stays marked as missing after an edit, so it keeps its place in the "Missing Files" section of the sidebar.
+- A `<<` that is not a heredoc, such as `count=$((a<<b))`, no longer hides the rest of a shell file. A heredoc whose terminator is missing no longer hides the rest of the file either.
 - `selectedFileID` cleared by the sidebar no longer shows a different file in the detail pane.
 - The activation message is no longer overwritten by the reload that follows it.
 - Saving one file now applies every staged loader order, not only the one of the selected file.
