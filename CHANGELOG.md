@@ -15,6 +15,7 @@ This project follows a human-readable changelog style and aims to use semantic v
 - Files that disappeared from disk keep their session and draft. They are listed in a "Missing Files" section of the sidebar and the draft comes back when the file returns.
 - The structured editor shows a file's read error, marks the sidebar row with a red dot, and disables the value editors and the save button for that file.
 - A reachability map shows what SketchyBar really loads. The new toolbar button opens a sheet with the files no loader reaches, the loader lines that point at files that are gone, and the require cycles. The map only reads the config and never changes it.
+- A config validator finds the problems SketchyBar ignores. The new "Diagnostics" toolbar button opens a sheet with the unknown options of an item, the values SketchyBar cannot use, the aliases that are used twice, the loader lines that point at a file that is gone, the files no loader reaches, the files with unbalanced brackets, and the item files that declare nothing. Every finding names the file and the line, and clicking it reveals the file in Finder. The validator only reads the config and never changes it.
 
 ### Changed
 

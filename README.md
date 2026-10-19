@@ -50,6 +50,7 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 - Finds files and editable values with search, and can show only unsaved changes.
 - Keeps a read-only, hideable code preview close to the editor. The preview shows the pending draft, so it matches what will be written to disk.
 - Shows a reachability map of the config: the files the loaders reach, the files no loader loads, the loader lines that point at files that are gone, and the require cycles. The map only reads the config.
+- Checks the config for the problems SketchyBar silently ignores: unknown options, values SketchyBar cannot use, duplicate item aliases, missing require targets, orphan files, unbalanced brackets, and item files that declare nothing. The diagnostics sheet names the file and the line of every finding, and clicking a finding reveals the file in Finder. The check only reads the config.
 
 ### Purpose-built editing
 
