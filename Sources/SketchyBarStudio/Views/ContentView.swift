@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showsReachability = false
     @State private var showsDiagnostics = false
+    @State private var showsAddItem = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -32,6 +33,13 @@ struct ContentView: View {
                     Label("Changed Only", systemImage: "line.3.horizontal.decrease.circle")
                 }
                 .help("Show only changed values")
+
+                Button {
+                    showsAddItem = true
+                } label: {
+                    Label("Add Item", systemImage: "plus")
+                }
+                .help("Create a new bar item")
 
                 Button {
                     store.reloadAsync()
@@ -86,6 +94,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showsDiagnostics) {
             DiagnosticsView(rootURL: store.configRoot)
+        }
+        .sheet(isPresented: $showsAddItem) {
+            AddItemWizard(store: store)
         }
     }
 

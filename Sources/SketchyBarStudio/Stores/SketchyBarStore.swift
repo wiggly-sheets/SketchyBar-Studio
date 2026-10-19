@@ -64,6 +64,14 @@ private struct ScannedConfigFile {
     let loadError: String?
 }
 
+/// A loader line the app added, with the content of the loader file before
+/// and after the change.
+private struct LoaderLineRecord {
+    let change: ActivationChange
+    /// The line as it was written into the loader file.
+    let line: String
+}
+
 /// Where a value lives inside its file.
 private struct ValueLocation {
     let fileID: ConfigFile.ID
@@ -92,6 +100,9 @@ final class SketchyBarStore: ObservableObject {
 
     private var sessions: [ConfigFile.ID: DocumentSession] = [:]
     private var valueIndex: [LuaEditableValue.ID: ValueLocation] = [:]
+    /// The loader lines the app added, keyed by the file they load. Undoing
+    /// the creation of that file takes the loader line with it.
+    private var loaderLineRecords: [String: LoaderLineRecord] = [:]
     /// The undo and redo steps of the edits the user made.
     private var undoStack = UndoStack()
     /// Bumped whenever the undo stack changes, so the menu items follow it.
@@ -878,6 +889,240 @@ final class SketchyBarStore: ObservableObject {
         }
         reload(preservingDraftsExcept: [])
         return true
+    }
+
+    // MARK: - New item files
+
+    /// Creates a new config file with the given contents.
+    ///
+    /// The file is written through the guarded write of the app, so a
+    /// symlinked file keeps its link. The folder of the file is created when
+    /// it does not exist yet, but only inside the config root. An existing
+    /// file is never replaced without `overwrite`, and a replaced file is
+    /// kept in the backup mirror first.
+    ///
+    /// The config is reloaded and the new file is selected, so the file
+    /// shows up in the sidebar right away. The change is undoable: undoing
+    /// it removes the new file, or puts the old text back when the file
+    /// existed before.
+    @discardableResult
+    func createItemFile(contents: String, at url: URL, overwrite: Bool = false) -> Bool {
+        guard isInsideConfigRoot(url) else {
+            statusMessage = "Refusing to write outside the config folder: \(url.path)"
+            return false
+        }
+
+        let replacer = SafeFileReplacer()
+        let existed = replacer.itemExists(at: url)
+        if existed, !overwrite {
+            statusMessage = "\(url.lastPathComponent) already exists. Confirm to replace it."
+            return false
+        }
+
+        var previousContents: String?
+        if existed {
+            previousContents = try? String(contentsOf: url, encoding: .utf8)
+            do {
+                // A file that is replaced is kept in the backup mirror first.
+                _ = try backupService.backup(fileURL: url, rootURL: configRoot)
+            } catch {
+                statusMessage = "Could not back up \(url.lastPathComponent): \(error.localizedDescription)"
+                return false
+            }
+        }
+
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try replacer.writeAtomicallyPreservingSymlinks(contents, to: url)
+        } catch {
+            statusMessage = "Could not create \(url.lastPathComponent): \(error.localizedDescription)"
+            return false
+        }
+
+        reload(preservingDraftsExcept: [])
+        if let created = files.first(where: { $0.url.standardizedFileURL.path == url.standardizedFileURL.path }) {
+            selectedFileID = created.id
+        }
+        statusMessage = "Created \(url.lastPathComponent)."
+
+        registerUndo(UndoAction(
+            title: "Create \(url.lastPathComponent)",
+            // The creation and the loader line are two steps, so they are
+            // never merged.
+            coalescingKey: nil,
+            undo: { [weak self] in
+                self?.removeCreatedItemFile(at: url, contents: contents, previousContents: previousContents) ?? false
+            },
+            redo: { [weak self] in self?.writeItemFile(contents: contents, at: url) ?? false }
+        ))
+        return true
+    }
+
+    /// Removes a file the app created, when it still holds the text the app
+    /// wrote. A file that existed before the creation is put back with its
+    /// old text.
+    @discardableResult
+    func removeCreatedItemFile(at url: URL, contents: String, previousContents: String? = nil) -> Bool {
+        // The loader line of the item goes with the file.
+        let key = url.standardizedFileURL.path
+        if let record = loaderLineRecords[key] {
+            guard removeLoaderLineIfPresent(record) else { return false }
+            loaderLineRecords.removeValue(forKey: key)
+        }
+
+        guard let current = try? String(contentsOf: url, encoding: .utf8) else {
+            // The file is gone already.
+            reload(preservingDraftsExcept: [])
+            return true
+        }
+        guard current == contents else {
+            statusMessage = "Undo failed: \(url.lastPathComponent) changed on disk and was not removed."
+            return false
+        }
+
+        do {
+            if let previousContents {
+                try SafeFileReplacer().writeAtomicallyPreservingSymlinks(previousContents, to: url)
+            } else {
+                try FileManager.default.removeItem(at: url)
+            }
+        } catch {
+            statusMessage = "Undo failed: \(error.localizedDescription)"
+            return false
+        }
+
+        reload(preservingDraftsExcept: [])
+        statusMessage = "Removed \(url.lastPathComponent)."
+        return true
+    }
+
+    /// Adds a loader line to a loader file.
+    ///
+    /// The write goes through the guarded path of the activation service:
+    /// the file is read again before the write, a backup is made, and a
+    /// symlinked file keeps its link. The change is undoable, and the undo
+    /// puts the loader file back byte for byte.
+    @discardableResult
+    func insertLoaderLine(_ line: String, into entrypointURL: URL, forItemFile itemFileURL: URL? = nil) -> Bool {
+        do {
+            let change = try activationService.insertLoaderLine(line, into: entrypointURL, rootURL: configRoot)
+            let record = LoaderLineRecord(change: change, line: line)
+            let key = (itemFileURL ?? entrypointURL).standardizedFileURL.path
+            loaderLineRecords[key] = record
+            reload(preservingDraftsExcept: [])
+            statusMessage = "Added the loader line to \(entrypointURL.lastPathComponent)."
+            registerUndo(UndoAction(
+                title: "Add loader line in \(entrypointURL.lastPathComponent)",
+                coalescingKey: nil,
+                undo: { [weak self] in self?.undoLoaderLine(record, key: key) ?? false },
+                redo: { [weak self] in self?.redoLoaderLine(record, key: key) ?? false }
+            ))
+            return true
+        } catch {
+            statusMessage = "Could not add the loader line: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Writes the file of a created item again, after an undo.
+    private func writeItemFile(contents: String, at url: URL) -> Bool {
+        guard isInsideConfigRoot(url) else { return false }
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try SafeFileReplacer().writeAtomicallyPreservingSymlinks(contents, to: url)
+        } catch {
+            statusMessage = "Redo failed: \(error.localizedDescription)"
+            return false
+        }
+        reload(preservingDraftsExcept: [])
+        statusMessage = "Created \(url.lastPathComponent)."
+        return true
+    }
+
+    /// Takes the loader line of a created item away.
+    private func undoLoaderLine(_ record: LoaderLineRecord, key: String) -> Bool {
+        do {
+            try activationService.restore([record.change], rootURL: configRoot)
+        } catch {
+            statusMessage = "Undo failed: \(error.localizedDescription)"
+            return false
+        }
+        loaderLineRecords.removeValue(forKey: key)
+        reload(preservingDraftsExcept: [])
+        statusMessage = "Removed the loader line from \(record.change.entrypointURL.lastPathComponent)."
+        return true
+    }
+
+    /// Puts the loader line of a created item back.
+    private func redoLoaderLine(_ record: LoaderLineRecord, key: String) -> Bool {
+        let current = (try? String(contentsOf: record.change.entrypointURL, encoding: .utf8)) ?? ""
+        if current == record.change.newContents {
+            // The line is already there.
+            return true
+        }
+        guard current == record.change.previousContents else {
+            statusMessage = "Redo failed: \(record.change.entrypointURL.lastPathComponent) changed on disk."
+            return false
+        }
+        do {
+            let change = try activationService.insertLoaderLine(
+                record.line,
+                into: record.change.entrypointURL,
+                rootURL: configRoot
+            )
+            loaderLineRecords[key] = LoaderLineRecord(change: change, line: record.line)
+            reload(preservingDraftsExcept: [])
+            statusMessage = "Added the loader line to \(record.change.entrypointURL.lastPathComponent)."
+            return true
+        } catch {
+            statusMessage = "Redo failed: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Removes the loader line of a created item, when it is still there.
+    private func removeLoaderLineIfPresent(_ record: LoaderLineRecord) -> Bool {
+        let current = (try? String(contentsOf: record.change.entrypointURL, encoding: .utf8)) ?? ""
+        guard current != record.change.newContents else {
+            do {
+                try activationService.restore([record.change], rootURL: configRoot)
+            } catch {
+                statusMessage = "Undo failed: \(error.localizedDescription)"
+                return false
+            }
+            return true
+        }
+        if current.contains(record.line) {
+            // The loader file changed on disk, so the line cannot be taken
+            // out without losing the other changes.
+            statusMessage = "Undo failed: \(record.change.entrypointURL.lastPathComponent) changed on disk."
+            return false
+        }
+        // The line is gone already.
+        return true
+    }
+
+    /// True when the url is inside the config root of the store.
+    private func isInsideConfigRoot(_ url: URL) -> Bool {
+        let roots = [
+            configRoot.standardizedFileURL.path,
+            configRoot.resolvingSymlinksInPath().standardizedFileURL.path
+        ]
+        let paths = [
+            url.standardizedFileURL.path,
+            url.resolvingSymlinksInPath().standardizedFileURL.path
+        ]
+        for root in roots {
+            let prefix = root.hasSuffix("/") ? root : root + "/"
+            if paths.contains(where: { $0.hasPrefix(prefix) }) { return true }
+        }
+        return false
     }
 
     func saveProfile() {
