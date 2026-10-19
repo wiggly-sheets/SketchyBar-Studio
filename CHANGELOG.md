@@ -8,6 +8,16 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ### Fixed
 
+- Editing a symlinked config file keeps the symlink: the write lands on the real file instead of replacing the link with a regular file.
+- Backups of symlinked files are regular files with the original content, and a failed copy keeps the previous backup instead of emptying the slot.
+- The backup mirror moved to `backups/.sketchybar-studio/`, so it never overwrites a file kept in `backups/` by the user.
+- Switching to a config nested inside the symlinked live config folder is refused instead of pointing the live folder at a subtree with no entrypoint.
+- A bare `require("name")` only matches a file in the config root, not a same-named file in a subfolder.
+- Toggling an item comments every loader line that loads it, across all entrypoints.
+- Restores and config switches keep the displaced copy under Application Support instead of next to the config folder.
+- An install interrupted by a crash is repaired on the next launch instead of leaving the live path missing.
+- Saves and loader edits re-read the file right before writing, so an external edit is reported instead of overwritten.
+- A corrupt config library file is reported and left untouched instead of being replaced by the default config.
 - Hex colors such as `0xff000000` are no longer truncated to `0` when scanned.
 - Colors are now detected from the key and from unquoted hex literals, so a quoted label like `"#ff0000"` is no longer edited as a color.
 - `updates` is edited as SketchyBar's `on`/`off`/`when_shown` enum and is written as a quoted string.

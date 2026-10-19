@@ -74,13 +74,20 @@ struct LuaConfigScanner {
             throw ConfigSourceSaveError.sourceChanged(fileURL)
         }
 
+        let originalContents = contents
         for value in changedValues.sorted(by: { $0.valueStartOffset > $1.valueStartOffset }) {
             let start = contents.index(contents.startIndex, offsetBy: value.valueStartOffset)
             let end = contents.index(contents.startIndex, offsetBy: value.valueEndOffset)
             contents.replaceSubrange(start..<end, with: serializedValue(value))
         }
 
-        try contents.write(to: fileURL, atomically: true, encoding: .utf8)
+        // Re-read right before the write so an external edit is not lost.
+        let latestContents = try String(contentsOf: fileURL, encoding: .utf8)
+        guard latestContents == originalContents else {
+            throw ConfigSourceSaveError.sourceChanged(fileURL)
+        }
+
+        try SafeFileReplacer().writeAtomicallyPreservingSymlinks(contents, to: fileURL)
     }
 
     private func serializedValue(_ value: LuaEditableValue) -> String {

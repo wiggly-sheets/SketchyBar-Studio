@@ -7,10 +7,11 @@ struct ConfigSwitchService {
 
     init(
         fileManager: FileManager = .default,
-        liveSketchyBarConfigURL: URL? = nil
+        liveSketchyBarConfigURL: URL? = nil,
+        appSupportRoot: URL? = nil
     ) {
         self.fileManager = fileManager
-        self.replacer = SafeFileReplacer(fileManager: fileManager)
+        self.replacer = SafeFileReplacer(fileManager: fileManager, appSupportRoot: appSupportRoot)
         self.configuredLiveSketchyBarConfigURL = liveSketchyBarConfigURL
     }
 
@@ -53,8 +54,12 @@ struct ConfigSwitchService {
             throw ConfigSwitchError.missingSource(source.path)
         }
 
-        if !replacer.isSymlink(destination),
-           replacer.isDescendant(resolvedSource, of: destination.resolvingSymlinksInPath().standardizedFileURL) {
+        // The live root is usually a symlink into the user's dotfiles repo, so
+        // the containment check has to use the resolved destination.
+        if replacer.isDescendant(
+            resolvedSource,
+            of: destination.resolvingSymlinksInPath().standardizedFileURL
+        ) {
             throw ConfigSwitchError.unsafeSource(source.path)
         }
 
@@ -63,6 +68,8 @@ struct ConfigSwitchService {
             throw ConfigSwitchError.unsafeDestination(destination.path)
         }
         try fileManager.createDirectory(at: destinationParent, withIntermediateDirectories: true)
+
+        replacer.sweepStagingItems(in: destinationParent, keeping: destination)
 
         let stagedLink = destinationParent.appendingPathComponent(
             ".\(destination.lastPathComponent).studio-switch-\(UUID().uuidString)"
@@ -75,14 +82,15 @@ struct ConfigSwitchService {
         try fileManager.createSymbolicLink(at: stagedLink, withDestinationURL: source)
 
         let replacedSymlink = replacer.isSymlink(destination)
-        let displacedPrefix = replacedSymlink
-            ? ".\(destination.lastPathComponent).studio-rollback-"
-            : "sketchybar.before-studio-switch-"
+        // The displaced copy lives in Application Support so a full copy of
+        // the config never shows up in the user's config repository.
+        let displaced = try replacer.displacedURL(for: destination)
         try replacer.install(
             stagedItem: stagedLink,
             at: destination,
             keepDisplaced: !replacedSymlink,
-            displacedPrefix: displacedPrefix
+            displacedPrefix: "sketchybar.before-studio-switch-",
+            displacedURL: displaced
         )
     }
 }

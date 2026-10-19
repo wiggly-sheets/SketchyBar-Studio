@@ -15,7 +15,7 @@ final class ConfigBackupTests: XCTestCase {
 
         XCTAssertEqual(
             backupURL.path,
-            root.appendingPathComponent("backups/items/left/battery.lua").path
+            root.appendingPathComponent("backups/.sketchybar-studio/items/left/battery.lua").path
         )
         XCTAssertEqual(try String(contentsOf: backupURL, encoding: .utf8), "battery_width = 42\n")
     }

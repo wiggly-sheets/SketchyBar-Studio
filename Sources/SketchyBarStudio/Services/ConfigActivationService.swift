@@ -18,6 +18,7 @@ enum ActivationUpdateError: LocalizedError {
 
 struct ConfigActivationService {
     private let backupService = ConfigBackupService()
+    private let replacer = SafeFileReplacer()
     private static let luaLoaderPatterns = [
         #"^\s*require\s*\(\s*["']([^"']+)["']\s*\)\s*;?\s*(?:--.*)?$"#,
         #"^\s*require\s+["']([^"']+)["']\s*;?\s*(?:--.*)?$"#,
@@ -34,58 +35,48 @@ struct ConfigActivationService {
     }
 
     func references(for fileURLs: [URL], rootURL: URL) -> [String: ActivationReference] {
-        var pending = fileURLs
+        let candidates = fileURLs
             .filter { canToggle(fileURL: $0, rootURL: rootURL) }
             .map { ActivationLookupCandidate(fileURL: $0, targets: matchTargets(fileURL: $0, rootURL: rootURL)) }
             .filter { !$0.targets.isEmpty }
-        var results: [String: ActivationReference] = [:]
+        var matchesByFile: [String: [ActivationMatch]] = [:]
 
         for entrypoint in entrypoints(in: rootURL) {
-            guard !pending.isEmpty,
-                  let contents = try? String(contentsOf: entrypoint, encoding: .utf8) else {
-                continue
-            }
+            guard let contents = try? readText(entrypoint) else { continue }
 
             for (offset, line) in contents.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-                guard !pending.isEmpty else { return results }
                 let text = String(line)
                 guard let target = loaderTarget(in: text, entrypointURL: entrypoint) else {
                     continue
                 }
 
-                guard let matchIndex = bestMatchIndex(
-                    in: pending,
-                    loaderTarget: target,
-                    rootURL: rootURL
-                ) else {
-                    continue
-                }
+                let parsedTargets = normalizedTargetForms(target, rootURL: rootURL)
+                let matched = candidates.filter { !$0.targets.isDisjoint(with: parsedTargets) }
+                guard matched.count == 1 else { continue }
 
-                let candidate = pending.remove(at: matchIndex)
-                results[candidate.fileURL.path] = ActivationReference(
-                    entrypointURL: entrypoint,
-                    lineNumber: offset + 1,
-                    isActive: !isCommented(text)
+                matchesByFile[matched[0].fileURL.path, default: []].append(
+                    ActivationMatch(
+                        entrypointURL: entrypoint,
+                        lineNumber: offset + 1,
+                        isActive: !isCommented(text)
+                    )
                 )
             }
         }
 
-        return results
-    }
-
-    private func bestMatchIndex(
-        in candidates: [ActivationLookupCandidate],
-        loaderTarget: String,
-        rootURL: URL
-    ) -> Int? {
-        let parsedTargets = normalizedTargetForms(loaderTarget, rootURL: rootURL)
-        let matches = candidates.indices.filter { !candidates[$0].targets.isDisjoint(with: parsedTargets) }
-        return matches.count == 1 ? matches[0] : nil
+        return matchesByFile.mapValues { matches in
+            ActivationReference(
+                entrypointURL: matches[0].entrypointURL,
+                lineNumber: matches[0].lineNumber,
+                isActive: matches.contains { $0.isActive },
+                matches: matches
+            )
+        }
     }
 
     func moveReference(for file: ConfigFile, direction: MoveDirection) throws {
         guard let reference = file.activationReference else { return }
-        let contents = try String(contentsOf: reference.entrypointURL, encoding: .utf8)
+        let contents = try readText(reference.entrypointURL)
         var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let index = reference.lineNumber - 1
         guard lines.indices.contains(index),
@@ -118,7 +109,7 @@ struct ConfigActivationService {
             return
         }
 
-        let contents = try String(contentsOf: source.entrypointURL, encoding: .utf8)
+        let contents = try readText(source.entrypointURL)
         var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let sourceIndex = source.lineNumber - 1
         let targetIndex = target.lineNumber - 1
@@ -188,7 +179,7 @@ struct ConfigActivationService {
                     orderByID[$0.id, default: .max] < orderByID[$1.id, default: .max]
                 }
                 guard desiredFiles.count > 1 else { continue }
-                let contents = try String(contentsOf: entrypointURL, encoding: .utf8)
+                let contents = try readText(entrypointURL)
                 var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
                 var lineByFileID: [ConfigFile.ID: String] = [:]
                 var loaderSlots: [Int] = []
@@ -223,26 +214,39 @@ struct ConfigActivationService {
         }
     }
 
+    /// Comments or uncomments every loader line that references the file, so
+    /// a file loaded from two entrypoints toggles in both places.
     func setActive(_ isActive: Bool, for file: ConfigFile) throws {
         guard let reference = file.activationReference else {
             return
         }
 
-        let contents = try String(contentsOf: reference.entrypointURL, encoding: .utf8)
-        var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let index = reference.lineNumber - 1
-        guard lines.indices.contains(index),
-              line(lines[index], references: file, entrypointURL: reference.entrypointURL) else {
-            throw ActivationUpdateError.referenceChanged(reference.entrypointURL)
+        let matchesByEntrypoint = Dictionary(grouping: reference.allMatches) {
+            $0.entrypointURL.standardizedFileURL.path
         }
 
-        lines[index] = isActive ? uncomment(lines[index]) : comment(lines[index], entrypointURL: reference.entrypointURL)
-        try writeIfChanged(
-            lines: lines,
-            originalContents: contents,
-            entrypointURL: reference.entrypointURL,
-            rootURL: file.rootURL
-        )
+        for entrypointPath in matchesByEntrypoint.keys.sorted() {
+            let matches = matchesByEntrypoint[entrypointPath] ?? []
+            guard let entrypointURL = matches.first?.entrypointURL else { continue }
+            let contents = try readText(entrypointURL)
+            var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+            for match in matches {
+                let index = match.lineNumber - 1
+                guard lines.indices.contains(index),
+                      line(lines[index], references: file, entrypointURL: entrypointURL) else {
+                    throw ActivationUpdateError.referenceChanged(entrypointURL)
+                }
+                lines[index] = isActive ? uncomment(lines[index]) : comment(lines[index], entrypointURL: entrypointURL)
+            }
+
+            try writeIfChanged(
+                lines: lines,
+                originalContents: contents,
+                entrypointURL: entrypointURL,
+                rootURL: file.rootURL
+            )
+        }
     }
 
     private func line(_ line: String, references file: ConfigFile, entrypointURL: URL) -> Bool {
@@ -253,6 +257,8 @@ struct ConfigActivationService {
             .isDisjoint(with: normalizedTargetForms(target, rootURL: file.rootURL))
     }
 
+    /// Writes the entrypoint only when it still holds the content the change
+    /// was computed from, so an external edit is never overwritten.
     private func writeIfChanged(
         lines: [String],
         originalContents: String,
@@ -261,8 +267,26 @@ struct ConfigActivationService {
     ) throws {
         let updatedContents = lines.joined(separator: "\n")
         guard updatedContents != originalContents else { return }
+
+        let currentContents = try readText(entrypointURL)
+        guard currentContents == originalContents else {
+            throw ActivationUpdateError.referenceChanged(entrypointURL)
+        }
+
         _ = try backupService.backup(fileURL: entrypointURL, rootURL: rootURL)
-        try updatedContents.write(to: entrypointURL, atomically: true, encoding: .utf8)
+
+        let finalContents = try readText(entrypointURL)
+        guard finalContents == originalContents else {
+            throw ActivationUpdateError.referenceChanged(entrypointURL)
+        }
+
+        try replacer.writeAtomicallyPreservingSymlinks(updatedContents, to: entrypointURL)
+    }
+
+    /// Reads an entrypoint without a leading byte-order mark so the first
+    /// line matches loader patterns like every other line.
+    private func readText(_ url: URL) throws -> String {
+        try String(contentsOf: url, encoding: .utf8).strippingByteOrderMark()
     }
 
     private func entrypoints(in rootURL: URL) -> [URL] {
@@ -307,19 +331,26 @@ struct ConfigActivationService {
         return indent + rest
     }
 
+    /// Loader targets that select this file. Bare names only count for files
+    /// in the config root: SketchyBar resolves `require("battery")` to
+    /// `<root>/battery.lua`, never to `items/battery.lua`.
     private func matchTargets(fileURL: URL, rootURL: URL) -> Set<String> {
         let relative = relativePath(for: fileURL, rootURL: rootURL)
         let noExtension = (relative as NSString).deletingPathExtension
         let dotted = noExtension.replacingOccurrences(of: "/", with: ".")
-        let baseName = fileURL.deletingPathExtension().lastPathComponent
 
-        return Set([
-            fileURL.lastPathComponent.lowercased(),
+        var targets = Set([
             relative.lowercased(),
             noExtension.lowercased(),
-            dotted.lowercased(),
-            baseName.lowercased()
-        ].filter { !$0.isEmpty })
+            dotted.lowercased()
+        ])
+
+        if !relative.contains("/") {
+            targets.insert(fileURL.lastPathComponent.lowercased())
+            targets.insert(fileURL.deletingPathExtension().lastPathComponent.lowercased())
+        }
+
+        return targets.filter { !$0.isEmpty }
     }
 
     private func loaderTarget(in line: String, entrypointURL: URL) -> String? {
@@ -425,4 +456,10 @@ struct ConfigActivationService {
 private struct ActivationLookupCandidate {
     let fileURL: URL
     let targets: Set<String>
+}
+
+private extension String {
+    func strippingByteOrderMark() -> String {
+        hasPrefix("\u{FEFF}") ? String(dropFirst()) : self
+    }
 }

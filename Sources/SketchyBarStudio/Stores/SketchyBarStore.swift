@@ -53,7 +53,14 @@ final class SketchyBarStore: ObservableObject {
         }
 
         let defaultRoot = locator.defaultConfigRoot
-        let loadedConfigs = configLibraryService.load(defaultConfigRoot: defaultRoot)
+        var libraryError: String?
+        let loadedConfigs: [ConfigWorkspace]
+        do {
+            loadedConfigs = try configLibraryService.load(defaultConfigRoot: defaultRoot)
+        } catch {
+            libraryError = error.localizedDescription
+            loadedConfigs = [ConfigWorkspace(id: "default", name: "Default", path: defaultRoot.path, createdAt: .now)]
+        }
         let savedConfigID = UserDefaults.standard.string(forKey: "selectedConfigID") ?? loadedConfigs.first?.id
         let selected = loadedConfigs.first { $0.id == savedConfigID } ?? loadedConfigs.first
         configRoot = selected?.url ?? defaultRoot
@@ -61,6 +68,9 @@ final class SketchyBarStore: ObservableObject {
         selectedConfigID = selected?.id
         newConfigPath = configRoot.path
         reload()
+        if let libraryError {
+            statusMessage = "Config library could not be read: \(libraryError)"
+        }
     }
 
     var selectedConfig: ConfigWorkspace? {
@@ -412,7 +422,7 @@ final class SketchyBarStore: ObservableObject {
         do {
             try profileService.restore(profile: profile, to: configRoot)
             reload(preservingDraftsExcept: Set(files.map(\.id)))
-            statusMessage = "Restored \(profile.name). A timestamped backup of the previous config was kept next to the config folder."
+            statusMessage = "Restored \(profile.name). A timestamped copy of the previous config was kept in the app's Application Support folder."
         } catch {
             statusMessage = "Restore failed: \(error.localizedDescription)"
         }

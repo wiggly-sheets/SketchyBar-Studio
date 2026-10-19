@@ -6,10 +6,26 @@ enum ConfigFileKind: String, Hashable {
     case sketchybarRC = "sketchybarrc"
 }
 
+/// One loader line that references a config file.
+struct ActivationMatch: Hashable {
+    let entrypointURL: URL
+    let lineNumber: Int
+    let isActive: Bool
+}
+
 struct ActivationReference: Hashable {
     let entrypointURL: URL
     let lineNumber: Int
     let isActive: Bool
+    /// Every loader line that references the file, across all entrypoints.
+    var matches: [ActivationMatch] = []
+
+    /// The primary reference plus every additional loader line.
+    var allMatches: [ActivationMatch] {
+        matches.isEmpty
+            ? [ActivationMatch(entrypointURL: entrypointURL, lineNumber: lineNumber, isActive: isActive)]
+            : matches
+    }
 }
 
 struct ConfigFile: Identifiable, Hashable {
