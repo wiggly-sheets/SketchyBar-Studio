@@ -273,13 +273,34 @@ private struct EditableValueRow: View {
     let onSelect: () -> Void
     let onChange: (String) -> Void
 
+    @State private var isShowingDoc = false
+
     var body: some View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 8) {
             GridRow {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(value.keyPath)
-                        .font(.body)
-                        .fontWeight(.medium)
+                    HStack(spacing: 4) {
+                        Text(value.keyPath)
+                            .font(.body)
+                            .fontWeight(.medium)
+
+                        if let doc {
+                            Button {
+                                isShowingDoc = true
+                            } label: {
+                                Image(systemName: "info.circle")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Option reference for \(value.keyPath)")
+                            .accessibilityLabel("Option reference for \(value.keyPath)")
+                            .popover(isPresented: $isShowingDoc) {
+                                OptionDocPopover(doc: doc)
+                            }
+                        }
+                    }
+
                     Text(value.isMissingFromFile ? "Not in file any more - draft kept" : "\(value.displayLine) - \(value.kind.rawValue)")
                         .font(.caption)
                         .foregroundStyle(value.isMissingFromFile ? .red : .secondary)
@@ -326,10 +347,22 @@ private struct EditableValueRow: View {
             }
             .labelsHidden()
             .frame(maxWidth: 260, alignment: .leading)
-            .help(value.keyPath)
+            .help(helpText(value.keyPath))
         } else {
             manualEditor
         }
+    }
+
+    /// The reference entry of the row, when the option has one.
+    private var doc: SketchyBarOptionDoc? {
+        SketchyBarOptionDocs.doc(for: value.keyPath)
+    }
+
+    /// Adds the summary of the reference entry to a tooltip, so the text is
+    /// also readable without opening the popover.
+    private func helpText(_ text: String) -> String {
+        guard let summary = doc?.summary else { return text }
+        return "\(text)\n\(summary)"
     }
 
     private var widthEditor: some View {
@@ -346,7 +379,7 @@ private struct EditableValueRow: View {
             }
             .labelsHidden()
             .frame(maxWidth: 140)
-            .help("\(value.keyPath): switch between a dynamic width and a fixed number of points")
+            .help(helpText("\(value.keyPath): switch between a dynamic width and a fixed number of points"))
 
             ValidatedNumberField(
                 title: "Width",
@@ -383,11 +416,11 @@ private struct EditableValueRow: View {
             } label: {
                 Label("Choose Font...", systemImage: "textformat")
             }
-            .help("\(value.keyPath): pick a font family, style and size")
+            .help(helpText("\(value.keyPath): pick a font family, style and size"))
 
             TextField("Value", text: Binding(get: { value.draftValue }, set: onChange))
                 .textFieldStyle(.roundedBorder)
-                .help(value.keyPath)
+                .help(helpText(value.keyPath))
         }
     }
 
@@ -404,16 +437,17 @@ private struct EditableValueRow: View {
             )
             .labelsHidden()
             .accessibilityLabel(value.keyPath)
-            .help("\(value.keyPath): turn this option on or off")
+            .help(helpText("\(value.keyPath): turn this option on or off"))
         case .color:
             colorEditor
         case .number:
             ValidatedNumberField(title: "Value", value: value.draftValue, onCommit: onChange)
                 .frame(maxWidth: 240)
+                .help(helpText(value.keyPath))
         case .string:
             TextField("Value", text: Binding(get: { value.draftValue }, set: onChange))
                 .textFieldStyle(.roundedBorder)
-                .help(value.keyPath)
+                .help(helpText(value.keyPath))
         }
     }
 
@@ -428,12 +462,12 @@ private struct EditableValueRow: View {
                 supportsOpacity: true
             )
             .labelsHidden()
-            .help("\(value.keyPath): pick a color. The format of the current value is kept")
+            .help(helpText("\(value.keyPath): pick a color. The format of the current value is kept"))
 
             TextField("Value", text: Binding(get: { value.draftValue }, set: onChange))
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 150)
-                .help(value.keyPath)
+                .help(helpText(value.keyPath))
 
             if colorIsUnreadable {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -452,6 +486,41 @@ private struct EditableValueRow: View {
 
     private var colorIsUnreadable: Bool {
         SketchyBarColor.parse(value.draftValue) == nil
+    }
+}
+
+/// The reference entry of an option, shown in a popover.
+private struct OptionDocPopover: View {
+    let doc: SketchyBarOptionDoc
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(doc.key)
+                .font(.headline)
+
+            Text(doc.summary)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+
+            row("Type", doc.type.rawValue)
+            row("Values", doc.values.isEmpty ? "any value" : doc.values.joined(separator: ", "))
+            row("Default", doc.defaultValue ?? "no default")
+        }
+        .padding(16)
+        .frame(width: 300, alignment: .leading)
+    }
+
+    private func row(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 56, alignment: .leading)
+
+            Text(value)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

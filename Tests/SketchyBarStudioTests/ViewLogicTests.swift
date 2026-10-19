@@ -500,4 +500,114 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertEqual(StatusKind(message: "Staged foo earlier. Save to update the loader."), .warning)
         XCTAssertEqual(StatusKind(message: "Point the app at a config folder."), .info)
     }
+
+    // MARK: - Option reference
+
+    func testOptionDocsResolveAFlatKey() throws {
+        let doc = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "position"))
+
+        XCTAssertEqual(doc.key, "position")
+        XCTAssertEqual(doc.type, .enumeration)
+        XCTAssertFalse(doc.summary.isEmpty)
+    }
+
+    func testOptionDocsResolveAQualifiedKeyThatHasItsOwnEntry() throws {
+        let doc = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "popup.height"))
+
+        XCTAssertEqual(doc.key, "popup.height")
+        XCTAssertEqual(doc.defaultValue, "30")
+    }
+
+    func testOptionDocsFallBackToTheLeafKey() throws {
+        let fontSize = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "icon.font.size"))
+        XCTAssertEqual(fontSize.key, "size")
+
+        let borderColor = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "background.border_color"))
+        XCTAssertEqual(borderColor.key, "border_color")
+    }
+
+    func testOptionDocsHaveNoEntryForAnUnknownKey() {
+        XCTAssertNil(SketchyBarOptionDocs.doc(for: "not_a_sketchybar_option"))
+        XCTAssertNil(SketchyBarOptionDocs.doc(for: ""))
+    }
+
+    func testOptionDocsTableHasTheCoreKeys() {
+        let keys = Set(SketchyBarOptionDocs.all.map(\.key))
+
+        for key in ["position", "align", "width", "updates", "update_freq", "icon", "label",
+                    "script", "click_script", "space", "display", "associated_display",
+                    "associated_space", "ignore_association", "scroll_texts", "scroll_duration",
+                    "max_chars", "cache_scripts", "lazy", "drawing", "shadow", "font",
+                    "color", "highlight", "highlight_color", "padding_left", "padding_right",
+                    "x_offset", "y_offset", "border_color", "border_width", "corner_radius",
+                    "fill_color", "symbol_color", "symbol_mode", "percentage", "anchor",
+                    "margin", "topmost", "sticky", "show_in_fullscreen", "hidden",
+                    "font_smoothing", "notch_width", "notch_offset", "notch_display_height",
+                    "horizontal"] {
+            XCTAssertTrue(keys.contains(key), "missing option reference for \(key)")
+        }
+    }
+
+    func testOptionDocsKeysAreUnique() {
+        XCTAssertEqual(Set(SketchyBarOptionDocs.all.map(\.key)).count, SketchyBarOptionDocs.all.count)
+    }
+
+    func testOptionDocsListTheAcceptedValues() throws {
+        let position = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "position"))
+        XCTAssertEqual(position.values, ["left", "right", "center", "q", "e", "popup", "top", "bottom"])
+
+        let updates = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "updates"))
+        XCTAssertEqual(updates.values, ["on", "off", "when_shown"])
+
+        let align = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "align"))
+        XCTAssertEqual(align.values, ["left", "right", "center"])
+    }
+
+    // MARK: - Option suggestions
+
+    private let catalog = SketchyBarOptionCatalog()
+
+    func testCatalogKeepsTheCurrentValueFirst() {
+        let values = catalog.suggestedValues(for: "symbol_mode", currentValue: "custom")
+
+        XCTAssertEqual(values.first, "custom")
+        XCTAssertTrue(values.contains("automatic"))
+    }
+
+    func testCatalogReturnsThePositionList() {
+        XCTAssertEqual(
+            catalog.suggestedValues(for: "position", currentValue: "left"),
+            ["left", "right", "center", "q", "e"]
+        )
+    }
+
+    func testCatalogKeepsThePopupPositionHint() {
+        let values = catalog.suggestedValues(for: "position", currentValue: "popup.space.1")
+
+        XCTAssertEqual(values.first, "popup.space.1")
+        XCTAssertTrue(values.contains("center"))
+    }
+
+    func testCatalogReturnsTheBooleanListForABooleanKey() {
+        XCTAssertEqual(
+            catalog.suggestedValues(for: "drawing", currentValue: "true"),
+            ["true", "false"]
+        )
+    }
+
+    func testCatalogReturnsTheValuesOfTheOptionReference() {
+        XCTAssertEqual(
+            catalog.suggestedValues(for: "symbol_mode", currentValue: "color"),
+            ["automatic", "color", "draw"]
+        )
+        XCTAssertEqual(
+            catalog.suggestedValues(for: "updates", currentValue: "when_shown"),
+            ["on", "off", "when_shown"]
+        )
+    }
+
+    func testCatalogHasNoSuggestionsForAFreeFormOption() {
+        XCTAssertEqual(catalog.suggestedValues(for: "scroll_duration", currentValue: "200"), [])
+        XCTAssertEqual(catalog.suggestedValues(for: "update_freq", currentValue: "5"), [])
+    }
 }
