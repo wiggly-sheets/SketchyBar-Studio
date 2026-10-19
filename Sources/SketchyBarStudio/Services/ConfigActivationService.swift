@@ -7,11 +7,17 @@ enum MoveDirection {
 
 enum ActivationUpdateError: LocalizedError {
     case referenceChanged(URL)
+    case emptyLoaderLine(URL)
+    case duplicateLoaderLine(URL)
 
     var errorDescription: String? {
         switch self {
         case .referenceChanged(let entrypointURL):
             return "Loader references in \(entrypointURL.lastPathComponent) changed on disk. Reload before updating their order or activation."
+        case .emptyLoaderLine(let entrypointURL):
+            return "The loader line for \(entrypointURL.lastPathComponent) is empty."
+        case .duplicateLoaderLine(let entrypointURL):
+            return "\(entrypointURL.lastPathComponent) already loads this file."
         }
     }
 }
@@ -271,6 +277,47 @@ struct ConfigActivationService {
             ))
         }
         return changes
+    }
+
+    /// Adds a loader line to an entrypoint.
+    ///
+    /// The line goes after the last loader line of the file, so it lands
+    /// inside the block that loads the other items. A file without a loader
+    /// line gets the new line at the end.
+    ///
+    /// The write goes through the same guards as every other loader write:
+    /// the file is read again before the write, a backup is made first, and
+    /// a symlinked file keeps its link.
+    @discardableResult
+    func insertLoaderLine(_ line: String, into entrypointURL: URL, rootURL: URL) throws -> ActivationChange {
+        let contents = try readText(entrypointURL)
+        let isLua = LuaSourceDetection.isLua(contents)
+        var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+        let newLine = line.trimmingCharacters(in: .whitespaces)
+        guard !newLine.isEmpty else {
+            throw ActivationUpdateError.emptyLoaderLine(entrypointURL)
+        }
+        guard !lines.contains(where: { $0.trimmingCharacters(in: .whitespaces) == newLine }) else {
+            throw ActivationUpdateError.duplicateLoaderLine(entrypointURL)
+        }
+
+        let loaderIndices = lines.indices.filter { loaderTarget(in: lines[$0], isLua: isLua) != nil }
+        let insertionIndex = loaderIndices.last.map { $0 + 1 } ?? lines.count
+        lines.insert(newLine, at: insertionIndex)
+
+        try writeIfChanged(
+            lines: lines,
+            originalContents: contents,
+            entrypointURL: entrypointURL,
+            rootURL: rootURL
+        )
+
+        return ActivationChange(
+            entrypointURL: entrypointURL,
+            previousContents: contents,
+            newContents: lines.joined(separator: "\n")
+        )
     }
 
     /// Puts the previous content back on every entrypoint an activation
