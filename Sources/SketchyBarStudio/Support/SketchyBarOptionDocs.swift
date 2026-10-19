@@ -32,7 +32,8 @@ struct SketchyBarOptionDoc {
 /// position.
 ///
 /// A few qualified keys are listed as well, for the options whose meaning or
-/// default differs from the leaf name, such as `popup.height`.
+/// default differs from the leaf name, such as `popup.height`, and for the
+/// sub domains of a component, such as `icon.font.size`.
 enum SketchyBarOptionDocs {
     static let all: [SketchyBarOptionDoc] = [
         // MARK: Item properties
@@ -144,6 +145,56 @@ enum SketchyBarOptionDocs {
         entry("blue", .number,
               "Blue part of a color, from 0 to 255."),
 
+        // MARK: Icon and label properties
+        //
+        // The icon and the label are text components, so they take the
+        // text properties above. These entries name the component the
+        // property belongs to.
+
+        entry("icon.string", .string,
+              "Text that is drawn as the icon."),
+        entry("icon.color", .color,
+              "Color of the icon text.", defaultValue: "0xffffffff"),
+        entry("icon.highlight", .boolean,
+              "Uses the highlight color instead of the normal color.",
+              values: ["on", "off"], defaultValue: "off"),
+        entry("icon.highlight_color", .color,
+              "Color used while the icon is highlighted.", defaultValue: "0xff000000"),
+        entry("icon.font", .font,
+              "Font of the icon text.", defaultValue: "Hack Nerd Font:Bold:14.0"),
+        entry("icon.font.family", .string,
+              "Font family of the icon text.", defaultValue: "Hack Nerd Font"),
+        entry("icon.font.style", .string,
+              "Font style of the icon text, such as Bold or Italic.", defaultValue: "Bold"),
+        entry("icon.font.size", .number,
+              "Font size of the icon text in points.", defaultValue: "14"),
+        entry("icon.width", .number,
+              "Width of the icon in points, or dynamic to fit the content.",
+              values: ["dynamic"], defaultValue: "dynamic"),
+        entry("label.string", .string,
+              "Text that is drawn as the label."),
+        entry("label.color", .color,
+              "Color of the label text.", defaultValue: "0xffffffff"),
+        entry("label.highlight", .boolean,
+              "Uses the highlight color instead of the normal color.",
+              values: ["on", "off"], defaultValue: "off"),
+        entry("label.highlight_color", .color,
+              "Color used while the label is highlighted.", defaultValue: "0xff000000"),
+        entry("label.font", .font,
+              "Font of the label text.", defaultValue: "Hack Nerd Font:Bold:14.0"),
+        entry("label.font.family", .string,
+              "Font family of the label text.", defaultValue: "Hack Nerd Font"),
+        entry("label.font.style", .string,
+              "Font style of the label text, such as Bold or Italic.", defaultValue: "Bold"),
+        entry("label.font.size", .number,
+              "Font size of the label text in points.", defaultValue: "14"),
+        entry("font.family", .string,
+              "Font family of the text.", defaultValue: "Hack Nerd Font"),
+        entry("font.style", .string,
+              "Font style of the text, such as Bold or Italic.", defaultValue: "Bold"),
+        entry("font.size", .number,
+              "Font size of the text in points.", defaultValue: "14"),
+
         // MARK: Background properties
 
         entry("background.color", .color,
@@ -151,6 +202,18 @@ enum SketchyBarOptionDocs {
         entry("background.drawing", .boolean,
               "Shows or hides the background.",
               values: ["on", "off"], defaultValue: "off"),
+        entry("background.border_color", .color,
+              "Color of the border of the background.", defaultValue: "0x00000000"),
+        entry("background.border_width", .number,
+              "Width of the border of the background in points.", defaultValue: "0"),
+        entry("background.corner_radius", .number,
+              "Corner radius of the background in points.", defaultValue: "0"),
+        entry("background.height", .number,
+              "Height of the background in points.", defaultValue: "0"),
+        entry("background.clip", .number,
+              "Amount the background clips the bar.", defaultValue: "0.0"),
+        entry("background.image", .string,
+              "Image shown in the background, such as a file name or app.<bundle-id>."),
         entry("border_color", .color,
               "Color of the border.", defaultValue: "0x00000000"),
         entry("border_width", .number,
@@ -207,6 +270,18 @@ enum SketchyBarOptionDocs {
         entry("popup.topmost", .boolean,
               "Keeps the popup above other windows.",
               values: ["on", "off"], defaultValue: "on"),
+        entry("popup.horizontal", .boolean,
+              "Lays the popup out in rows instead of one column.",
+              values: ["on", "off"], defaultValue: "off"),
+        entry("popup.fill_row", .boolean,
+              "Fills the full row width of a popup.",
+              values: ["on", "off"], defaultValue: "off"),
+        entry("popup.columns", .number,
+              "Number of columns of a popup.", defaultValue: "0"),
+        entry("popup.cell_width", .number,
+              "Width of a popup row in points.", defaultValue: "0"),
+        entry("popup.cell_padding", .number,
+              "Padding inside a popup row in points.", defaultValue: "0"),
         entry("horizontal", .boolean,
               "Lays the popup out in rows instead of one column.",
               values: ["on", "off"], defaultValue: "off"),

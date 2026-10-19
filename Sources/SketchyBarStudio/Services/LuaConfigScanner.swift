@@ -17,10 +17,66 @@ struct LuaConfigScanner {
     /// Scans values from contents that were read elsewhere, so the file is
     /// not read twice.
     func scan(fileURL: URL, contents: String) -> [LuaEditableValue] {
+        // A file with SbarLua items is read with the Lua parser, so the keys
+        // of a nested table keep their path. The plain scan fills in the rest
+        // of the file and skips the values the parser already found.
+        let structured = structuredValues(fileURL: fileURL, contents: contents)
+        let plain = scannedValues(fileURL: fileURL, contents: contents, excluding: structured)
+        let results = (structured + plain).sorted { $0.valueStartOffset < $1.valueStartOffset }
+        return LuaEditableValue.assigningStableKeys(results)
+    }
+
+    /// The values of the SbarLua items of the file, with the key path of
+    /// every value relative to the table of its item.
+    private func structuredValues(fileURL: URL, contents: String) -> [LuaEditableValue] {
+        guard contents.contains("sbar") else { return [] }
+
+        let items = SbarLuaItemParser.items(in: contents)
+        guard !items.isEmpty else { return [] }
+
+        let lineStarts = Self.lineStarts(in: contents)
+        var results: [LuaEditableValue] = []
+
+        for item in items {
+            for value in item.values {
+                let lineNumber = Self.lineNumber(for: value.valueStartOffset, lineStarts: lineStarts)
+                let displayValue = SketchyBarValueRules.normalizedDisplayValue(
+                    SketchyBarValueRules.displayValue(for: value.rawValue, keyPath: value.keyPath),
+                    keyPath: value.keyPath
+                )
+
+                results.append(
+                    LuaEditableValue(
+                        id: "\(fileURL.path):\(lineNumber):\(value.keyPath):\(value.valueStartOffset)",
+                        fileURL: fileURL,
+                        keyPath: value.keyPath,
+                        lineNumber: lineNumber,
+                        kind: SketchyBarValueRules.kind(for: value.rawValue, keyPath: value.keyPath),
+                        originalValue: displayValue,
+                        draftValue: displayValue,
+                        suggestedValues: optionCatalog.suggestedValues(for: value.keyPath, currentValue: displayValue),
+                        valueStartOffset: value.valueStartOffset,
+                        valueEndOffset: value.valueEndOffset,
+                        sourceSnapshot: contents
+                    )
+                )
+            }
+        }
+
+        return results
+    }
+
+    /// The values of the file that the plain scan finds. The values that the
+    /// Lua parser already found are skipped, so a value is never listed
+    /// twice.
+    private func scannedValues(fileURL: URL, contents: String, excluding structured: [LuaEditableValue]) -> [LuaEditableValue] {
         guard let regex = Self.assignmentRegex else {
             return []
         }
 
+        let claimed = structured
+            .map { LuaSourceRange(start: $0.valueStartOffset, end: $0.valueEndOffset) }
+            .sorted { $0.start < $1.start }
         let ignoredRegions = SourceRegions.luaIgnoredRegions(in: contents)
         var results: [LuaEditableValue] = []
         var lineNumber = 1
@@ -39,6 +95,9 @@ struct LuaConfigScanner {
                 let valueStart = lineStart + line.distance(from: line.startIndex, to: valueRange.lowerBound)
                 let valueEnd = lineStart + line.distance(from: line.startIndex, to: valueRange.upperBound)
                 guard !ignoredRegions.contains(where: { $0.intersects(valueStart, valueEnd) }) else {
+                    continue
+                }
+                guard !isClaimed(start: valueStart, end: valueEnd, in: claimed) else {
                     continue
                 }
 
@@ -69,7 +128,62 @@ struct LuaConfigScanner {
             lineNumber += 1
         }
 
-        return LuaEditableValue.assigningStableKeys(results)
+        return results
+    }
+
+    /// The character offset of the start of every line.
+    private static func lineStarts(in contents: String) -> [Int] {
+        var starts = [0]
+        var offset = 0
+        for character in contents {
+            offset += 1
+            if character.isNewline {
+                starts.append(offset)
+            }
+        }
+        return starts
+    }
+
+    /// True when a range is already covered by one of the claimed ranges.
+    ///
+    /// The claimed ranges are sorted by their start and never overlap, so
+    /// only the range at the found place and the one before it can touch
+    /// the given range.
+    private func isClaimed(start: Int, end: Int, in claimed: [LuaSourceRange]) -> Bool {
+        var low = 0
+        var high = claimed.count - 1
+        var index = -1
+        while low <= high {
+            let middle = (low + high) / 2
+            if claimed[middle].start <= start {
+                index = middle
+                low = middle + 1
+            } else {
+                high = middle - 1
+            }
+        }
+
+        guard index >= 0 else { return false }
+        if claimed[index].intersects(LuaSourceRange(start: start, end: end)) { return true }
+        if index > 0, claimed[index - 1].intersects(LuaSourceRange(start: start, end: end)) { return true }
+        return false
+    }
+
+    /// The line a character offset belongs to.
+    private static func lineNumber(for offset: Int, lineStarts: [Int]) -> Int {
+        var low = 0
+        var high = lineStarts.count - 1
+        var line = 0
+        while low <= high {
+            let middle = (low + high) / 2
+            if lineStarts[middle] <= offset {
+                line = middle
+                low = middle + 1
+            } else {
+                high = middle - 1
+            }
+        }
+        return line + 1
     }
 
     func save(values: [LuaEditableValue], to fileURL: URL, rootURL: URL) throws {

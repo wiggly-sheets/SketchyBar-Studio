@@ -518,12 +518,25 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertEqual(doc.defaultValue, "30")
     }
 
-    func testOptionDocsFallBackToTheLeafKey() throws {
+    func testOptionDocsResolveTheQualifiedKeysOfTheSubDomains() throws {
         let fontSize = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "icon.font.size"))
-        XCTAssertEqual(fontSize.key, "size")
+        XCTAssertEqual(fontSize.key, "icon.font.size")
+        XCTAssertEqual(fontSize.defaultValue, "14")
 
         let borderColor = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "background.border_color"))
-        XCTAssertEqual(borderColor.key, "border_color")
+        XCTAssertEqual(borderColor.key, "background.border_color")
+
+        let labelColor = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "label.color"))
+        XCTAssertEqual(labelColor.key, "label.color")
+        XCTAssertEqual(labelColor.type, .color)
+    }
+
+    func testOptionDocsFallBackToTheLeafKey() throws {
+        let padding = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "icon.padding_left"))
+        XCTAssertEqual(padding.key, "padding_left")
+
+        let maxChars = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "label.max_chars"))
+        XCTAssertEqual(maxChars.key, "max_chars")
     }
 
     func testOptionDocsHaveNoEntryForAnUnknownKey() {

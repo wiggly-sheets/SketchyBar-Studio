@@ -59,6 +59,7 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 - Opens the native macOS color picker, saving colors as `0xAARRGGBB`.
 - Opens the native macOS font panel, saving SketchyBar font syntax.
 - Groups controls into practical sections such as item, icon, label, background, popup, and scripts.
+- Reads nested SbarLua item tables with their full key path, such as `icon.font.size` or `background.border_color`, so a value of the icon is never mixed up with a value of the label.
 - Normalizes boolean-style values to `true` and `false`, while preserving SketchyBar-specific choices such as `updates = on/off/when_shown`.
 
 ### Activation and ordering
