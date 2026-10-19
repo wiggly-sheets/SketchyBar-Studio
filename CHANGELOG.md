@@ -8,6 +8,7 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ### Added
 
+- SbarLua item tables are now read with their real structure. A value inside a nested table keeps its full path, such as `icon.font.size` or `background.border_color`, instead of a flat `size` or `border_color` that could belong to any part of the item. The values are grouped by the part of the item they belong to, and the option reference shows the entry of the exact key.
 - Every known SketchyBar option now has a reference entry: an info button next to the key path opens a popover with the meaning, the type, the accepted values and the default of the option. The summary is also part of the tooltip of the value editor.
 - The dropdown suggestions come from the SketchyBar sources instead of a short hand written list, so options such as `symbol_mode`, `anchor` and `cap` now offer their real values.
 - Quitting now asks what to do with unsaved edits: Save All, Discard, or Cancel. Closing the last window keeps the app alive while drafts exist.

@@ -241,14 +241,35 @@ struct EditableValueGroup: Identifiable {
         }
     }
 
+    /// The section a value belongs to.
+    ///
+    /// The section comes from the first segment of the key path, so
+    /// `icon.font.size` lands in the icon section and a plain `width` lands
+    /// in the item section.
     static func title(for value: LuaEditableValue) -> String {
         let key = value.keyPath.lowercased()
-        if key.contains("icon") { return "Icon" }
-        if key.contains("label") { return "Label" }
-        if key.contains("background") { return "Background" }
-        if key.contains("popup") { return "Popup" }
-        if key.contains("script") { return "Scripts" }
-        return "Item"
+        let first = key.split(separator: ".").first.map(String.init) ?? key
+        switch first {
+        case "icon": return "Icon"
+        case "label": return "Label"
+        case "background": return "Background"
+        case "popup": return "Popup"
+        case "script", "click_script": return "Scripts"
+        case "font": return "Font"
+        case "shadow": return "Shadow"
+        case "image": return "Image"
+        case "stack": return "Stack"
+        case "text": return "Text"
+        case "badge": return "Badge"
+        case "glyph": return "Glyph"
+        case "marker": return "Marker"
+        case "knob": return "Knob"
+        case "slider": return "Slider"
+        case "graph": return "Graph"
+        case "ring": return "Ring"
+        case "alias": return "Alias"
+        default: return "Item"
+        }
     }
 
     static func sortRank(_ title: String) -> Int {
@@ -259,6 +280,19 @@ struct EditableValueGroup: Identifiable {
         case "Background": return 3
         case "Popup": return 4
         case "Scripts": return 5
+        case "Font": return 6
+        case "Shadow": return 7
+        case "Image": return 8
+        case "Stack": return 9
+        case "Text": return 10
+        case "Badge": return 11
+        case "Glyph": return 12
+        case "Marker": return 13
+        case "Knob": return 14
+        case "Slider": return 15
+        case "Graph": return 16
+        case "Ring": return 17
+        case "Alias": return 18
         default: return 99
         }
     }

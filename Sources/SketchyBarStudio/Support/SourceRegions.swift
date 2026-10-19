@@ -30,11 +30,17 @@ enum SourceRegions {
             } else if character == "'" {
                 index = endOfQuoted(characters, from: index, quote: "'")
             } else if character == "-", index + 1 < characters.count, characters[index + 1] == "-" {
+                // A block comment covers every line until its end.
+                if index + 2 < characters.count, characters[index + 2] == "[",
+                   let end = endOfLongBracket(characters, from: index + 2) {
+                    regions.append(Region(start: index, end: end))
+                    index = end
+                    continue
+                }
                 let end = indexOfLineEnd(characters, from: index)
                 regions.append(Region(start: index, end: end))
                 index = end
-            } else if character == "[", index + 1 < characters.count, characters[index + 1] == "[" {
-                let end = indexOfLongStringEnd(characters, from: index + 2)
+            } else if character == "[", let end = endOfLongBracket(characters, from: index) {
                 regions.append(Region(start: index, end: end))
                 index = end
             } else {
@@ -106,11 +112,31 @@ enum SourceRegions {
         return index
     }
 
-    private static func indexOfLongStringEnd(_ characters: [Character], from start: Int) -> Int {
-        var index = start
-        while index + 1 < characters.count {
-            if characters[index] == "]" && characters[index + 1] == "]" {
-                return index + 2
+    /// The index after a long bracket, such as `]]` or `]==]`. The bracket
+    /// must open a long bracket, otherwise the end of the file is returned.
+    private static func endOfLongBracket(_ characters: [Character], from start: Int) -> Int? {
+        var index = start + 1
+        var level = 0
+        while index < characters.count, characters[index] == "=" {
+            level += 1
+            index += 1
+        }
+        guard index < characters.count, characters[index] == "[" else { return nil }
+        index += 1
+
+        while index < characters.count {
+            guard characters[index] == "]" else {
+                index += 1
+                continue
+            }
+            var close = index + 1
+            var count = 0
+            while close < characters.count, characters[close] == "=" {
+                count += 1
+                close += 1
+            }
+            if count == level, close < characters.count, characters[close] == "]" {
+                return close + 1
             }
             index += 1
         }

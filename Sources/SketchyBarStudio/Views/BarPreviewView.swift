@@ -152,7 +152,7 @@ struct BarPreviewItem: Identifiable {
         self.file = file
         self.position = position
         self.positionValue = positionValue
-        widthValue = file.values.first { $0.leafKey == "width" }
+        widthValue = file.values.first { $0.keyPath == "width" } ?? file.values.first { $0.leafKey == "width" }
         leftPaddingValue = file.values.first { $0.leafKey == "padding_left" }
         rightPaddingValue = file.values.first { $0.leafKey == "padding_right" }
         let configuredTitle = file.values
