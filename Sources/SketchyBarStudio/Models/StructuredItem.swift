@@ -19,4 +19,8 @@ struct StructuredItem: Hashable {
     let alias: String
     /// The editable values of the item.
     let values: [StructuredItemValue]
+    /// The ranges of the values that are not a single literal, such as
+    /// `"popup." .. name`. They are not editable, and the plain scan must
+    /// not match a literal inside them.
+    let excludedRanges: [LuaSourceRange]
 }

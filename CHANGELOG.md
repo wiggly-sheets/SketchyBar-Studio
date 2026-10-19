@@ -25,6 +25,7 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ### Fixed
 
+- Values that are built by an expression, such as `position = "popup." .. name` or `color = colors.red`, are no longer offered as editable values. Only the leading literal of such a value was found before, so editing it wrote back a part of the expression and broke the item.
 - Number fields only accept numbers. Text that is not a number is marked with a warning and never reaches the file.
 - The color picker keeps the format of the value it replaces, so `#ff8800` stays `#ff8800` instead of turning into `0xffff8800`. A color that cannot be read is reported next to the field.
 - The font panel no longer writes a half typed font family, so a name that does not exist cannot reach the file.
