@@ -317,6 +317,7 @@ private struct EditableValueRow: View {
                         Text(value.keyPath)
                             .font(.body)
                             .fontWeight(.medium)
+                            .onTapGesture { onSelect() }
 
                         if let doc {
                             Button {
@@ -330,7 +331,7 @@ private struct EditableValueRow: View {
                             .help("Option reference for \(value.keyPath)")
                             .accessibilityLabel("Option reference for \(value.keyPath)")
                             .popover(isPresented: $isShowingDoc) {
-                                OptionDocPopover(doc: doc)
+                                OptionDocPopover(keyPath: value.keyPath, doc: doc)
                             }
                         }
                     }
@@ -338,11 +339,17 @@ private struct EditableValueRow: View {
                     Text(value.isMissingFromFile ? "Not in file any more - draft kept" : "\(value.displayLine) - \(value.kind.rawValue)")
                         .font(.caption)
                         .foregroundStyle(value.isMissingFromFile ? .red : .secondary)
+                        .onTapGesture { onSelect() }
                 }
                 .frame(width: 240, alignment: .leading)
 
                 editor
                     .disabled(!isEditable)
+                    .simultaneousGesture(
+                        TapGesture().onEnded {
+                            onSelect()
+                        }
+                    )
 
                 if value.draftValue != value.originalValue {
                     Image(systemName: "circle.fill")
@@ -358,12 +365,6 @@ private struct EditableValueRow: View {
         .overlay(
             RoundedRectangle(cornerRadius: 8)
                 .stroke(theme.accent.opacity(isSelected ? 0.72 : 0.18), lineWidth: isSelected ? 1.5 : 1)
-        )
-        .contentShape(Rectangle())
-        .simultaneousGesture(
-            TapGesture().onEnded {
-                onSelect()
-            }
         )
     }
 
@@ -525,12 +526,19 @@ private struct EditableValueRow: View {
 
 /// The reference entry of an option, shown in a popover.
 private struct OptionDocPopover: View {
+    let keyPath: String
     let doc: SketchyBarOptionDoc
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(doc.key)
+            Text(keyPath)
                 .font(.headline)
+
+            if doc.key != keyPath {
+                Text("Reference: \(doc.key)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             Text(doc.summary)
                 .font(.callout)

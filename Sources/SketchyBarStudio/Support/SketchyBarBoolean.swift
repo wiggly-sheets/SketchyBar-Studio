@@ -12,22 +12,30 @@ enum SketchyBarBoolean {
         }
     }
 
+    /// The properties that SketchyBar reads with `evaluate_boolean_state`.
+    ///
+    /// The list follows the SketchyBar sources. `topmost` is not in it,
+    /// because the bar level of that property also takes the value
+    /// `window`. `clip` is not in it either, because it is a number.
+    static let booleanLeaves: Set<String> = [
+        "clockwise",
+        "drawing",
+        "fill_row",
+        "font_smoothing",
+        "font_typographical_width",
+        "highlight",
+        "horizontal",
+        "ignore_association",
+        "line_break",
+        "scroll_texts",
+        "shadow",
+        "show_in_fullscreen",
+        "sticky"
+    ]
+
     static func isBooleanKey(_ keyPath: String) -> Bool {
         let key = keyPath.lowercased()
         let leaf = key.split(separator: ".").last.map(String.init) ?? key
-        let booleanLeaves: Set<String> = [
-            "cache_scripts",
-            "clip",
-            "drawing",
-            "font_smoothing",
-            "horizontal",
-            "ignore_association",
-            "lazy",
-            "scroll_texts",
-            "shadow",
-            "show_in_fullscreen",
-            "sticky"
-        ]
 
         return booleanLeaves.contains(leaf) || key.hasSuffix(".drawing")
     }
