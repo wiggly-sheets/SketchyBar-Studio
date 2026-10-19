@@ -6,6 +6,7 @@ struct BarPreviewView: View {
     @State private var selectedItemID: ConfigFile.ID?
 
     var body: some View {
+        let items = previewItems
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label("Draft Bar Preview", systemImage: "menubar.rectangle")
@@ -18,14 +19,14 @@ struct BarPreviewView: View {
 
                 Spacer()
 
-                if let selectedItem {
+                if let selectedItem = items.first(where: { $0.id == selectedItemID }) {
                     PreviewAdjustmentControls(item: selectedItem, store: store, theme: theme)
                 }
             }
 
             HStack(spacing: 8) {
                 ForEach(BarPreviewPosition.allCases) { position in
-                    previewColumn(position)
+                    previewColumn(position, items: items)
                 }
             }
             .padding(8)
@@ -44,19 +45,14 @@ struct BarPreviewView: View {
         }
     }
 
-    private var selectedItem: BarPreviewItem? {
-        guard let selectedItemID else { return nil }
-        return items.first { $0.id == selectedItemID }
-    }
-
-    private var items: [BarPreviewItem] {
+    private var previewItems: [BarPreviewItem] {
         store.filesInPreviewOrder
             .filter { $0.isActive }
             .compactMap(BarPreviewItem.init(file:))
     }
 
     @ViewBuilder
-    private func previewColumn(_ position: BarPreviewPosition) -> some View {
+    private func previewColumn(_ position: BarPreviewPosition, items: [BarPreviewItem]) -> some View {
         let columnItems = items.filter { $0.position == position }
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 4) {
@@ -112,7 +108,7 @@ struct BarPreviewView: View {
     }
 
     private func updatePosition(of fileID: ConfigFile.ID, to position: BarPreviewPosition) {
-        guard let item = items.first(where: { $0.id == fileID }) else { return }
+        guard let item = previewItems.first(where: { $0.id == fileID }) else { return }
         update(item.positionValue, to: position.rawValue)
     }
 

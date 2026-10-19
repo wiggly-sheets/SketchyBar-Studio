@@ -262,6 +262,14 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertEqual(tokens.first?.text, "--flag")
     }
 
+    func testRepeatedTokenizingReturnsTheSameTokens() {
+        let first = CodeSyntaxHighlighter.tokens(for: "width = 10", kind: .lua)
+        let second = CodeSyntaxHighlighter.tokens(for: "width = 10", kind: .lua)
+
+        XCTAssertEqual(first.map(\.text), second.map(\.text))
+        XCTAssertEqual(first.map(\.kind), second.map(\.kind))
+    }
+
     // MARK: - Search filter
 
     func testSearchMatchesKeyPath() {
@@ -322,5 +330,34 @@ final class ViewLogicTests: XCTestCase {
 
         XCTAssertTrue(config.matchesSearch(""))
         XCTAssertTrue(config.matchesSearch("   "))
+    }
+
+    // MARK: - Value identity
+
+    func testValueEqualityIgnoresTheSourceSnapshot() {
+        let plain = value("width", original: "10")
+        let withSnapshot = LuaEditableValue(
+            id: plain.id,
+            fileURL: plain.fileURL,
+            keyPath: plain.keyPath,
+            lineNumber: plain.lineNumber,
+            kind: plain.kind,
+            originalValue: plain.originalValue,
+            draftValue: plain.draftValue,
+            suggestedValues: plain.suggestedValues,
+            valueStartOffset: plain.valueStartOffset,
+            valueEndOffset: plain.valueEndOffset,
+            sourceSnapshot: "width = 999\n"
+        )
+
+        XCTAssertEqual(plain, withSnapshot)
+        XCTAssertEqual(plain.hashValue, withSnapshot.hashValue)
+    }
+
+    func testValueEqualitySeesADifferentDraft() {
+        let plain = value("width", original: "10")
+        let drafted = value("width", original: "10", draft: "11")
+
+        XCTAssertNotEqual(plain, drafted)
     }
 }

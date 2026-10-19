@@ -61,6 +61,26 @@ struct LuaEditableValue: Identifiable, Hashable {
 }
 
 extension LuaEditableValue {
+    /// Compares identity only. The source snapshot holds the whole file, so
+    /// comparing it would walk every byte of the file on every check.
+    static func == (lhs: LuaEditableValue, rhs: LuaEditableValue) -> Bool {
+        lhs.id == rhs.id &&
+        lhs.fileURL == rhs.fileURL &&
+        lhs.lineNumber == rhs.lineNumber &&
+        lhs.keyPath == rhs.keyPath &&
+        lhs.draftValue == rhs.draftValue
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(fileURL)
+        hasher.combine(lineNumber)
+        hasher.combine(keyPath)
+        hasher.combine(draftValue)
+    }
+}
+
+extension LuaEditableValue {
     /// Assigns every value a stable key: its key path plus the ordinal
     /// occurrence of that key path inside the file. Line shifts do not
     /// change the key, so drafts survive edits made above them.

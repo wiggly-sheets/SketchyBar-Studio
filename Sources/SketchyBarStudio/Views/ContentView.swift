@@ -32,7 +32,7 @@ struct ContentView: View {
                 .help("Show only changed values")
 
                 Button {
-                    store.reload()
+                    store.reloadAsync()
                 } label: {
                     Label("Reload", systemImage: "arrow.clockwise")
                 }

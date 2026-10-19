@@ -37,12 +37,26 @@ struct DocumentSession {
     mutating func refreshFromDisk() {
         do {
             let contents = try String(contentsOf: file.url, encoding: .utf8)
-            savedContents = contents
-            draftContents = nil
-            loadError = nil
+            apply(contents: contents)
         } catch {
             loadError = error.localizedDescription
         }
+    }
+
+    /// Takes over a copy of the file that was read elsewhere, so the file is
+    /// not read twice. Sets `loadError` on failure.
+    mutating func refresh(with contents: String?, loadError: String?) {
+        guard let contents else {
+            self.loadError = loadError
+            return
+        }
+        apply(contents: contents)
+    }
+
+    private mutating func apply(contents: String) {
+        savedContents = contents
+        draftContents = nil
+        loadError = nil
     }
 
     /// Loads the raw draft from disk if not already loaded (used when the

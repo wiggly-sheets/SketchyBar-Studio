@@ -8,8 +8,16 @@ struct LuaConfigScanner {
     private let optionCatalog = SketchyBarOptionCatalog()
 
     func scan(fileURL: URL) -> [LuaEditableValue] {
-        guard let contents = try? String(contentsOf: fileURL, encoding: .utf8),
-              let regex = Self.assignmentRegex else {
+        guard let contents = try? String(contentsOf: fileURL, encoding: .utf8) else {
+            return []
+        }
+        return scan(fileURL: fileURL, contents: contents)
+    }
+
+    /// Scans values from contents that were read elsewhere, so the file is
+    /// not read twice.
+    func scan(fileURL: URL, contents: String) -> [LuaEditableValue] {
+        guard let regex = Self.assignmentRegex else {
             return []
         }
 
@@ -75,11 +83,7 @@ struct LuaConfigScanner {
         }
 
         let originalContents = contents
-        for value in changedValues.sorted(by: { $0.valueStartOffset > $1.valueStartOffset }) {
-            let start = contents.index(contents.startIndex, offsetBy: value.valueStartOffset)
-            let end = contents.index(contents.startIndex, offsetBy: value.valueEndOffset)
-            contents.replaceSubrange(start..<end, with: serializedValue(value))
-        }
+        contents = updatedContents(values: values, originalContents: contents)
 
         // Re-read right before the write so an external edit is not lost.
         let latestContents = try String(contentsOf: fileURL, encoding: .utf8)
@@ -88,6 +92,19 @@ struct LuaConfigScanner {
         }
 
         try SafeFileReplacer().writeAtomicallyPreservingSymlinks(contents, to: fileURL)
+    }
+
+    /// The contents the file would have with the drafts applied. This is the
+    /// exact text the save writes.
+    func updatedContents(values: [LuaEditableValue], originalContents: String) -> String {
+        let changedValues = values.filter { $0.draftValue != $0.originalValue && !$0.isMissingFromFile }
+        var contents = originalContents
+        for value in changedValues.sorted(by: { $0.valueStartOffset > $1.valueStartOffset }) {
+            let start = contents.index(contents.startIndex, offsetBy: value.valueStartOffset)
+            let end = contents.index(contents.startIndex, offsetBy: value.valueEndOffset)
+            contents.replaceSubrange(start..<end, with: serializedValue(value))
+        }
+        return contents
     }
 
     private func serializedValue(_ value: LuaEditableValue) -> String {
