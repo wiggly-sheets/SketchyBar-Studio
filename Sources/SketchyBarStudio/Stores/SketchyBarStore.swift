@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 
 private enum SourceDraftError: LocalizedError {
     case loaderHasSourceDraft(String)
@@ -8,6 +9,50 @@ private enum SourceDraftError: LocalizedError {
         switch self {
         case let .loaderHasSourceDraft(name):
             return "Save or discard the source draft for \(name) before saving loader order changes."
+        }
+    }
+}
+
+/// How a status message should be shown.
+enum StatusKind {
+    case info
+    case success
+    case warning
+    case error
+
+    /// Guesses the kind from the message, so every place that sets a
+    /// message stays consistent.
+    init(message: String) {
+        let lowered = message.lowercased()
+        if lowered.contains("failed") || lowered.contains("could not") || lowered.contains("stopped") || lowered.contains("error") {
+            self = .error
+        } else if lowered.contains("staged") || lowered.contains("save or") || lowered.contains("unsaved") ||
+            lowered.contains("kept as") || lowered.contains("cannot") || lowered.contains("not saved") {
+            self = .warning
+        } else if lowered.hasPrefix("saved") || lowered.hasPrefix("loaded") || lowered.hasPrefix("added") ||
+            lowered.hasPrefix("restored") || lowered.hasPrefix("activated") || lowered.hasPrefix("deactivated") ||
+            lowered.hasPrefix("reverted") || lowered.hasPrefix("discarded") {
+            self = .success
+        } else {
+            self = .info
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .info: return "info.circle"
+        case .success: return "checkmark.circle.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .error: return "exclamationmark.circle.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .info: return .secondary
+        case .success: return .green
+        case .warning: return .orange
+        case .error: return .red
         }
     }
 }
@@ -49,6 +94,9 @@ final class SketchyBarStore: ObservableObject {
     @Published private var stagedLoaderOrders: [String: [ConfigFile.ID]] = [:]
     /// The files whose loader position differs from the saved loader order.
     @Published private(set) var stagedChangedFileIDs: Set<ConfigFile.ID> = []
+    /// Bumped whenever the staged loader order changes, so the sidebar can
+    /// rebuild its rows.
+    @Published private(set) var stagedOrderRevision = 0
     /// Bumped whenever a raw source draft changes. The source views read it
     /// so they re-evaluate their enablement after every source edit.
     @Published private(set) var sourceDraftRevision = 0
@@ -145,6 +193,9 @@ final class SketchyBarStore: ObservableObject {
 
     var selectedConfigProfileID: String { selectedConfig?.id ?? "default" }
 
+    /// How the current status message should be shown.
+    var statusKind: StatusKind { StatusKind(message: statusMessage) }
+
     var isSelectedConfigLive: Bool {
         guard let selectedConfig else { return false }
         return configSwitchService.isLive(config: selectedConfig)
@@ -230,6 +281,11 @@ final class SketchyBarStore: ObservableObject {
     }
 
     func addConfig(name: String, path: String, selectAfterAdd: Bool) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            statusMessage = "Give the config a name before adding it."
+            return
+        }
         let expanded = NSString(string: path).expandingTildeInPath
         let url = URL(fileURLWithPath: expanded)
         guard !expanded.isEmpty else {
@@ -245,7 +301,7 @@ final class SketchyBarStore: ObservableObject {
             statusMessage = "No config folder found at \(url.path)."
             return
         }
-        let config = ConfigWorkspace.make(name: name, url: url)
+        let config = ConfigWorkspace.make(name: trimmedName, url: url)
         configs.append(config)
         saveConfigLibrary()
         newConfigName = ""
@@ -478,28 +534,87 @@ final class SketchyBarStore: ObservableObject {
         }
     }
 
-    func moveItem(fileID: ConfigFile.ID, direction: MoveDirection) {
-        guard let file = files.first(where: { $0.id == fileID }), let key = loaderKey(for: file) else { return }
+    @discardableResult
+    func moveItem(fileID: ConfigFile.ID, direction: MoveDirection) -> Bool {
+        guard let file = files.first(where: { $0.id == fileID }), let key = loaderKey(for: file) else { return false }
         var order = stagedLoaderOrders[key] ?? baseLoaderOrder(forKey: key)
-        guard let index = order.firstIndex(of: fileID) else { return }
+        guard let index = order.firstIndex(of: fileID) else { return false }
         let targetIndex = direction == .up ? index - 1 : index + 1
-        guard order.indices.contains(targetIndex) else { return }
+        guard order.indices.contains(targetIndex) else { return false }
         order.swapAt(index, targetIndex)
         setStagedLoaderOrder(order, forKey: key)
         statusMessage = "Staged \(file.displayName) \(direction == .up ? "earlier" : "later"). Save to update the loader."
+        return true
     }
 
-    func moveItem(fileID: ConfigFile.ID, before targetFileID: ConfigFile.ID) {
+    @discardableResult
+    func moveItem(fileID: ConfigFile.ID, before targetFileID: ConfigFile.ID) -> Bool {
         guard let file = files.first(where: { $0.id == fileID }),
               let targetFile = files.first(where: { $0.id == targetFileID }),
-              file.id != targetFile.id,
-              let key = loaderKey(for: file), key == loaderKey(for: targetFile) else { return }
+              file.id != targetFile.id else {
+            statusMessage = "That item cannot be moved here."
+            return false
+        }
+        guard let key = loaderKey(for: file) else {
+            statusMessage = "\(file.displayName) is not loaded by an entrypoint, so it has no loader order."
+            return false
+        }
+        guard key == loaderKey(for: targetFile) else {
+            statusMessage = "Items loaded by different entrypoints cannot be reordered together."
+            return false
+        }
         var order = stagedLoaderOrders[key] ?? baseLoaderOrder(forKey: key)
-        guard let sourceIndex = order.firstIndex(of: fileID), let targetIndex = order.firstIndex(of: targetFileID) else { return }
+        guard let sourceIndex = order.firstIndex(of: fileID), let targetIndex = order.firstIndex(of: targetFileID) else {
+            statusMessage = "That item cannot be moved here."
+            return false
+        }
         order.remove(at: sourceIndex)
         order.insert(fileID, at: sourceIndex < targetIndex ? targetIndex - 1 : targetIndex)
         setStagedLoaderOrder(order, forKey: key)
         statusMessage = "Staged \(file.displayName) before \(targetFile.displayName). Save to update the loader."
+        return true
+    }
+
+    /// Moves an item to another bar position and stages its loader order in
+    /// one step. The position is only changed when the order change is
+    /// accepted, so a rejected move never leaves half of the edit behind.
+    @discardableResult
+    func moveItem(fileID: ConfigFile.ID, before targetFileID: ConfigFile.ID?, to position: String) -> Bool {
+        guard let file = files.first(where: { $0.id == fileID }) else {
+            statusMessage = "That item is no longer in the config."
+            return false
+        }
+        guard sessions[fileID]?.hasRawDraft != true else {
+            statusMessage = "Save or revert the source draft before moving this item."
+            return false
+        }
+        if let targetFileID {
+            guard moveItem(fileID: fileID, before: targetFileID) else { return false }
+        }
+        if let positionValue = file.values.first(where: { SketchyBarValueRules.leaf(of: $0.keyPath) == "position" }) {
+            update(valueID: positionValue.id, draftValue: position)
+        }
+        return true
+    }
+
+    /// The position of every file in the loader order, with the staged
+    /// changes applied. The sidebar uses it to show the staged order.
+    func loaderRanks() -> [ConfigFile.ID: Int] {
+        var ranks: [ConfigFile.ID: Int] = [:]
+        for (index, file) in filesInPreviewOrder.enumerated() {
+            ranks[file.id] = index
+        }
+        return ranks
+    }
+
+    /// The staged position of a file inside its loader, when the order
+    /// changed. The number is not written to disk until the file is saved.
+    func stagedPosition(for file: ConfigFile) -> Int? {
+        guard stagedChangedFileIDs.contains(file.id),
+              let key = loaderKey(for: file),
+              let order = stagedLoaderOrders[key],
+              let index = order.firstIndex(of: file.id) else { return nil }
+        return index + 1
     }
 
     func setActive(_ isActive: Bool, fileID: ConfigFile.ID) {
@@ -759,6 +874,7 @@ final class SketchyBarStore: ObservableObject {
         if order == baseLoaderOrder(forKey: key) { stagedLoaderOrders.removeValue(forKey: key) }
         else { stagedLoaderOrders[key] = order }
         recomputeStagedChangedFileIDs()
+        stagedOrderRevision &+= 1
     }
 
     private func recomputeStagedChangedFileIDs() {
@@ -796,6 +912,7 @@ final class SketchyBarStore: ObservableObject {
         }
         stagedLoaderOrders = pruned
         recomputeStagedChangedFileIDs()
+        stagedOrderRevision &+= 1
     }
 
     private func applyStagedLoaderOrder(forKey key: String) throws {

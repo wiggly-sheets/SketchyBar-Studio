@@ -1,10 +1,20 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
+
+/// Which folder the file importer picks.
+enum FolderPicker: String, Identifiable {
+    case newConfig
+    case currentConfig
+
+    var id: String { rawValue }
+}
 
 struct SettingsView: View {
     @ObservedObject var store: SketchyBarStore
     @State private var configRootText = ""
     @State private var confirmLiveSwitch = false
+    @State private var folderPicker: FolderPicker?
 
     var body: some View {
         TabView {
@@ -14,12 +24,17 @@ struct SettingsView: View {
             ConfigLibrarySettingsTab(
                 store: store,
                 configRootText: $configRootText,
-                confirmLiveSwitch: $confirmLiveSwitch
+                confirmLiveSwitch: $confirmLiveSwitch,
+                onChooseFolder: { folderPicker = $0 }
             )
             .tabItem { Label("Configs", systemImage: "folder.badge.gearshape") }
 
-            CurrentConfigSettingsTab(store: store, configRootText: $configRootText)
-                .tabItem { Label("Current", systemImage: "checkmark.circle") }
+            CurrentConfigSettingsTab(
+                store: store,
+                configRootText: $configRootText,
+                onChooseFolder: { folderPicker = $0 }
+            )
+            .tabItem { Label("Current", systemImage: "checkmark.circle") }
         }
         .padding()
         .frame(width: 760, height: 560)
@@ -35,9 +50,43 @@ struct SettingsView: View {
         } message: {
             Text("This backs up any real ~/.config/sketchybar folder, replaces ~/.config/sketchybar with a symlink to the selected config, then reloads SketchyBar.")
         }
+        .fileImporter(
+            isPresented: Binding(
+                get: { folderPicker != nil },
+                set: { if !$0 { folderPicker = nil } }
+            ),
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false,
+            onCompletion: handleFolderPicker
+        )
         .onAppear {
-            configRootText = store.configRoot.path
-            store.newConfigPath = store.configRoot.path
+            // Only fill the fields when they are empty, so a path the user
+            // typed is not lost when the settings are reopened.
+            if configRootText.isEmpty {
+                configRootText = store.configRoot.path
+            }
+            if store.newConfigPath.isEmpty {
+                store.newConfigPath = store.configRoot.path
+            }
+        }
+    }
+
+    private func handleFolderPicker(_ result: Result<[URL], Error>) {
+        let target = folderPicker
+        folderPicker = nil
+        guard case let .success(urls) = result, let url = urls.first else { return }
+
+        switch target {
+        case .newConfig:
+            store.newConfigPath = url.path
+            if store.newConfigName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                store.newConfigName = url.lastPathComponent
+            }
+        case .currentConfig:
+            configRootText = url.path
+            store.updateConfigRoot(url.path)
+        case nil:
+            break
         }
     }
 }
@@ -64,6 +113,7 @@ private struct ConfigLibrarySettingsTab: View {
     @ObservedObject var store: SketchyBarStore
     @Binding var configRootText: String
     @Binding var confirmLiveSwitch: Bool
+    let onChooseFolder: (FolderPicker) -> Void
 
     var body: some View {
         Form {
@@ -112,6 +162,7 @@ private struct ConfigLibrarySettingsTab: View {
                             Image(systemName: "minus.circle")
                         }
                         .disabled(store.configs.count <= 1)
+                        .accessibilityLabel("Remove config \(config.name)")
                     }
                 }
             }
@@ -123,7 +174,7 @@ private struct ConfigLibrarySettingsTab: View {
                     HStack {
                         TextField("SketchyBar config folder", text: $store.newConfigPath)
                         Button {
-                            chooseConfigFolder()
+                            onChooseFolder(.newConfig)
                         } label: {
                             Label("Choose", systemImage: "folder")
                         }
@@ -134,10 +185,31 @@ private struct ConfigLibrarySettingsTab: View {
                     store.addConfig(name: store.newConfigName, path: store.newConfigPath, selectAfterAdd: true)
                     configRootText = store.configRoot.path
                 }
+                .disabled(newConfigNameIsEmpty)
+
+                if newConfigNameIsEmpty {
+                    Label("Give the config a name before adding it.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                statusLine
             }
         }
         .formStyle(.grouped)
         .padding(.top)
+    }
+
+    private var newConfigNameIsEmpty: Bool {
+        store.newConfigName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var statusLine: some View {
+        Label(store.statusMessage, systemImage: store.statusKind.symbolName)
+            .font(.caption)
+            .foregroundStyle(store.statusKind.tint)
+            .lineLimit(2)
+            .accessibilityLabel(store.statusMessage)
     }
 
     private var selectedConfigBinding: Binding<ConfigWorkspace.ID?> {
@@ -151,20 +223,12 @@ private struct ConfigLibrarySettingsTab: View {
             }
         )
     }
-
-    private func chooseConfigFolder() {
-        chooseFolder(startingAt: URL(fileURLWithPath: NSString(string: store.newConfigPath).expandingTildeInPath)) { url in
-            store.newConfigPath = url.path
-            if store.newConfigName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                store.newConfigName = url.lastPathComponent
-            }
-        }
-    }
 }
 
 private struct CurrentConfigSettingsTab: View {
     @ObservedObject var store: SketchyBarStore
     @Binding var configRootText: String
+    let onChooseFolder: (FolderPicker) -> Void
 
     var body: some View {
         Form {
@@ -175,7 +239,7 @@ private struct CurrentConfigSettingsTab: View {
                             .onSubmit { store.updateConfigRoot(configRootText) }
 
                         Button {
-                            chooseCurrentConfigFolder()
+                            onChooseFolder(.currentConfig)
                         } label: {
                             Label("Choose", systemImage: "folder")
                         }
@@ -195,27 +259,5 @@ private struct CurrentConfigSettingsTab: View {
         }
         .formStyle(.grouped)
         .padding(.top)
-    }
-
-    private func chooseCurrentConfigFolder() {
-        chooseFolder(startingAt: store.configRoot) { url in
-            configRootText = url.path
-            store.updateConfigRoot(url.path)
-        }
-    }
-}
-
-private func chooseFolder(startingAt url: URL, handler: (URL) -> Void) {
-    let panel = NSOpenPanel()
-    panel.title = "Choose SketchyBar Config Folder"
-    panel.prompt = "Choose"
-    panel.message = "Select a SketchyBar config folder."
-    panel.canChooseFiles = false
-    panel.canChooseDirectories = true
-    panel.allowsMultipleSelection = false
-    panel.directoryURL = url
-
-    if panel.runModal() == .OK, let url = panel.url {
-        handler(url)
     }
 }

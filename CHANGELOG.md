@@ -16,9 +16,22 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 - The code preview shows the pending draft instead of the file on disk, so the preview and the editor no longer disagree.
 - Reloading the config and running `sketchybar --reload` no longer block the window. The reload happens in the background, and `sketchybar --reload` is stopped after 10 seconds instead of waiting forever on a permission prompt.
+- The sidebar lists the categories in the documented order: items, widgets, bar, themes, scripts.
+- The source editor shows line numbers next to the text.
+- The Settings window uses the same dark scheme as the main window, and the folder picker opens as a sheet.
 
 ### Fixed
 
+- Number fields only accept numbers. Text that is not a number is marked with a warning and never reaches the file.
+- The color picker keeps the format of the value it replaces, so `#ff8800` stays `#ff8800` instead of turning into `0xffff8800`. A color that cannot be read is reported next to the field.
+- The font panel no longer writes a half typed font family, so a name that does not exist cannot reach the file.
+- The staged loader order is visible in the sidebar, and a staged row shows its new position until the file is saved.
+- Dropping an item on a bar column moves it, also when the item is not active yet. The position and the loader order change together, so a refused move changes nothing.
+- Reordering items that are loaded by different entrypoints is refused with a message instead of failing silently.
+- Clicking a value row no longer takes the focus away from the text fields.
+- The code preview scrolls to the selected line.
+- The width picker uses the width that is already in the file and never writes a width of 0, which would hide the item.
+- Icon-only buttons and switches have accessibility labels, the status message is styled by kind and read out by VoiceOver, and the settings keep the path that was typed.
 - Source editor edits can be saved again. The "Revert" and "Save Source" buttons, the toolbar save buttons, and the "Discard" button now enable as soon as the source draft changes.
 - Editing a value no longer makes the app slow down: the preview, the sidebar and the bar preview only rebuild when their inputs change.
 

@@ -68,20 +68,64 @@ struct SketchyBarColor {
     }
 
     static func sketchyBarHex(from color: Color) -> String {
-        guard let converted = NSColor(color).usingColorSpace(.sRGB) else {
-            return "0xffffffff"
+        let bytes = rgbaBytes(from: color)
+        return String(format: "0x%02x%02x%02x%02x", bytes.alpha, bytes.red, bytes.green, bytes.blue)
+    }
+
+    /// Writes a color in the same format as the value it replaces: the same
+    /// prefix and the same number of hex digits. A value that cannot be read
+    /// falls back to the SketchyBar default.
+    static func hexString(from color: Color, preservingFormatOf original: String) -> String {
+        guard SketchyBarColor.parse(original) != nil else {
+            return sketchyBarHex(from: color)
         }
 
-        return SketchyBarColor(
-            red: converted.redComponent,
-            green: converted.greenComponent,
-            blue: converted.blueComponent,
-            alpha: converted.alphaComponent
+        let format = ColorFormat(original)
+        let bytes = rgbaBytes(from: color)
+        switch format.digitCount {
+        case 3:
+            return format.prefix + String(format: "%x%x%x", bytes.red / 17, bytes.green / 17, bytes.blue / 17)
+        case 6:
+            return format.prefix + String(format: "%02x%02x%02x", bytes.red, bytes.green, bytes.blue)
+        default:
+            return format.prefix + String(format: "%02x%02x%02x%02x", bytes.alpha, bytes.red, bytes.green, bytes.blue)
+        }
+    }
+
+    private static func rgbaBytes(from color: Color) -> (alpha: Int, red: Int, green: Int, blue: Int) {
+        guard let converted = NSColor(color).usingColorSpace(.sRGB) else {
+            return (255, 255, 255, 255)
+        }
+
+        return (
+            alpha: byte(converted.alphaComponent),
+            red: byte(converted.redComponent),
+            green: byte(converted.greenComponent),
+            blue: byte(converted.blueComponent)
         )
-        .sketchyBarHex
     }
 
     private static func byte(_ component: Double) -> Int {
         max(0, min(255, Int((component * 255).rounded())))
+    }
+}
+
+/// The prefix and the digit count of a color value.
+private struct ColorFormat {
+    let prefix: String
+    let digitCount: Int
+
+    init(_ value: String) {
+        let trimmed = SketchyBarValueRules.unquoted(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        if trimmed.lowercased().hasPrefix("0x") {
+            prefix = String(trimmed.prefix(2))
+            digitCount = trimmed.count - 2
+        } else if trimmed.hasPrefix("#") {
+            prefix = "#"
+            digitCount = trimmed.count - 1
+        } else {
+            prefix = ""
+            digitCount = trimmed.count
+        }
     }
 }
