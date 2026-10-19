@@ -13,6 +13,7 @@ This project follows a human-readable changelog style and aims to use semantic v
 - Quitting now asks what to do with unsaved edits: Save All, Discard, or Cancel. Closing the last window keeps the app alive while drafts exist.
 - Files that disappeared from disk keep their session and draft. They are listed in a "Missing Files" section of the sidebar and the draft comes back when the file returns.
 - The structured editor shows a file's read error, marks the sidebar row with a red dot, and disables the value editors and the save button for that file.
+- A reachability map shows what SketchyBar really loads. The new toolbar button opens a sheet with the files no loader reaches, the loader lines that point at files that are gone, and the require cycles. The map only reads the config and never changes it.
 
 ### Changed
 

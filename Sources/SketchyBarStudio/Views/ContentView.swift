@@ -4,6 +4,7 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var store: SketchyBarStore
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var showsReachability = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -63,7 +64,17 @@ struct ContentView: View {
                     Label("Save & Apply", systemImage: "checkmark.circle")
                 }
                 .disabled(store.unsavedFileCount == 0)
+
+                Button {
+                    showsReachability = true
+                } label: {
+                    Label("Reachability", systemImage: "checklist")
+                }
+                .help("Show which config files are loaded and which ones are dead")
             }
+        }
+        .sheet(isPresented: $showsReachability) {
+            ReachabilityView(rootURL: store.configRoot)
         }
     }
 
