@@ -34,6 +34,9 @@ struct ConfigFile: Identifiable, Hashable {
     let kind: ConfigFileKind
     let values: [LuaEditableValue]
     let activationReference: ActivationReference?
+    /// True when the file disappeared from disk. The session (and any draft)
+    /// is kept so the work is not lost.
+    var isMissingFromDisk: Bool = false
 
     var id: String { url.path }
 

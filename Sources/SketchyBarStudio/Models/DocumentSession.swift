@@ -71,16 +71,40 @@ struct DocumentSession {
 
     /// Preserves value drafts and the raw draft across a reload: re-parses
     /// `file` from the freshly scanned `scanned` file, keeping draft values
-    /// whose IDs still exist.
-    mutating func merge(from scanned: ConfigFile) {
-        let changedDrafts = Dictionary(uniqueKeysWithValues: file.values.filter { $0.draftValue != $0.originalValue }.map { ($0.id, $0.draftValue) })
-        let values = scanned.values.map { scannedValue -> LuaEditableValue in
-            guard let draft = changedDrafts[scannedValue.id] else { return scannedValue }
+    /// whose stable keys still exist. A draft whose stable key vanished from
+    /// the file is kept in the list and flagged as missing instead of being
+    /// dropped. Returns how many drafts were kept that are no longer in the
+    /// file.
+    @discardableResult
+    mutating func merge(from scanned: ConfigFile) -> Int {
+        let drafts = file.values.filter { $0.draftValue != $0.originalValue }
+        let draftsByStableKey = Dictionary(
+            drafts.map { ($0.stableKey, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var values = scanned.values.map { scannedValue -> LuaEditableValue in
+            guard let draft = draftsByStableKey[scannedValue.stableKey] else { return scannedValue }
             var merged = scannedValue
-            merged.draftValue = draft
+            merged.draftValue = draft.draftValue
             return merged
         }
+        let scannedStableKeys = Set(scanned.values.map(\.stableKey))
+        var missingCount = 0
+        for draft in drafts where !scannedStableKeys.contains(draft.stableKey) {
+            var kept = draft
+            kept.isMissingFromFile = true
+            values.append(kept)
+            missingCount += 1
+        }
         file = ConfigFile(url: scanned.url, rootURL: scanned.rootURL, kind: scanned.kind, values: values, activationReference: scanned.activationReference)
+        return missingCount
+    }
+
+    /// Marks the file as gone from disk. The session keeps its values and
+    /// drafts so the work is not lost when the file comes back.
+    mutating func markMissingFromDisk() {
+        file.isMissingFromDisk = true
+        loadError = "The file is missing from disk."
     }
 
     /// Validates, backs up, and writes the draft (raw or structured) to disk.

@@ -75,11 +75,11 @@ struct ShellConfigScanner {
             lineNumber += 1
         }
 
-        return results
+        return LuaEditableValue.assigningStableKeys(results)
     }
 
     func save(values: [LuaEditableValue], to fileURL: URL, rootURL: URL) throws {
-        let changedValues = values.filter { $0.draftValue != $0.originalValue }
+        let changedValues = values.filter { $0.draftValue != $0.originalValue && !$0.isMissingFromFile }
         guard !changedValues.isEmpty else { return }
         var contents = try String(contentsOf: fileURL, encoding: .utf8)
         guard changedValues.allSatisfy({

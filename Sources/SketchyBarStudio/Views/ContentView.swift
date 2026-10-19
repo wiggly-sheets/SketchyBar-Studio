@@ -42,7 +42,7 @@ struct ContentView: View {
                 } label: {
                     Label("Save", systemImage: "square.and.arrow.down")
                 }
-                .disabled(store.selectedFile == nil || !store.selectedHasUnsavedChanges)
+                .disabled(store.selectedFile == nil || !store.selectedHasUnsavedChanges || store.selectedHasLoadError)
 
                 Button {
                     store.saveAllChangedFiles()
