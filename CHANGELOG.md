@@ -6,6 +6,17 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ## [Unreleased]
 
+### Fixed
+
+- Hex colors such as `0xff000000` are no longer truncated to `0` when scanned.
+- Colors are now detected from the key and from unquoted hex literals, so a quoted label like `"#ff0000"` is no longer edited as a color.
+- `updates` is edited as SketchyBar's `on`/`off`/`when_shown` enum and is written as a quoted string.
+- Shell values are always written quoted and escaped, and invalid numbers, colors and booleans keep their original text.
+- Shell array assignments, trailing comments and heredoc bodies are no longer reported as editable values.
+- Lua comments and long strings no longer produce phantom editable values.
+- Colors are read as SketchyBar's AARRGGBB word, so `0xAARRGGBB` and `#AARRGGBB` agree.
+- The boolean key list now matches SketchyBar and includes `clip`, `lazy`, `cache_scripts` and `show_in_fullscreen`.
+
 ## [1.0.1] - 2026-07-22
 
 ### Added
