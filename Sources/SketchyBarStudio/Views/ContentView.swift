@@ -5,6 +5,7 @@ struct ContentView: View {
     @ObservedObject var store: SketchyBarStore
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showsReachability = false
+    @State private var showsDiagnostics = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -71,10 +72,20 @@ struct ContentView: View {
                     Label("Reachability", systemImage: "checklist")
                 }
                 .help("Show which config files are loaded and which ones are dead")
+
+                Button {
+                    showsDiagnostics = true
+                } label: {
+                    Label("Diagnostics", systemImage: "stethoscope")
+                }
+                .help("Check the config for problems SketchyBar ignores")
             }
         }
         .sheet(isPresented: $showsReachability) {
             ReachabilityView(rootURL: store.configRoot)
+        }
+        .sheet(isPresented: $showsDiagnostics) {
+            DiagnosticsView(rootURL: store.configRoot)
         }
     }
 
