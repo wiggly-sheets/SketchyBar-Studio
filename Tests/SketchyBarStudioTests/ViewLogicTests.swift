@@ -360,4 +360,144 @@ final class ViewLogicTests: XCTestCase {
 
         XCTAssertNotEqual(plain, drafted)
     }
+
+    // MARK: - Width picker fallback
+
+    func testWidthFallbackUsesTheDraft() {
+        let fallback = SketchyBarValueRules.numericWidthFallback(
+            draft: "42",
+            original: "dynamic",
+            siblingWidths: ["60"]
+        )
+
+        XCTAssertEqual(fallback, "42")
+    }
+
+    func testWidthFallbackNeverWritesZeroForADynamicOriginal() {
+        let fallback = SketchyBarValueRules.numericWidthFallback(
+            draft: "dynamic",
+            original: "dynamic",
+            siblingWidths: []
+        )
+
+        XCTAssertNotEqual(fallback, "0")
+        XCTAssertEqual(fallback, "100")
+    }
+
+    func testWidthFallbackUsesTheOriginalWidth() {
+        let fallback = SketchyBarValueRules.numericWidthFallback(
+            draft: "dynamic",
+            original: "120",
+            siblingWidths: []
+        )
+
+        XCTAssertEqual(fallback, "120")
+    }
+
+    func testWidthFallbackUsesTheLastNumericWidthOfTheFile() {
+        let fallback = SketchyBarValueRules.numericWidthFallback(
+            draft: "dynamic",
+            original: "dynamic",
+            siblingWidths: ["60", "80"]
+        )
+
+        XCTAssertEqual(fallback, "80")
+    }
+
+    // MARK: - Color format
+
+    func testColorSerializerKeepsTheHashFormat() {
+        let color = SketchyBarColor(red: 1, green: 136.0 / 255.0, blue: 0, alpha: 1).color
+
+        XCTAssertEqual(SketchyBarColor.hexString(from: color, preservingFormatOf: "#ff8800"), "#ff8800")
+    }
+
+    func testColorSerializerKeepsTheHexWordFormat() {
+        let color = SketchyBarColor(red: 1, green: 136.0 / 255.0, blue: 0, alpha: 1).color
+
+        XCTAssertEqual(SketchyBarColor.hexString(from: color, preservingFormatOf: "0xffff8800"), "0xffff8800")
+    }
+
+    func testColorSerializerKeepsTheDigitCount() {
+        let color = SketchyBarColor(red: 1, green: 136.0 / 255.0, blue: 0, alpha: 1).color
+
+        XCTAssertEqual(SketchyBarColor.hexString(from: color, preservingFormatOf: "#f80"), "#f80")
+    }
+
+    func testColorSerializerFallsBackForAnUnreadableValue() {
+        let color = SketchyBarColor(red: 1, green: 136.0 / 255.0, blue: 0, alpha: 1).color
+
+        XCTAssertEqual(SketchyBarColor.hexString(from: color, preservingFormatOf: "not-a-color"), "0xffff8800")
+    }
+
+    // MARK: - Number validation
+
+    func testNumberValidationRejectsTextThatIsNotANumber() {
+        XCTAssertFalse(SketchyBarValueRules.isValidNumber("12px"))
+        XCTAssertFalse(SketchyBarValueRules.isValidNumber("1); os.execute(\"curl evil\")"))
+        XCTAssertFalse(SketchyBarValueRules.isValidNumber("dynamic"))
+        XCTAssertFalse(SketchyBarValueRules.isValidNumber(""))
+    }
+
+    func testNumberValidationAcceptsRealNumbers() {
+        XCTAssertTrue(SketchyBarValueRules.isValidNumber("12"))
+        XCTAssertTrue(SketchyBarValueRules.isValidNumber("12.5"))
+        XCTAssertTrue(SketchyBarValueRules.isValidNumber("-3"))
+    }
+
+    func testPartialNumbersAreNotNumbersYet() {
+        XCTAssertTrue(SketchyBarValueRules.isPartialNumber("-"))
+        XCTAssertTrue(SketchyBarValueRules.isPartialNumber("12."))
+        XCTAssertFalse(SketchyBarValueRules.isPartialNumber("12px"))
+        XCTAssertFalse(SketchyBarValueRules.isPartialNumber("1.2.3"))
+    }
+
+    func testInvalidNumberDraftKeepsTheOriginalText() {
+        XCTAssertEqual(SketchyBarValueRules.serializedNumber("12px", original: "10"), "10")
+    }
+
+    // MARK: - Sidebar order
+
+    func testSidebarCategoryOrderMatchesTheDocumentedOrder() {
+        XCTAssertEqual(
+            SidebarCategory.allCases,
+            [.items, .widgets, .bar, .themes, .scripts, .other]
+        )
+    }
+
+    func testSidebarGroupsFollowTheCategoryOrder() {
+        let files = [
+            file("scripts/helper.sh", values: [], kind: .shell),
+            file("themes/dark.lua", values: []),
+            file("widgets/clock.lua", values: []),
+            file("bar.lua", values: []),
+            file("items/foo.lua", values: [])
+        ]
+
+        let groups = SidebarGrouper.group(files: files)
+
+        XCTAssertEqual(groups.map(\.category), [.items, .widgets, .bar, .themes, .scripts])
+    }
+
+    func testSidebarSortsByTheStagedLoaderOrder() {
+        let files = [
+            file("items/a.lua", values: []),
+            file("items/b.lua", values: [])
+        ]
+        let ranks = [files[0].id: 1, files[1].id: 0]
+
+        let sorted = SidebarGrouper.sortedByLoaderOrder(files, ranks: ranks)
+
+        XCTAssertEqual(sorted.map(\.displayName), ["items/b.lua", "items/a.lua"])
+    }
+
+    // MARK: - Status message
+
+    func testStatusKindFollowsTheMessage() {
+        XCTAssertEqual(StatusKind(message: "Saved foo.lua and backed up the original."), .success)
+        XCTAssertEqual(StatusKind(message: "Loaded 12 config files from default."), .success)
+        XCTAssertEqual(StatusKind(message: "Save failed for foo.lua: no permission"), .error)
+        XCTAssertEqual(StatusKind(message: "Staged foo earlier. Save to update the loader."), .warning)
+        XCTAssertEqual(StatusKind(message: "Point the app at a config folder."), .info)
+    }
 }

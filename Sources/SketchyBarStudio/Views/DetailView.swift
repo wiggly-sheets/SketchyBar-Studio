@@ -20,14 +20,27 @@ struct DetailView: View {
 
             Divider()
 
-            Text(store.statusMessage)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal)
-                .padding(.vertical, 8)
+            HStack(spacing: 6) {
+                Image(systemName: store.statusKind.symbolName)
+                    .foregroundStyle(store.statusKind.tint)
+                    .accessibilityHidden(true)
+
+                Text(store.statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(store.statusKind.tint)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 8)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(store.statusMessage)
+            .accessibilityAddTraits(.isStaticText)
         }
         .background(store.appTheme.background.opacity(0.18))
+        .onChange(of: store.statusMessage) { _, message in
+            guard !message.isEmpty else { return }
+            AccessibilityNotification.Announcement(message).post()
+        }
     }
 }
 
@@ -92,6 +105,7 @@ private struct EditableFileView: View {
                                 ForEach(group.values) { value in
                                     EditableValueRow(
                                         value: value,
+                                        file: file,
                                         theme: theme,
                                         isSelected: selectedValueID == value.id,
                                         isEditable: loadError == nil,
@@ -129,7 +143,10 @@ private struct EditableFileView: View {
             Button {
                 showCodePreview.toggle()
             } label: {
-                Label(showCodePreview ? "Hide Code" : "Show Code", systemImage: showCodePreview ? "sidebar.right" : "sidebar.right")
+                Label(
+                    showCodePreview ? "Hide Code" : "Show Code",
+                    systemImage: showCodePreview ? "sidebar.squares.right" : "sidebar.squares.left"
+                )
             }
             .help(showCodePreview ? "Hide code preview" : "Show code preview")
 
@@ -249,6 +266,7 @@ struct EditableValueGroup: Identifiable {
 
 private struct EditableValueRow: View {
     let value: LuaEditableValue
+    let file: ConfigFile
     let theme: AppTheme
     let isSelected: Bool
     let isEditable: Bool
@@ -287,9 +305,11 @@ private struct EditableValueRow: View {
                 .stroke(theme.accent.opacity(isSelected ? 0.72 : 0.18), lineWidth: isSelected ? 1.5 : 1)
         )
         .contentShape(Rectangle())
-        .onTapGesture {
-            onSelect()
-        }
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                onSelect()
+            }
+        )
     }
 
     @ViewBuilder
@@ -306,6 +326,7 @@ private struct EditableValueRow: View {
             }
             .labelsHidden()
             .frame(maxWidth: 260, alignment: .leading)
+            .help(value.keyPath)
         } else {
             manualEditor
         }
@@ -325,16 +346,30 @@ private struct EditableValueRow: View {
             }
             .labelsHidden()
             .frame(maxWidth: 140)
+            .help("\(value.keyPath): switch between a dynamic width and a fixed number of points")
 
-            TextField("Width", text: Binding(get: { value.draftValue == "dynamic" ? "" : value.draftValue }, set: onChange))
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 110)
-                .disabled(value.draftValue == "dynamic")
+            ValidatedNumberField(
+                title: "Width",
+                value: value.draftValue == "dynamic" ? "" : value.draftValue,
+                onCommit: onChange
+            )
+            .frame(maxWidth: 110)
+            .disabled(value.draftValue == "dynamic")
         }
     }
 
+    /// The width to use when the mode switches back to a number. The draft
+    /// wins, then the value in the file, then the last numeric width of the
+    /// same file. It never writes a zero width.
     private var numericFallback: String {
-        Double(value.originalValue) == nil ? "0" : value.originalValue
+        let siblings = file.values
+            .filter { $0.isWidthValue && $0.id != value.id }
+            .map(\.draftValue)
+        return SketchyBarValueRules.numericWidthFallback(
+            draft: value.draftValue,
+            original: value.originalValue,
+            siblingWidths: siblings
+        )
     }
 
     private var fontEditor: some View {
@@ -348,9 +383,11 @@ private struct EditableValueRow: View {
             } label: {
                 Label("Choose Font...", systemImage: "textformat")
             }
+            .help("\(value.keyPath): pick a font family, style and size")
 
             TextField("Value", text: Binding(get: { value.draftValue }, set: onChange))
                 .textFieldStyle(.roundedBorder)
+                .help(value.keyPath)
         }
     }
 
@@ -359,37 +396,115 @@ private struct EditableValueRow: View {
         switch value.kind {
         case .boolean:
             Toggle(
-                "",
+                value.keyPath,
                 isOn: Binding(
                     get: { SketchyBarBoolean.normalized(value.draftValue) == "true" },
                     set: { onChange($0 ? "true" : "false") }
                 )
             )
             .labelsHidden()
+            .accessibilityLabel(value.keyPath)
+            .help("\(value.keyPath): turn this option on or off")
         case .color:
-            HStack {
-                ColorPicker(
-                    "Color",
-                    selection: Binding(
-                        get: { Color(hexLike: value.draftValue) },
-                        set: { onChange(SketchyBarColor.sketchyBarHex(from: $0)) }
-                    ),
-                    supportsOpacity: true
-                )
-                .labelsHidden()
-
-                TextField("Value", text: Binding(get: { value.draftValue }, set: onChange))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 150)
-            }
+            colorEditor
         case .number:
-            TextField("Value", text: Binding(get: { value.draftValue }, set: onChange))
-                .textFieldStyle(.roundedBorder)
+            ValidatedNumberField(title: "Value", value: value.draftValue, onCommit: onChange)
                 .frame(maxWidth: 240)
         case .string:
             TextField("Value", text: Binding(get: { value.draftValue }, set: onChange))
                 .textFieldStyle(.roundedBorder)
+                .help(value.keyPath)
         }
+    }
+
+    private var colorEditor: some View {
+        HStack(spacing: 6) {
+            ColorPicker(
+                "Color",
+                selection: Binding(
+                    get: { Color(hexLike: value.draftValue) },
+                    set: { onChange(SketchyBarColor.hexString(from: $0, preservingFormatOf: colorFormatReference)) }
+                ),
+                supportsOpacity: true
+            )
+            .labelsHidden()
+            .help("\(value.keyPath): pick a color. The format of the current value is kept")
+
+            TextField("Value", text: Binding(get: { value.draftValue }, set: onChange))
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 150)
+                .help(value.keyPath)
+
+            if colorIsUnreadable {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .help("This color cannot be read. Use a hex value such as #ff8800 or 0xffff8800.")
+                    .accessibilityLabel("Warning: this color cannot be read")
+            }
+        }
+    }
+
+    /// The value the color format is taken from: the value in the file, or
+    /// the draft when the file value cannot be read.
+    private var colorFormatReference: String {
+        SketchyBarColor.parse(value.originalValue) != nil ? value.originalValue : value.draftValue
+    }
+
+    private var colorIsUnreadable: Bool {
+        SketchyBarColor.parse(value.draftValue) == nil
+    }
+}
+
+/// A number field that keeps the raw text while it is typed and only
+/// commits values that are real numbers.
+private struct ValidatedNumberField: View {
+    let title: String
+    let value: String
+    let onCommit: (String) -> Void
+
+    @State private var text: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            TextField(title, text: binding)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel(title)
+
+            if !isValid {
+                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel(warning)
+            }
+        }
+        .onChange(of: value) { _, _ in
+            text = nil
+        }
+    }
+
+    private var binding: Binding<String> {
+        Binding(
+            get: { text ?? value },
+            set: { newValue in
+                text = newValue
+                if SketchyBarValueRules.isValidNumber(newValue) {
+                    onCommit(newValue)
+                }
+            }
+        )
+    }
+
+    private var currentText: String { text ?? value }
+
+    private var isValid: Bool {
+        currentText.isEmpty || SketchyBarValueRules.isValidNumber(currentText)
+    }
+
+    private var warning: String {
+        if SketchyBarValueRules.isPartialNumber(currentText) {
+            return "Not a complete number yet"
+        }
+        return "Not a number. The file keeps its current value."
     }
 }
 
@@ -419,22 +534,33 @@ private struct CodePreviewView: View {
 
             Divider()
 
-            ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 3) {
-                    ForEach(lines.indices, id: \.self) { index in
-                        CodeLineView(
-                            number: index + 1,
-                            text: lines[index],
-                            isSelected: selectedLine == index + 1,
-                            isChanged: highlightedLines.contains(index + 1),
-                            theme: theme,
-                            kind: file.kind
-                        )
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: 3) {
+                        ForEach(lines.indices, id: \.self) { index in
+                            CodeLineView(
+                                number: index + 1,
+                                text: lines[index],
+                                isSelected: selectedLine == index + 1,
+                                isChanged: highlightedLines.contains(index + 1),
+                                theme: theme,
+                                kind: file.kind
+                            )
+                            .id(index)
+                        }
                     }
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.vertical, 10)
-                .padding(.horizontal, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .onChange(of: selectedLine) { _, line in
+                    guard let line else { return }
+                    proxy.scrollTo(line - 1, anchor: .center)
+                }
+                .onAppear {
+                    guard let line = selectedLine else { return }
+                    proxy.scrollTo(line - 1, anchor: .center)
+                }
             }
         }
         .background(theme.background.opacity(0.45))

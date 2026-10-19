@@ -10,31 +10,31 @@ enum AppTheme: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     var background: Color {
-        Color(hex: palette.background)
+        Color(hex: palette.background) ?? .clear
     }
 
     var surface: Color {
-        Color(hex: palette.surface)
+        Color(hex: palette.surface) ?? .clear
     }
 
     var accent: Color {
-        Color(hex: palette.accent)
+        Color(hex: palette.accent) ?? .clear
     }
 
     var muted: Color {
-        Color(hex: palette.muted)
+        Color(hex: palette.muted) ?? .clear
     }
 
     var syntaxString: Color {
-        Color(hex: palette.string)
+        Color(hex: palette.string) ?? .clear
     }
 
     var syntaxNumber: Color {
-        Color(hex: palette.number)
+        Color(hex: palette.number) ?? .clear
     }
 
     var syntaxVariable: Color {
-        Color(hex: palette.variable)
+        Color(hex: palette.variable) ?? .clear
     }
 
     private var palette: (background: String, surface: String, accent: String, muted: String, string: String, number: String, variable: String) {
@@ -54,9 +54,11 @@ enum AppTheme: String, CaseIterable, Identifiable {
 }
 
 private extension Color {
-    init(hex: String) {
+    /// A color from a hex string. A value that cannot be read returns nil
+    /// instead of a wrong color.
+    init?(hex: String) {
         let cleaned = hex.replacingOccurrences(of: "#", with: "")
-        let integer = UInt64(cleaned, radix: 16) ?? 0
+        guard let integer = UInt64(cleaned, radix: 16) else { return nil }
         self = Color(
             red: Double((integer >> 16) & 0xff) / 255,
             green: Double((integer >> 8) & 0xff) / 255,

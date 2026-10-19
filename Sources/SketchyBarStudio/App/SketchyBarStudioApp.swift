@@ -75,6 +75,7 @@ struct SketchyBarStudioApp: App {
 
         Settings {
             SettingsView(store: store)
+                .preferredColorScheme(.dark)
         }
     }
 }

@@ -94,22 +94,16 @@ struct BarPreviewView: View {
         .background(theme.background.opacity(columnItems.isEmpty ? 0.12 : 0), in: RoundedRectangle(cornerRadius: 7))
         .dropDestination(for: String.self) { droppedIDs, _ in
             guard let droppedID = droppedIDs.first else { return false }
-            move(droppedID, before: nil, to: position)
-            return true
+            return move(droppedID, before: nil, to: position)
         }
     }
 
-    private func move(_ droppedID: ConfigFile.ID, before targetID: ConfigFile.ID?, to position: BarPreviewPosition) {
-        guard droppedID != targetID else { return }
-        updatePosition(of: droppedID, to: position)
-        if let targetID {
-            store.moveItem(fileID: droppedID, before: targetID)
-        }
-    }
-
-    private func updatePosition(of fileID: ConfigFile.ID, to position: BarPreviewPosition) {
-        guard let item = previewItems.first(where: { $0.id == fileID }) else { return }
-        update(item.positionValue, to: position.rawValue)
+    /// Moves an item to another column. The position and the loader order
+    /// change together, so a rejected move changes nothing.
+    @discardableResult
+    private func move(_ droppedID: ConfigFile.ID, before targetID: ConfigFile.ID?, to position: BarPreviewPosition) -> Bool {
+        guard droppedID != targetID else { return false }
+        return store.moveItem(fileID: droppedID, before: targetID, to: position.rawValue)
     }
 
     private func update(_ value: LuaEditableValue?, to draftValue: String) {
@@ -175,22 +169,28 @@ private struct PreviewBarItem: View {
     let theme: AppTheme
     let onSelect: () -> Void
     let onResize: (String) -> Void
-    let onDrop: (String) -> Void
+    let onDrop: (String) -> Bool
     @State private var startingWidth: Double?
 
     var body: some View {
         HStack(spacing: 4) {
             Text(item.title)
                 .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .font(.caption.weight(.medium))
                 .help(item.file.displayName)
+                .accessibilityLabel(item.title)
 
             if item.widthValue != nil {
                 Rectangle()
                     .fill(theme.accent.opacity(0.8))
                     .frame(width: 3, height: 18)
+                    .frame(width: 8)
+                    .contentShape(Rectangle())
                     .gesture(resizeGesture)
                     .help("Drag to change width")
+                    .accessibilityLabel("Resize \(item.title)")
+                    .accessibilityValue(item.widthValue.map { "Width \($0.draftValue)" } ?? "")
             }
         }
         .padding(.leading, previewPadding(item.leftPaddingValue))
@@ -204,8 +204,7 @@ private struct PreviewBarItem: View {
         .draggable(item.id)
         .dropDestination(for: String.self) { droppedIDs, _ in
             guard let droppedID = droppedIDs.first else { return false }
-            onDrop(droppedID)
-            return true
+            return onDrop(droppedID)
         }
     }
 
@@ -248,12 +247,16 @@ private struct PreviewAdjustmentControls: View {
         if let value, let number = numericValue(value) {
             HStack(spacing: 3) {
                 Button { update(value, to: number - 1) } label: { Image(systemName: "minus") }
-                .buttonStyle(.borderless)
+                    .buttonStyle(.borderless)
+                    .help("Decrease the \(title.lowercased())")
+                    .accessibilityLabel("Decrease the \(title.lowercased())")
                 Text("\(title) \(format(number))")
                     .font(.caption2)
                     .monospacedDigit()
                 Button { update(value, to: number + 1) } label: { Image(systemName: "plus") }
-                .buttonStyle(.borderless)
+                    .buttonStyle(.borderless)
+                    .help("Increase the \(title.lowercased())")
+                    .accessibilityLabel("Increase the \(title.lowercased())")
             }
             .foregroundStyle(theme.accent)
         }

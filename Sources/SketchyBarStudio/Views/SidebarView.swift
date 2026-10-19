@@ -43,6 +43,7 @@ struct SidebarView: View {
         .onChange(of: store.showModifiedOnly) { _, _ in rebuildGroups() }
         .onChange(of: store.sourceDraftRevision) { _, _ in rebuildGroups() }
         .onChange(of: store.stagedChangedFileIDs) { _, _ in rebuildGroups() }
+        .onChange(of: store.stagedOrderRevision) { _, _ in rebuildGroups() }
         .onChange(of: expandedGroups) { _, newValue in
             expandedGroupStorage = newValue.sorted().joined(separator: "|")
         }
@@ -53,7 +54,7 @@ struct SidebarView: View {
             file.matchesSearch(store.searchText) &&
                 (!store.showModifiedOnly || store.hasUnsavedChanges(fileID: file.id))
         }
-        groups = SidebarGrouper.group(files: filtered)
+        groups = SidebarGrouper.group(files: filtered, ranks: store.loaderRanks())
     }
 
     private var erroredFileIDs: Set<ConfigFile.ID> {
@@ -89,6 +90,7 @@ private struct SidebarGroupSection: View {
                         file: file,
                         unsavedChangeCount: store.unsavedChangeCount(fileID: file.id),
                         isErrored: erroredFileIDs.contains(file.id),
+                        stagedPosition: store.stagedPosition(for: file),
                         onMoveUp: { store.moveItem(fileID: file.id, direction: .up) },
                         onMoveDown: { store.moveItem(fileID: file.id, direction: .down) },
                         onActiveChange: { store.setActive($0, fileID: file.id) },
@@ -151,6 +153,7 @@ private struct SidebarFolderNodeView: View {
                         file: file,
                         unsavedChangeCount: store.unsavedChangeCount(fileID: file.id),
                         isErrored: erroredFileIDs.contains(file.id),
+                        stagedPosition: store.stagedPosition(for: file),
                         onMoveUp: { store.moveItem(fileID: file.id, direction: .up) },
                         onMoveDown: { store.moveItem(fileID: file.id, direction: .down) },
                         onActiveChange: { store.setActive($0, fileID: file.id) },
@@ -211,10 +214,11 @@ private struct ConfigFileRow: View {
     let file: ConfigFile
     let unsavedChangeCount: Int
     let isErrored: Bool
+    let stagedPosition: Int?
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
     let onActiveChange: (Bool) -> Void
-    let onDropFileID: (ConfigFile.ID) -> Void
+    let onDropFileID: (ConfigFile.ID) -> Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -238,15 +242,29 @@ private struct ConfigFileRow: View {
                 Image(systemName: "exclamationmark.circle.fill")
                     .foregroundStyle(.red)
                     .help("This file could not be read")
+                    .accessibilityLabel("This file could not be read")
+            }
+
+            if let stagedPosition {
+                Text("\(stagedPosition)")
+                    .font(.caption2.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+                    .frame(width: 16, height: 16)
+                    .background(Circle().fill(Color.orange))
+                    .help("Staged loader position \(stagedPosition). Save to write it to the entrypoint.")
+                    .accessibilityLabel("Staged loader position \(stagedPosition), not saved yet")
             }
 
             if file.activationReference != nil {
                 Button { onMoveUp() } label: { Image(systemName: "chevron.up") }
                     .buttonStyle(.plain)
                     .help("Move earlier in loader")
+                    .accessibilityLabel("Move \(file.sidebarTitle) earlier in loader")
                 Button { onMoveDown() } label: { Image(systemName: "chevron.down") }
                     .buttonStyle(.plain)
                     .help("Move later in loader")
+                    .accessibilityLabel("Move \(file.sidebarTitle) later in loader")
             }
 
             Toggle(
@@ -260,13 +278,13 @@ private struct ConfigFileRow: View {
             .controlSize(.mini)
             .disabled(file.activationReference == nil)
             .help(file.activationReference == nil ? "No init/sketchybarrc reference found" : "Comment or uncomment reference in entrypoint")
+            .accessibilityLabel("\(file.sidebarTitle) active")
         }
         .opacity(file.isActive ? 1 : 0.45)
         .draggable(file.id)
         .dropDestination(for: String.self) { droppedIDs, _ in
             guard let droppedID = droppedIDs.first else { return false }
-            onDropFileID(droppedID)
-            return true
+            return onDropFileID(droppedID)
         }
     }
 
@@ -295,6 +313,7 @@ private struct ProfilePanel: View {
                     Image(systemName: "plus")
                 }
                 .help("Save current config as a profile")
+                .accessibilityLabel("Save profile")
             }
 
             ForEach(store.profiles) { profile in
@@ -315,6 +334,7 @@ private struct ProfilePanel: View {
                         Image(systemName: "arrow.uturn.backward")
                     }
                     .help("Restore profile")
+                    .accessibilityLabel("Restore profile \(profile.name)")
                 }
             }
         }
@@ -342,17 +362,17 @@ private struct ProfilePanel: View {
 }
 
 enum SidebarCategory: String, CaseIterable {
-    case bar
     case items
     case widgets
+    case bar
     case themes
     case scripts
     case other
 
     static let defaultExpandedIDs = [
-        SidebarCategory.bar.id,
         SidebarCategory.items.id,
         SidebarCategory.widgets.id,
+        SidebarCategory.bar.id,
         SidebarCategory.themes.id,
         SidebarCategory.scripts.id
     ]
@@ -414,7 +434,7 @@ struct SidebarFolderNode: Identifiable {
 }
 
 enum SidebarGrouper {
-    static func group(files: [ConfigFile]) -> [SidebarFileGroup] {
+    static func group(files: [ConfigFile], ranks: [ConfigFile.ID: Int] = [:]) -> [SidebarFileGroup] {
         let categorized = Dictionary(grouping: files) { category(for: $0) }
 
         return SidebarCategory.allCases.compactMap { category in
@@ -422,8 +442,19 @@ enum SidebarGrouper {
                 return nil
             }
 
-            let tree = SidebarTreeBuilder(category: category, files: files).build()
+            let tree = SidebarTreeBuilder(category: category, files: files, ranks: ranks).build()
             return SidebarFileGroup(category: category, files: tree.files, folders: tree.folders)
+        }
+    }
+
+    /// The order the sidebar shows: the staged loader order first, then the
+    /// alphabetical order.
+    static func sortedByLoaderOrder(_ files: [ConfigFile], ranks: [ConfigFile.ID: Int]) -> [ConfigFile] {
+        files.sorted { lhs, rhs in
+            let lhsRank = ranks[lhs.id] ?? .max
+            let rhsRank = ranks[rhs.id] ?? .max
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
         }
     }
 
@@ -536,11 +567,12 @@ enum SidebarGrouper {
 private struct SidebarTreeBuilder {
     let category: SidebarCategory
     let files: [ConfigFile]
+    let ranks: [ConfigFile.ID: Int]
 
     func build() -> SidebarFolderNode {
-        let root = SidebarFolderBox(title: "", path: "category.\(category.rawValue).root")
+        let root = SidebarFolderBox(title: "", path: "category.\(category.rawValue).root", ranks: ranks)
 
-        for file in files.sorted(by: { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }) {
+        for file in SidebarGrouper.sortedByLoaderOrder(files, ranks: ranks) {
             root.insert(file: file, folderComponents: relativeFolderComponents(for: file))
         }
 
@@ -599,12 +631,14 @@ private struct SidebarTreeBuilder {
 private final class SidebarFolderBox {
     let title: String
     let path: String
+    private let ranks: [ConfigFile.ID: Int]
     private var childFolders: [String: SidebarFolderBox] = [:]
     private var childFiles: [ConfigFile] = []
 
-    init(title: String, path: String) {
+    init(title: String, path: String, ranks: [ConfigFile.ID: Int] = [:]) {
         self.title = title
         self.path = path
+        self.ranks = ranks
     }
 
     func insert(file: ConfigFile, folderComponents: [String]) {
@@ -614,7 +648,7 @@ private final class SidebarFolderBox {
         }
 
         let childPath = "\(path)/\(first)"
-        let child = childFolders[first] ?? SidebarFolderBox(title: first, path: childPath)
+        let child = childFolders[first] ?? SidebarFolderBox(title: first, path: childPath, ranks: ranks)
         childFolders[first] = child
         child.insert(file: file, folderComponents: Array(folderComponents.dropFirst()))
     }
@@ -636,7 +670,7 @@ private final class SidebarFolderBox {
             folders: childFolders.values
                 .map(\.node)
                 .sorted { SidebarFolderBox.sortRank($0.title) < SidebarFolderBox.sortRank($1.title) },
-            files: childFiles.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+            files: SidebarGrouper.sortedByLoaderOrder(childFiles, ranks: ranks)
         )
     }
 }
