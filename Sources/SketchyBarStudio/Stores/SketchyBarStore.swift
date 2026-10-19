@@ -67,6 +67,7 @@ private struct ScannedConfigFile {
 /// Where a value lives inside its file.
 private struct ValueLocation {
     let fileID: ConfigFile.ID
+    let valueID: LuaEditableValue.ID
     let position: Int
 }
 
@@ -91,6 +92,10 @@ final class SketchyBarStore: ObservableObject {
 
     private var sessions: [ConfigFile.ID: DocumentSession] = [:]
     private var valueIndex: [LuaEditableValue.ID: ValueLocation] = [:]
+    /// The undo and redo steps of the edits the user made.
+    private var undoStack = UndoStack()
+    /// Bumped whenever the undo stack changes, so the menu items follow it.
+    @Published private(set) var undoRevision = 0
     @Published private var stagedLoaderOrders: [String: [ConfigFile.ID]] = [:]
     /// The files whose loader position differs from the saved loader order.
     @Published private(set) var stagedChangedFileIDs: Set<ConfigFile.ID> = []
@@ -115,7 +120,8 @@ final class SketchyBarStore: ObservableObject {
     private let profileService = ProfileArchiveService()
     private let backupService = ConfigBackupService()
 
-    init(configRoot initialConfigRoot: URL? = nil) {
+    init(configRoot initialConfigRoot: URL? = nil, undoStack: UndoStack? = nil) {
+        self.undoStack = undoStack ?? UndoStack()
         if let initialConfigRoot {
             let config = ConfigWorkspace.make(name: initialConfigRoot.lastPathComponent, url: initialConfigRoot)
             configRoot = initialConfigRoot
@@ -187,6 +193,30 @@ final class SketchyBarStore: ObservableObject {
             changed.insert(file.id)
         }
         return changed.count
+    }
+
+    /// True when an edit can be undone.
+    var canUndo: Bool { undoStack.canUndo }
+
+    /// True when an undone edit can be done again.
+    var canRedo: Bool { undoStack.canRedo }
+
+    /// The name of the edit the Undo menu item undoes.
+    var undoTitle: String? { undoStack.undoTitle }
+
+    /// The name of the edit the Redo menu item does again.
+    var redoTitle: String? { undoStack.redoTitle }
+
+    /// Undoes the newest edit. The edit itself reports why it was refused.
+    func undo() {
+        guard undoStack.undo() else { return }
+        undoRevision &+= 1
+    }
+
+    /// Does the newest undone edit again.
+    func redo() {
+        guard undoStack.redo() else { return }
+        undoRevision &+= 1
     }
 
     var selectedHasUnsavedChanges: Bool {
@@ -279,6 +309,9 @@ final class SketchyBarStore: ObservableObject {
         selectedFileID = nil
         sessions.removeAll()
         valueIndex.removeAll()
+        // The steps belong to the old root, so they go with its drafts.
+        undoStack.clear()
+        undoRevision &+= 1
         reload()
     }
 
@@ -343,14 +376,44 @@ final class SketchyBarStore: ObservableObject {
             statusMessage = "That value no longer exists — reload the file to pick up changes."
             return
         }
-        let fileID = location.fileID
-        guard sessions[fileID]?.hasRawDraft != true else {
-            statusMessage = "Save or revert the source draft before changing this file with controls."
+        guard let previous = value(at: location)?.draftValue else {
+            statusMessage = "That value no longer exists — reload the file to pick up changes."
             return
         }
-        guard var session = sessions[fileID],
-              location.position < session.file.values.count,
-              session.file.values[location.position].id == valueID else { return }
+        guard applyDraft(valueID: valueID, draftValue: draftValue) else { return }
+        registerUndo(UndoAction(
+            title: "Change \(value(at: location)?.keyPath ?? "value")",
+            coalescingKey: "value:\(location.fileID):\(valueID)",
+            undo: { [weak self] in
+                guard let self else { return false }
+                guard self.applyDraft(valueID: valueID, draftValue: previous) else {
+                    self.statusMessage = "Undo failed: \(self.statusMessage)"
+                    return false
+                }
+                return true
+            },
+            redo: { [weak self] in
+                guard let self else { return false }
+                return self.applyDraft(valueID: valueID, draftValue: draftValue)
+            }
+        ))
+    }
+
+    /// Writes a draft into a value without adding an undo step.
+    @discardableResult
+    private func applyDraft(valueID: LuaEditableValue.ID, draftValue: String) -> Bool {
+        guard let location = valueIndex[valueID] else {
+            statusMessage = "That value no longer exists — reload the file to pick up changes."
+            return false
+        }
+        guard sessions[location.fileID]?.hasRawDraft != true else {
+            statusMessage = "Save or revert the source draft before changing this file with controls."
+            return false
+        }
+        guard var session = sessions[location.fileID], value(at: location) != nil else {
+            statusMessage = "That value no longer exists — reload the file to pick up changes."
+            return false
+        }
         var values = session.file.values
         values[location.position].draftValue = draftValue
         // The flags of the file are kept, so a file that is missing from
@@ -363,8 +426,23 @@ final class SketchyBarStore: ObservableObject {
             activationReference: session.file.activationReference,
             isMissingFromDisk: session.file.isMissingFromDisk
         )
-        sessions[fileID] = session
+        sessions[location.fileID] = session
         syncFiles()
+        return true
+    }
+
+    /// The value an index entry points at, when it still holds that value.
+    private func value(at location: ValueLocation) -> LuaEditableValue? {
+        guard let session = sessions[location.fileID],
+              session.file.values.indices.contains(location.position),
+              session.file.values[location.position].id == location.valueID else { return nil }
+        return session.file.values[location.position]
+    }
+
+    /// Adds an undo step for a change the user made.
+    private func registerUndo(_ action: UndoAction) {
+        undoStack.register(action)
+        undoRevision &+= 1
     }
 
     @discardableResult
@@ -451,11 +529,58 @@ final class SketchyBarStore: ObservableObject {
     func discardSelectedChanges() {
         guard let selectedFile else { return }
         let fileID = selectedFile.id
+        let capturedSession = sessions[fileID]
+        let capturedKey = loaderKey(for: selectedFile)
+        let capturedOrder = capturedKey.flatMap { stagedLoaderOrders[$0] }
+        applyDiscardChanges(for: fileID)
+        statusMessage = "Discarded unsaved edits for \(selectedFile.displayName)."
+        registerUndo(UndoAction(
+            title: "Discard edits of \(selectedFile.displayName)",
+            coalescingKey: nil,
+            undo: { [weak self] in
+                self?.restoreDiscardedChanges(
+                    fileID: fileID,
+                    session: capturedSession,
+                    key: capturedKey,
+                    order: capturedOrder
+                ) ?? false
+            },
+            redo: { [weak self] in self?.applyDiscardChanges(for: fileID) ?? false }
+        ))
+    }
+
+    /// Drops the drafts and the staged loader order of a file.
+    @discardableResult
+    private func applyDiscardChanges(for fileID: ConfigFile.ID) -> Bool {
         sessions.removeValue(forKey: fileID)
         discardStagedLoaderChange(fileID: fileID)
         reload(preservingDraftsExcept: [fileID])
         if files.contains(where: { $0.id == fileID }) { selectedFileID = fileID }
-        statusMessage = "Discarded unsaved edits for \(selectedFile.displayName)."
+        return true
+    }
+
+    /// Puts back the drafts and the staged loader order a discard removed.
+    /// The drafts go through the normal merge, so a draft only lands on the
+    /// value it was made on.
+    @discardableResult
+    private func restoreDiscardedChanges(
+        fileID: ConfigFile.ID,
+        session: DocumentSession?,
+        key: String?,
+        order: [ConfigFile.ID]?
+    ) -> Bool {
+        if let session {
+            sessions[fileID] = session
+        }
+        if let key, let order {
+            stagedLoaderOrders[key] = order
+        } else if let key {
+            stagedLoaderOrders.removeValue(forKey: key)
+        }
+        reload(preservingDraftsExcept: [])
+        recomputeStagedChangedFileIDs()
+        stagedOrderRevision &+= 1
+        return true
     }
 
     func prepareSourceEditing(for file: ConfigFile) {
@@ -505,17 +630,56 @@ final class SketchyBarStore: ObservableObject {
             return
         }
         guard var session = sessions[file.id] else { return }
+        let previous = session.sourceContents
         session.updateSourceContents(contents)
         sessions[file.id] = session
         sourceDraftRevision &+= 1
+        registerUndo(UndoAction(
+            title: "Edit source of \(file.displayName)",
+            coalescingKey: "source:\(file.id)",
+            undo: { [weak self] in self?.applySourceContents(previous, for: file.id) ?? false },
+            redo: { [weak self] in self?.applySourceContents(contents, for: file.id) ?? false }
+        ))
+    }
+
+    /// Writes the source draft of a file without adding an undo step.
+    @discardableResult
+    private func applySourceContents(_ contents: String, for fileID: ConfigFile.ID) -> Bool {
+        guard var session = sessions[fileID] else { return false }
+        guard !session.file.hasUnsavedChanges else {
+            statusMessage = "Save or discard control edits before changing this file's source."
+            return false
+        }
+        session.updateSourceContents(contents)
+        sessions[fileID] = session
+        sourceDraftRevision &+= 1
+        return true
     }
 
     func discardSourceChanges(for file: ConfigFile) {
         guard var session = sessions[file.id] else { return }
+        let previous = session.sourceContents
         session.discardSourceChanges()
         sessions[file.id] = session
         sourceDraftRevision &+= 1
         if session.loadError == nil { statusMessage = "Reverted source edits for \(file.displayName)." }
+        registerUndo(UndoAction(
+            title: "Revert source of \(file.displayName)",
+            coalescingKey: nil,
+            undo: { [weak self] in self?.applySourceContents(previous, for: file.id) ?? false },
+            redo: { [weak self] in self?.applyDiscardSourceChanges(for: file.id) ?? false }
+        ))
+    }
+
+    /// Reads the source of a file from disk again, without adding an undo
+    /// step.
+    @discardableResult
+    private func applyDiscardSourceChanges(for fileID: ConfigFile.ID) -> Bool {
+        guard var session = sessions[fileID] else { return false }
+        session.discardSourceChanges()
+        sessions[fileID] = session
+        sourceDraftRevision &+= 1
+        return true
     }
 
     @discardableResult
@@ -562,9 +726,17 @@ final class SketchyBarStore: ObservableObject {
         guard let index = order.firstIndex(of: fileID) else { return false }
         let targetIndex = direction == .up ? index - 1 : index + 1
         guard order.indices.contains(targetIndex) else { return false }
+        let previous = stagedLoaderOrders[key]
         order.swapAt(index, targetIndex)
+        let staged = order
         setStagedLoaderOrder(order, forKey: key)
         statusMessage = "Staged \(file.displayName) \(direction == .up ? "earlier" : "later"). Save to update the loader."
+        registerUndo(UndoAction(
+            title: "Move \(file.displayName) \(direction == .up ? "earlier" : "later")",
+            coalescingKey: "order:\(key):\(fileID)",
+            undo: { [weak self] in self?.restoreStagedOrder(previous, forKey: key) ?? false },
+            redo: { [weak self] in self?.restoreStagedOrder(staged, forKey: key) ?? false }
+        ))
         return true
     }
 
@@ -589,10 +761,31 @@ final class SketchyBarStore: ObservableObject {
             statusMessage = "That item cannot be moved here."
             return false
         }
+        let previous = stagedLoaderOrders[key]
         order.remove(at: sourceIndex)
         order.insert(fileID, at: sourceIndex < targetIndex ? targetIndex - 1 : targetIndex)
+        let staged = order
         setStagedLoaderOrder(order, forKey: key)
         statusMessage = "Staged \(file.displayName) before \(targetFile.displayName). Save to update the loader."
+        registerUndo(UndoAction(
+            title: "Move \(file.displayName) before \(targetFile.displayName)",
+            coalescingKey: "order:\(key):\(fileID)",
+            undo: { [weak self] in self?.restoreStagedOrder(previous, forKey: key) ?? false },
+            redo: { [weak self] in self?.restoreStagedOrder(staged, forKey: key) ?? false }
+        ))
+        return true
+    }
+
+    /// Puts a staged loader order back.
+    @discardableResult
+    private func restoreStagedOrder(_ order: [ConfigFile.ID]?, forKey key: String) -> Bool {
+        if let order {
+            stagedLoaderOrders[key] = order
+        } else {
+            stagedLoaderOrders.removeValue(forKey: key)
+        }
+        recomputeStagedChangedFileIDs()
+        stagedOrderRevision &+= 1
         return true
     }
 
@@ -641,13 +834,50 @@ final class SketchyBarStore: ObservableObject {
     func setActive(_ isActive: Bool, fileID: ConfigFile.ID) {
         guard let file = files.first(where: { $0.id == fileID }), canMutateLoader(for: file) else { return }
         do {
-            try activationService.setActive(isActive, for: file)
+            let changes = try activationService.setActive(isActive, for: file)
             let warnings = reload(preservingDraftsExcept: [])
             let confirmation = isActive ? "Activated \(file.displayName)." : "Deactivated \(file.displayName)."
             statusMessage = warnings.isEmpty ? confirmation : confirmation + " " + warnings.joined(separator: " ")
+            registerUndo(UndoAction(
+                title: isActive ? "Activate \(file.displayName)" : "Deactivate \(file.displayName)",
+                // Two toggles are never merged: each one has its own
+                // content to put back.
+                coalescingKey: nil,
+                undo: { [weak self] in self?.restoreActivation(changes, rootURL: file.rootURL) ?? false },
+                redo: { [weak self] in self?.applyActivation(isActive, fileID: fileID) ?? false }
+            ))
         } catch {
             statusMessage = "Activation update failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Puts the loader content back after an activation change. The write
+    /// goes through the same guards as the change itself, so a loader file
+    /// that changed on disk is never overwritten.
+    @discardableResult
+    private func restoreActivation(_ changes: [ActivationChange], rootURL: URL) -> Bool {
+        do {
+            try activationService.restore(changes, rootURL: rootURL)
+        } catch {
+            statusMessage = "Undo failed: \(error.localizedDescription)"
+            return false
+        }
+        reload(preservingDraftsExcept: [])
+        return true
+    }
+
+    /// Toggles an item on or off again.
+    @discardableResult
+    private func applyActivation(_ isActive: Bool, fileID: ConfigFile.ID) -> Bool {
+        guard let file = files.first(where: { $0.id == fileID }), canMutateLoader(for: file) else { return false }
+        do {
+            _ = try activationService.setActive(isActive, for: file)
+        } catch {
+            statusMessage = "Redo failed: \(error.localizedDescription)"
+            return false
+        }
+        reload(preservingDraftsExcept: [])
+        return true
     }
 
     func saveProfile() {
@@ -841,7 +1071,7 @@ final class SketchyBarStore: ObservableObject {
         var index: [LuaEditableValue.ID: ValueLocation] = [:]
         for (fileID, session) in sessions {
             for (position, value) in session.file.values.enumerated() where index[value.id] == nil {
-                index[value.id] = ValueLocation(fileID: fileID, position: position)
+                index[value.id] = ValueLocation(fileID: fileID, valueID: value.id, position: position)
             }
         }
         valueIndex = index

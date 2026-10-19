@@ -16,6 +16,13 @@ enum ActivationUpdateError: LocalizedError {
     }
 }
 
+/// The content of an entrypoint before and after an activation change.
+struct ActivationChange {
+    let entrypointURL: URL
+    let previousContents: String
+    let newContents: String
+}
+
 struct ConfigActivationService {
     private let backupService = ConfigBackupService()
     private let replacer = SafeFileReplacer()
@@ -225,31 +232,31 @@ struct ConfigActivationService {
     }
 
     /// Comments or uncomments every loader line that references the file, so
-    /// a file loaded from two entrypoints toggles in both places.
-    func setActive(_ isActive: Bool, for file: ConfigFile) throws {
+    /// a file loaded from two entrypoints toggles in both places. Returns the
+    /// content of every entrypoint before and after the change, so the
+    /// change can be undone.
+    @discardableResult
+    func setActive(_ isActive: Bool, for file: ConfigFile) throws -> [ActivationChange] {
         guard let reference = file.activationReference else {
-            return
+            return []
         }
 
         let matchesByEntrypoint = Dictionary(grouping: reference.allMatches) {
             $0.entrypointURL.standardizedFileURL.path
         }
 
+        var changes: [ActivationChange] = []
         for entrypointPath in matchesByEntrypoint.keys.sorted() {
             let matches = matchesByEntrypoint[entrypointPath] ?? []
             guard let entrypointURL = matches.first?.entrypointURL else { continue }
             let contents = try readText(entrypointURL)
-            let isLua = LuaSourceDetection.isLua(contents)
-            var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-
-            for match in matches {
-                let index = match.lineNumber - 1
-                guard lines.indices.contains(index),
-                      line(lines[index], references: file, isLua: isLua) else {
-                    throw ActivationUpdateError.referenceChanged(entrypointURL)
-                }
-                lines[index] = isActive ? uncomment(lines[index], isLua: isLua) : comment(lines[index], isLua: isLua)
-            }
+            let lines = try activatedLines(
+                isActive,
+                for: file,
+                matches: matches,
+                in: contents,
+                entrypointURL: entrypointURL
+            )
 
             try writeIfChanged(
                 lines: lines,
@@ -257,7 +264,71 @@ struct ConfigActivationService {
                 entrypointURL: entrypointURL,
                 rootURL: file.rootURL
             )
+            changes.append(ActivationChange(
+                entrypointURL: entrypointURL,
+                previousContents: contents,
+                newContents: lines.joined(separator: "\n")
+            ))
         }
+        return changes
+    }
+
+    /// Puts the previous content back on every entrypoint an activation
+    /// change touched.
+    ///
+    /// The write goes through the same guards as every other loader write:
+    /// the file must still hold the content the change produced, a backup is
+    /// made first, and a symlinked file keeps its link. Every file is
+    /// checked before any file is written, so a change that cannot be
+    /// applied does not leave half of the loaders changed.
+    func restore(_ changes: [ActivationChange], rootURL: URL) throws {
+        for change in changes {
+            let contents = try readText(change.entrypointURL)
+            guard contents == change.newContents else {
+                throw ActivationUpdateError.referenceChanged(change.entrypointURL)
+            }
+        }
+
+        for change in changes {
+            let contents = try readText(change.entrypointURL)
+            guard contents == change.newContents else {
+                throw ActivationUpdateError.referenceChanged(change.entrypointURL)
+            }
+            _ = try backupService.backup(fileURL: change.entrypointURL, rootURL: rootURL)
+            let finalText = try readTextWithMark(change.entrypointURL)
+            guard finalText.contents == change.newContents else {
+                throw ActivationUpdateError.referenceChanged(change.entrypointURL)
+            }
+            // The byte-order mark is not part of the parsed text, so it is
+            // put back here.
+            try replacer.writeAtomicallyPreservingSymlinks(
+                finalText.mark + change.previousContents,
+                to: change.entrypointURL
+            )
+        }
+    }
+
+    /// The lines of an entrypoint with every loader line that references the
+    /// file commented or uncommented.
+    private func activatedLines(
+        _ isActive: Bool,
+        for file: ConfigFile,
+        matches: [ActivationMatch],
+        in contents: String,
+        entrypointURL: URL
+    ) throws -> [String] {
+        let isLua = LuaSourceDetection.isLua(contents)
+        var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+
+        for match in matches {
+            let index = match.lineNumber - 1
+            guard lines.indices.contains(index),
+                  line(lines[index], references: file, isLua: isLua) else {
+                throw ActivationUpdateError.referenceChanged(entrypointURL)
+            }
+            lines[index] = isActive ? uncomment(lines[index], isLua: isLua) : comment(lines[index], isLua: isLua)
+        }
+        return lines
     }
 
     private func line(_ line: String, references file: ConfigFile, isLua: Bool) -> Bool {

@@ -63,6 +63,7 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 - Groups controls into practical sections such as item, icon, label, background, popup, and scripts.
 - Reads nested SbarLua item tables with their full key path, such as `icon.font.size` or `background.border_color`, so a value of the icon is never mixed up with a value of the label.
 - Normalizes boolean-style values to `true` and `false`, while preserving SketchyBar-specific choices such as `updates = on/off/when_shown`.
+- Undoes and redoes value edits, source edits, discards, loader reorders and activation toggles with Cmd-Z and Cmd-Shift-Z. The Edit menu names the change that will be undone.
 
 ### Activation and ordering
 

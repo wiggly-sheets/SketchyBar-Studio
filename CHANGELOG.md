@@ -16,6 +16,7 @@ This project follows a human-readable changelog style and aims to use semantic v
 - The structured editor shows a file's read error, marks the sidebar row with a red dot, and disables the value editors and the save button for that file.
 - A reachability map shows what SketchyBar really loads. The new toolbar button opens a sheet with the files no loader reaches, the loader lines that point at files that are gone, and the require cycles. The map only reads the config and never changes it.
 - A config validator finds the problems SketchyBar ignores. The new "Diagnostics" toolbar button opens a sheet with the unknown options of an item, the values SketchyBar cannot use, the aliases that are used twice, the loader lines that point at a file that is gone, the files no loader reaches, the files with unbalanced brackets, and the item files that declare nothing. Every finding names the file and the line, and clicking it reveals the file in Finder. The validator only reads the config and never changes it.
+- Undo and redo for value edits, source edits, discards, loader reorders and activation toggles. The Edit menu names the change that will be undone, and Cmd-Z and Cmd-Shift-Z do the same. Several edits of the same value in one run are one step, so holding a key down does not fill the history. An undo that cannot be applied safely, because the file changed on disk in the meantime, is reported and stays in the history.
 
 ### Changed
 

@@ -64,6 +64,20 @@ struct SketchyBarStudioApp: App {
                 .onAppear { appDelegate.store = store }
         }
         .commands {
+            CommandGroup(replacing: .undoRedo) {
+                Button(store.undoTitle.map { "Undo \($0)" } ?? "Undo") {
+                    store.undo()
+                }
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(!store.canUndo)
+
+                Button(store.redoTitle.map { "Redo \($0)" } ?? "Redo") {
+                    store.redo()
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(!store.canRedo)
+            }
+
             CommandGroup(after: .saveItem) {
                 Button("Save All Changed Files") {
                     store.saveAllChangedFiles()
