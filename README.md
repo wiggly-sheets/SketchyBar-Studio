@@ -64,7 +64,7 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 ### Activation and ordering
 
 - Turns loader-backed items on or off by commenting or uncommenting their loader references.
-- Detects common Lua and shell loader patterns in `init.lua`, `sketchybarrc`, `.sketchybarrc`, and related loader files.
+- Detects common Lua and shell loader patterns in `init.lua`, `sketchybarrc`, `.sketchybarrc`, and related loader files. A `sketchybarrc` that holds Lua code is read as Lua, so its `require(...)` lines can be switched off like any other loader reference.
 - Reorders items when Studio can identify concrete activation references; complex loader code is left alone.
 - Avoids offering core entrypoints and theme files as activatable items.
 
@@ -132,6 +132,8 @@ SketchyBar Studio is deliberately conservative about config changes.
 | What Studio does | What that means |
 | --- | --- |
 | Makes copies under `backups/` before writing | You have a local backup of the original file before an edit is saved. |
+| Keeps the quoting of a shell value | A value keeps the quotes it had in the file, so `$HOME` still expands and a single quoted value stays literal. |
+| Restores profiles without losing the `backups/` folder | The backup mirror of your config root is still there after a restore. |
 | Edits simple scalar assignments | Complex Lua tables and computed values are not silently rewritten. |
 | Follows folders and symlinks | A config stored in a dotfiles repository remains in place. |
 | Changes loader order only when references are clear | Unusual or complex loader logic is not inferred or rewritten. |

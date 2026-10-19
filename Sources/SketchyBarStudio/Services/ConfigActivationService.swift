@@ -43,10 +43,11 @@ struct ConfigActivationService {
 
         for entrypoint in entrypoints(in: rootURL) {
             guard let contents = try? readText(entrypoint) else { continue }
+            let isLua = LuaSourceDetection.isLua(contents)
 
             for (offset, line) in contents.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
                 let text = String(line)
-                guard let target = loaderTarget(in: text, entrypointURL: entrypoint) else {
+                guard let target = loaderTarget(in: text, isLua: isLua) else {
                     continue
                 }
 
@@ -58,7 +59,7 @@ struct ConfigActivationService {
                     ActivationMatch(
                         entrypointURL: entrypoint,
                         lineNumber: offset + 1,
-                        isActive: !isCommented(text)
+                        isActive: !isCommented(text, isLua: isLua)
                     )
                 )
             }
@@ -77,15 +78,16 @@ struct ConfigActivationService {
     func moveReference(for file: ConfigFile, direction: MoveDirection) throws {
         guard let reference = file.activationReference else { return }
         let contents = try readText(reference.entrypointURL)
+        let isLua = LuaSourceDetection.isLua(contents)
         var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let index = reference.lineNumber - 1
         guard lines.indices.contains(index),
-              line(lines[index], references: file, entrypointURL: reference.entrypointURL) else {
+              line(lines[index], references: file, isLua: isLua) else {
             throw ActivationUpdateError.referenceChanged(reference.entrypointURL)
         }
 
         let loaderIndices = lines.indices.filter {
-            loaderTarget(in: lines[$0], entrypointURL: reference.entrypointURL) != nil
+            loaderTarget(in: lines[$0], isLua: isLua) != nil
         }
         guard let currentPosition = loaderIndices.firstIndex(of: index) else {
             throw ActivationUpdateError.referenceChanged(reference.entrypointURL)
@@ -110,6 +112,7 @@ struct ConfigActivationService {
         }
 
         let contents = try readText(source.entrypointURL)
+        let isLua = LuaSourceDetection.isLua(contents)
         var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let sourceIndex = source.lineNumber - 1
         let targetIndex = target.lineNumber - 1
@@ -118,13 +121,13 @@ struct ConfigActivationService {
               sourceIndex != targetIndex else {
             return
         }
-        guard line(lines[sourceIndex], references: file, entrypointURL: source.entrypointURL),
-              line(lines[targetIndex], references: targetFile, entrypointURL: target.entrypointURL) else {
+        guard line(lines[sourceIndex], references: file, isLua: isLua),
+              line(lines[targetIndex], references: targetFile, isLua: isLua) else {
             throw ActivationUpdateError.referenceChanged(source.entrypointURL)
         }
 
         let loaderIndices = lines.indices.filter {
-            loaderTarget(in: lines[$0], entrypointURL: source.entrypointURL) != nil
+            loaderTarget(in: lines[$0], isLua: isLua) != nil
         }
         guard let sourcePosition = loaderIndices.firstIndex(of: sourceIndex),
               let targetPosition = loaderIndices.firstIndex(of: targetIndex) else {
@@ -186,6 +189,7 @@ struct ConfigActivationService {
                 }
                 guard desiredFiles.count > 1 else { continue }
                 let contents = try readText(entrypointURL)
+                let isLua = LuaSourceDetection.isLua(contents)
                 var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
                 var lineByFileID: [ConfigFile.ID: String] = [:]
                 var loaderSlots: [Int] = []
@@ -196,7 +200,7 @@ struct ConfigActivationService {
                     }
                     let lineIndex = reference.lineNumber - 1
                     guard lines.indices.contains(lineIndex),
-                          line(lines[lineIndex], references: file, entrypointURL: entrypointURL) else {
+                          line(lines[lineIndex], references: file, isLua: isLua) else {
                         throw ActivationUpdateError.referenceChanged(entrypointURL)
                     }
                     loaderSlots.append(lineIndex)
@@ -235,15 +239,16 @@ struct ConfigActivationService {
             let matches = matchesByEntrypoint[entrypointPath] ?? []
             guard let entrypointURL = matches.first?.entrypointURL else { continue }
             let contents = try readText(entrypointURL)
+            let isLua = LuaSourceDetection.isLua(contents)
             var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 
             for match in matches {
                 let index = match.lineNumber - 1
                 guard lines.indices.contains(index),
-                      line(lines[index], references: file, entrypointURL: entrypointURL) else {
+                      line(lines[index], references: file, isLua: isLua) else {
                     throw ActivationUpdateError.referenceChanged(entrypointURL)
                 }
-                lines[index] = isActive ? uncomment(lines[index]) : comment(lines[index], entrypointURL: entrypointURL)
+                lines[index] = isActive ? uncomment(lines[index], isLua: isLua) : comment(lines[index], isLua: isLua)
             }
 
             try writeIfChanged(
@@ -255,8 +260,8 @@ struct ConfigActivationService {
         }
     }
 
-    private func line(_ line: String, references file: ConfigFile, entrypointURL: URL) -> Bool {
-        guard let target = loaderTarget(in: line, entrypointURL: entrypointURL) else {
+    private func line(_ line: String, references file: ConfigFile, isLua: Bool) -> Bool {
+        guard let target = loaderTarget(in: line, isLua: isLua) else {
             return false
         }
         return !matchTargets(fileURL: file.url, rootURL: file.rootURL)
@@ -281,18 +286,43 @@ struct ConfigActivationService {
 
         _ = try backupService.backup(fileURL: entrypointURL, rootURL: rootURL)
 
-        let finalContents = try readText(entrypointURL)
-        guard finalContents == originalContents else {
+        let finalText = try readTextWithMark(entrypointURL)
+        guard finalText.contents == originalContents else {
             throw ActivationUpdateError.referenceChanged(entrypointURL)
         }
 
-        try replacer.writeAtomicallyPreservingSymlinks(updatedContents, to: entrypointURL)
+        // The byte-order mark is not part of the parsed text, so it is put
+        // back here. A file that only differs by the mark is no conflict.
+        try replacer.writeAtomicallyPreservingSymlinks(
+            finalText.mark + updatedContents,
+            to: entrypointURL
+        )
+    }
+
+    /// The text of an entrypoint and the byte-order mark it starts with.
+    private struct EntryPointText {
+        let contents: String
+        let mark: String
     }
 
     /// Reads an entrypoint without a leading byte-order mark so the first
     /// line matches loader patterns like every other line.
     private func readText(_ url: URL) throws -> String {
-        try String(contentsOf: url, encoding: .utf8).strippingByteOrderMark()
+        try readTextWithMark(url).contents
+    }
+
+    /// Reads an entrypoint and keeps the byte-order mark, so a write can put
+    /// it back.
+    ///
+    /// The mark is read from the bytes: the UTF-8 decoder of Foundation drops
+    /// it, so a decoded string can never show it.
+    private func readTextWithMark(_ url: URL) throws -> EntryPointText {
+        let data = try Data(contentsOf: url)
+        let mark = data.starts(with: [0xEF, 0xBB, 0xBF]) ? "\u{FEFF}" : ""
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
+        }
+        return EntryPointText(contents: text.strippingByteOrderMark(), mark: mark)
     }
 
     private func entrypoints(in rootURL: URL) -> [URL] {
@@ -307,28 +337,33 @@ struct ConfigActivationService {
             .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
-    private func isCommented(_ line: String) -> Bool {
+    private func isCommented(_ line: String, isLua: Bool) -> Bool {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
-        return trimmed.hasPrefix("--") || trimmed.hasPrefix("#")
+        if isLua {
+            return trimmed.hasPrefix("--")
+        }
+        return trimmed.hasPrefix("#")
     }
 
-    private func comment(_ line: String, entrypointURL: URL) -> String {
-        if isCommented(line) {
+    private func comment(_ line: String, isLua: Bool) -> String {
+        if isCommented(line, isLua: isLua) {
             return line
         }
 
-        let marker = entrypointURL.pathExtension.lowercased() == "lua" ? "-- " : "# "
+        let marker = isLua ? "-- " : "# "
         let indent = String(line.prefix { $0 == " " || $0 == "\t" })
         return indent + marker + String(line.dropFirst(indent.count))
     }
 
-    private func uncomment(_ line: String) -> String {
+    private func uncomment(_ line: String, isLua: Bool) -> String {
         let indent = String(line.prefix { $0 == " " || $0 == "\t" })
         var rest = String(line.dropFirst(indent.count))
-        if rest.hasPrefix("-- ") {
-            rest.removeFirst(3)
-        } else if rest.hasPrefix("--") {
-            rest.removeFirst(2)
+        if isLua {
+            if rest.hasPrefix("-- ") {
+                rest.removeFirst(3)
+            } else if rest.hasPrefix("--") {
+                rest.removeFirst(2)
+            }
         } else if rest.hasPrefix("# ") {
             rest.removeFirst(2)
         } else if rest.hasPrefix("#") {
@@ -351,6 +386,12 @@ struct ConfigActivationService {
             dotted.lowercased()
         ])
 
+        // A module folder is loaded by its name: `require("helpers")` loads
+        // `helpers/init.lua`.
+        if let moduleName = moduleName(for: relative) {
+            targets.insert(moduleName)
+        }
+
         if !relative.contains("/") {
             targets.insert(fileURL.lastPathComponent.lowercased())
             targets.insert(fileURL.deletingPathExtension().lastPathComponent.lowercased())
@@ -359,8 +400,18 @@ struct ConfigActivationService {
         return targets.filter { !$0.isEmpty }
     }
 
-    private func loaderTarget(in line: String, entrypointURL: URL) -> String? {
-        let isLua = entrypointURL.pathExtension.lowercased() == "lua"
+    /// The name a module folder is required by: `helpers/init.lua` is
+    /// required as `helpers`.
+    private func moduleName(for relative: String) -> String? {
+        let components = relative.split(separator: "/").map(String.init)
+        guard components.count > 1 else { return nil }
+        let last = components[components.count - 1].lowercased()
+        guard last == "init.lua" || last == "init.sh" else { return nil }
+        let folder = components.dropLast().joined(separator: ".").lowercased()
+        return folder.isEmpty ? nil : folder
+    }
+
+    private func loaderTarget(in line: String, isLua: Bool) -> String? {
         var statement = line.trimmingCharacters(in: .whitespaces)
 
         if isLua, statement.hasPrefix("--") {
