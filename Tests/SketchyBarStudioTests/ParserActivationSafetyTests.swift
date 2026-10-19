@@ -250,7 +250,7 @@ final class ParserActivationSafetyTests: XCTestCase {
                 #"require("items.second")"# + "\n"
         )
         XCTAssertEqual(
-            try String(contentsOf: root.appendingPathComponent("backups/init.lua"), encoding: .utf8),
+            try String(contentsOf: root.appendingPathComponent("backups/.sketchybar-studio/init.lua"), encoding: .utf8),
             originalSource
         )
     }

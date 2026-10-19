@@ -138,6 +138,7 @@ final class FilesystemSafetyTests: XCTestCase {
 
     func testProfileRestoreThroughSymlinkPreservesLinkAndReplacesTargetContents() throws {
         let testRoot = try makeTestRoot()
+        let appSupportRoot = testRoot.appendingPathComponent("Application Support/SketchyBarStudio")
         let targetRoot = testRoot.appendingPathComponent("dotfiles/sketchybar")
         let linkedRoot = testRoot.appendingPathComponent("live/sketchybar")
         let profileRoot = testRoot.appendingPathComponent("profiles/selected")
@@ -149,9 +150,7 @@ final class FilesystemSafetyTests: XCTestCase {
         )
         try FileManager.default.createSymbolicLink(at: linkedRoot, withDestinationURL: targetRoot)
 
-        let service = ProfileArchiveService(
-            appSupportRoot: testRoot.appendingPathComponent("Application Support/SketchyBarStudio")
-        )
+        let service = ProfileArchiveService(appSupportRoot: appSupportRoot)
         try service.restore(
             profile: ConfigProfile(name: "Selected", url: profileRoot, createdAt: .now),
             to: linkedRoot
@@ -169,12 +168,15 @@ final class FilesystemSafetyTests: XCTestCase {
             at: targetRoot.deletingLastPathComponent(),
             includingPropertiesForKeys: nil
         )
-        let backups = targetSiblings.filter {
-            $0.lastPathComponent.hasPrefix("sketchybar.before-studio-restore-")
-        }
-        XCTAssertEqual(backups.count, 1)
+        XCTAssertFalse(targetSiblings.contains { $0.lastPathComponent.hasPrefix("sketchybar.before-studio-restore-") })
+
+        let restores = try FileManager.default.contentsOfDirectory(
+            at: appSupportRoot.appendingPathComponent("Restores"),
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(restores.count, 1)
         XCTAssertEqual(
-            try String(contentsOf: backups[0].appendingPathComponent("bar.lua"), encoding: .utf8),
+            try String(contentsOf: restores[0].appendingPathComponent("sketchybar/bar.lua"), encoding: .utf8),
             "current\n"
         )
     }
@@ -215,7 +217,10 @@ final class FilesystemSafetyTests: XCTestCase {
         try write("current\n", to: liveFile)
         try write("alternate\n", to: nestedFile)
 
-        let service = ConfigSwitchService(liveSketchyBarConfigURL: liveRoot)
+        let service = ConfigSwitchService(
+            liveSketchyBarConfigURL: liveRoot,
+            appSupportRoot: testRoot.appendingPathComponent("Application Support/SketchyBarStudio")
+        )
         let workspace = ConfigWorkspace.make(name: "Nested", url: nestedSource)
 
         XCTAssertThrowsError(try service.activate(config: workspace))
@@ -234,7 +239,8 @@ final class FilesystemSafetyTests: XCTestCase {
 
         let service = ConfigSwitchService(
             fileManager: SymlinkCreationFailingFileManager(),
-            liveSketchyBarConfigURL: liveRoot
+            liveSketchyBarConfigURL: liveRoot,
+            appSupportRoot: testRoot.appendingPathComponent("Application Support/SketchyBarStudio")
         )
 
         XCTAssertThrowsError(
@@ -251,11 +257,15 @@ final class FilesystemSafetyTests: XCTestCase {
 
     func testConfigSwitchActivatesSelectedConfigAndPreservesPreviousDirectory() throws {
         let testRoot = try makeTestRoot()
+        let appSupportRoot = testRoot.appendingPathComponent("Application Support/SketchyBarStudio")
         let liveRoot = testRoot.appendingPathComponent("live/sketchybar")
         let selectedRoot = testRoot.appendingPathComponent("configs/alternate")
         try write("current\n", to: liveRoot.appendingPathComponent("bar.lua"))
         try write("alternate\n", to: selectedRoot.appendingPathComponent("init.lua"))
-        let service = ConfigSwitchService(liveSketchyBarConfigURL: liveRoot)
+        let service = ConfigSwitchService(
+            liveSketchyBarConfigURL: liveRoot,
+            appSupportRoot: appSupportRoot
+        )
         let workspace = ConfigWorkspace.make(name: "Alternate", url: selectedRoot)
 
         try service.activate(config: workspace)
@@ -269,10 +279,15 @@ final class FilesystemSafetyTests: XCTestCase {
             at: liveRoot.deletingLastPathComponent(),
             includingPropertiesForKeys: nil
         )
-        let backups = siblings.filter { $0.lastPathComponent.hasPrefix("sketchybar.before-studio-switch-") }
-        XCTAssertEqual(backups.count, 1)
+        XCTAssertFalse(siblings.contains { $0.lastPathComponent.hasPrefix("sketchybar.before-studio-switch-") })
+
+        let restores = try FileManager.default.contentsOfDirectory(
+            at: appSupportRoot.appendingPathComponent("Restores"),
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(restores.count, 1)
         XCTAssertEqual(
-            try String(contentsOf: backups[0].appendingPathComponent("bar.lua"), encoding: .utf8),
+            try String(contentsOf: restores[0].appendingPathComponent("sketchybar/bar.lua"), encoding: .utf8),
             "current\n"
         )
     }

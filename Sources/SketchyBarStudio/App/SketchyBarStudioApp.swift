@@ -3,6 +3,9 @@ import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Repair an install that a crash interrupted before the app touches
+        // any config.
+        SafeFileReplacer().recoverPendingInstalls()
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }

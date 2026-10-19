@@ -93,8 +93,11 @@ struct DocumentSession {
         let currentContents = try String(contentsOf: file.url, encoding: .utf8)
         guard currentContents == savedContents else { throw DocumentSessionError.changedOnDisk }
         _ = try backupService.backup(fileURL: file.url, rootURL: file.rootURL)
+        // Re-read right before the write so an external edit is not lost.
+        let finalContents = try String(contentsOf: file.url, encoding: .utf8)
+        guard finalContents == savedContents else { throw DocumentSessionError.changedOnDisk }
         if hasRawDraft, let draftContents {
-            try draftContents.write(to: file.url, atomically: true, encoding: .utf8)
+            try SafeFileReplacer().writeAtomicallyPreservingSymlinks(draftContents, to: file.url)
         } else {
             switch file.kind {
             case .lua: try luaScanner.save(values: file.values, to: file.url, rootURL: file.rootURL)

@@ -17,8 +17,11 @@ final class SafeFileReplacerTests: XCTestCase {
     }
 
     func testInstallRollsBackWhenStagedMoveFails() throws {
-        let replacer = SafeFileReplacer(fileManager: StagedInstallMoveFailingFileManager())
         let root = try makeTestRoot()
+        let replacer = SafeFileReplacer(
+            fileManager: StagedInstallMoveFailingFileManager(),
+            appSupportRoot: root.appendingPathComponent("Application Support/SketchyBarStudio")
+        )
         let destination = root.appendingPathComponent("dest", isDirectory: true)
         let originalFile = destination.appendingPathComponent("bar.lua")
         try write("original\n", to: originalFile)
@@ -40,8 +43,8 @@ final class SafeFileReplacerTests: XCTestCase {
     }
 
     func testInstallKeepsDisplacedItemWhenRequested() throws {
-        let replacer = SafeFileReplacer()
         let root = try makeTestRoot()
+        let replacer = SafeFileReplacer(appSupportRoot: root.appendingPathComponent("Application Support/SketchyBarStudio"))
         let destination = root.appendingPathComponent("dest", isDirectory: true)
         try write("original\n", to: destination.appendingPathComponent("bar.lua"))
         let staging = root.appendingPathComponent(".staged-\(UUID().uuidString)", isDirectory: true)
@@ -68,8 +71,8 @@ final class SafeFileReplacerTests: XCTestCase {
     }
 
     func testInstallRemovesDisplacedItemWhenNotKept() throws {
-        let replacer = SafeFileReplacer()
         let root = try makeTestRoot()
+        let replacer = SafeFileReplacer(appSupportRoot: root.appendingPathComponent("Application Support/SketchyBarStudio"))
         let destination = root.appendingPathComponent("dest", isDirectory: true)
         try write("original\n", to: destination.appendingPathComponent("bar.lua"))
         let staging = root.appendingPathComponent(".staged-\(UUID().uuidString)", isDirectory: true)
