@@ -515,7 +515,7 @@ final class ViewLogicTests: XCTestCase {
         let doc = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "popup.height"))
 
         XCTAssertEqual(doc.key, "popup.height")
-        XCTAssertEqual(doc.defaultValue, "30")
+        XCTAssertNil(doc.defaultValue)
     }
 
     func testOptionDocsResolveTheQualifiedKeysOfTheSubDomains() throws {
@@ -539,6 +539,22 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertEqual(maxChars.key, "max_chars")
     }
 
+    func testOptionDocsUseTheOwnEntryOfAQualifiedKey() throws {
+        let iconDrawing = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "icon.drawing"))
+        XCTAssertEqual(iconDrawing.key, "icon.drawing")
+        XCTAssertNotEqual(iconDrawing.summary, SketchyBarOptionDocs.doc(for: "drawing")?.summary)
+
+        let labelDrawing = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "label.drawing"))
+        XCTAssertEqual(labelDrawing.key, "label.drawing")
+
+        let popupColor = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "popup.background.color"))
+        XCTAssertEqual(popupColor.key, "popup.background.color")
+        XCTAssertNotEqual(popupColor.summary, SketchyBarOptionDocs.doc(for: "color")?.summary)
+
+        let sliderColor = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "slider.background.color"))
+        XCTAssertEqual(sliderColor.key, "slider.background.color")
+    }
+
     func testOptionDocsHaveNoEntryForAnUnknownKey() {
         XCTAssertNil(SketchyBarOptionDocs.doc(for: "not_a_sketchybar_option"))
         XCTAssertNil(SketchyBarOptionDocs.doc(for: ""))
@@ -550,7 +566,7 @@ final class ViewLogicTests: XCTestCase {
         for key in ["position", "align", "width", "updates", "update_freq", "icon", "label",
                     "script", "click_script", "space", "display", "associated_display",
                     "associated_space", "ignore_association", "scroll_texts", "scroll_duration",
-                    "max_chars", "cache_scripts", "lazy", "drawing", "shadow", "font",
+                    "max_chars", "drawing", "shadow", "font",
                     "color", "highlight", "highlight_color", "padding_left", "padding_right",
                     "x_offset", "y_offset", "border_color", "border_width", "corner_radius",
                     "fill_color", "symbol_color", "symbol_mode", "percentage", "anchor",
@@ -561,19 +577,57 @@ final class ViewLogicTests: XCTestCase {
         }
     }
 
+    func testOptionDocsHaveNoEntryForAPropertyThatSketchyBarRejects() {
+        let keys = Set(SketchyBarOptionDocs.all.map(\.key))
+
+        for key in ["id", "properties", "mouse", "content_update", "content_replace",
+                    "stack.symbol", "stack.size", "stack.spacing", "stack.hidden", "stack.empty",
+                    "cache_scripts", "lazy"] {
+            XCTAssertFalse(keys.contains(key), "\(key) is not a SketchyBar property")
+        }
+    }
+
     func testOptionDocsKeysAreUnique() {
         XCTAssertEqual(Set(SketchyBarOptionDocs.all.map(\.key)).count, SketchyBarOptionDocs.all.count)
     }
 
     func testOptionDocsListTheAcceptedValues() throws {
         let position = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "position"))
-        XCTAssertEqual(position.values, ["left", "right", "center", "q", "e", "popup", "top", "bottom"])
+        XCTAssertEqual(position.values, ["left", "right", "center", "q", "e"])
+
+        let barPosition = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "bar.position"))
+        XCTAssertEqual(barPosition.values, ["top", "bottom"])
 
         let updates = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "updates"))
         XCTAssertEqual(updates.values, ["on", "off", "when_shown"])
 
         let align = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "align"))
         XCTAssertEqual(align.values, ["left", "right", "center"])
+    }
+
+    func testOptionDocsKeepTheItemAndTheBarLevelsApart() throws {
+        let itemDisplay = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "display"))
+        XCTAssertEqual(itemDisplay.values, ["active"])
+        XCTAssertFalse(itemDisplay.values.contains("all"))
+        XCTAssertFalse(itemDisplay.values.contains("main"))
+
+        let barDisplay = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "bar.display"))
+        XCTAssertEqual(barDisplay.values, ["all", "main"])
+
+        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "bar.color")?.defaultValue, "0x44000000")
+        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "color")?.defaultValue, "0xffffffff")
+        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "bar.border_color")?.defaultValue, "0xffff0000")
+        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "bar.height")?.defaultValue, "25")
+        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "height")?.defaultValue, "0")
+        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "bar.padding_left")?.defaultValue, "20")
+        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "padding_left")?.defaultValue, "0")
+    }
+
+    func testOptionDocsUseTheRangeOfTheSourceForTheColorParts() throws {
+        for key in ["alpha", "red", "green", "blue"] {
+            let doc = try XCTUnwrap(SketchyBarOptionDocs.doc(for: key))
+            XCTAssertTrue(doc.summary.contains("0 to 1"), "\(key) should use the range 0 to 1")
+        }
     }
 
     // MARK: - Option suggestions
@@ -601,6 +655,13 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertTrue(values.contains("center"))
     }
 
+    func testCatalogReturnsTheBarPositionList() {
+        XCTAssertEqual(
+            catalog.suggestedValues(for: "bar.position", currentValue: "top"),
+            ["top", "bottom"]
+        )
+    }
+
     func testCatalogReturnsTheBooleanListForABooleanKey() {
         XCTAssertEqual(
             catalog.suggestedValues(for: "drawing", currentValue: "true"),
@@ -622,5 +683,59 @@ final class ViewLogicTests: XCTestCase {
     func testCatalogHasNoSuggestionsForAFreeFormOption() {
         XCTAssertEqual(catalog.suggestedValues(for: "scroll_duration", currentValue: "200"), [])
         XCTAssertEqual(catalog.suggestedValues(for: "update_freq", currentValue: "5"), [])
+    }
+
+    func testCatalogKeepsEveryValueOfTheOptionReference() {
+        for doc in SketchyBarOptionDocs.all where !doc.values.isEmpty {
+            for value in doc.values {
+                let suggestions = catalog.suggestedValues(for: doc.key, currentValue: value)
+                XCTAssertTrue(
+                    suggestions.contains(value),
+                    "the picker of \(doc.key) has no tag for \(value)"
+                )
+            }
+        }
+    }
+
+    func testCatalogKeepsAnEmptyValueSelectable() {
+        let values = catalog.suggestedValues(for: "updates", currentValue: "")
+
+        XCTAssertTrue(values.contains(""))
+        XCTAssertTrue(values.contains("on"))
+    }
+
+    // MARK: - Boolean keys
+
+    func testBooleanKeySetIsTheSetOfSketchyBarBooleans() {
+        XCTAssertEqual(
+            SketchyBarBoolean.booleanLeaves,
+            [
+                "clockwise",
+                "drawing",
+                "fill_row",
+                "font_smoothing",
+                "font_typographical_width",
+                "highlight",
+                "horizontal",
+                "ignore_association",
+                "line_break",
+                "scroll_texts",
+                "shadow",
+                "show_in_fullscreen",
+                "sticky"
+            ]
+        )
+    }
+
+    func testBooleanKeySetHasNoKeyThatSketchyBarDoesNotReadAsABoolean() {
+        for key in ["clip", "cache_scripts", "lazy", "topmost"] {
+            XCTAssertFalse(SketchyBarBoolean.isBooleanKey(key), "\(key) is not a boolean")
+        }
+    }
+
+    func testBooleanKeySetMatchesTheQualifiedDrawingKeys() {
+        for key in ["drawing", "icon.drawing", "label.drawing", "background.drawing", "image.drawing"] {
+            XCTAssertTrue(SketchyBarBoolean.isBooleanKey(key), "\(key) should be a boolean key")
+        }
     }
 }

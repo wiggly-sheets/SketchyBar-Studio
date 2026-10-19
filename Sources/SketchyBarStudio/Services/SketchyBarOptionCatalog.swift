@@ -11,7 +11,7 @@ struct SketchyBarOptionCatalog {
             return booleanValues
         }
 
-        if leaf == "position" {
+        if key == "position" {
             if currentValue == "top" || currentValue == "bottom" {
                 return ["top", "bottom"]
             }
@@ -21,6 +21,10 @@ struct SketchyBarOptionCatalog {
                 values.insert(currentValue, at: 0)
             }
             return options(values, keeping: currentValue)
+        }
+
+        if key == "bar.position" {
+            return options(["top", "bottom"], keeping: currentValue)
         }
 
         if leaf == "width" {
@@ -43,10 +47,11 @@ struct SketchyBarOptionCatalog {
         return []
     }
 
+    /// The values of the option, with the value of the file always in the
+    /// list. The picker needs a tag for the value it shows, so an empty
+    /// value is kept as an empty entry.
     private func options(_ values: [String], keeping currentValue: String) -> [String] {
-        guard !currentValue.isEmpty, !values.contains(currentValue) else {
-            return values
-        }
+        guard !values.contains(currentValue) else { return values }
         return [currentValue] + values
     }
 }

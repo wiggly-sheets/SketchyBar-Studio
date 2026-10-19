@@ -253,12 +253,13 @@ final class ParserValueCorrectnessTests: XCTestCase {
     }
 
     func testBooleanKeySetMatchesSketchyBar() {
-        for key in ["clip", "lazy", "cache_scripts", "show_in_fullscreen", "drawing", "sticky"] {
+        for key in ["show_in_fullscreen", "drawing", "sticky", "highlight", "font_typographical_width"] {
             XCTAssertTrue(SketchyBarBoolean.isBooleanKey(key), "\(key) should be a boolean key")
         }
 
-        XCTAssertFalse(SketchyBarBoolean.isBooleanKey("highlight"))
-        XCTAssertFalse(SketchyBarBoolean.isBooleanKey("highlight_color"))
+        for key in ["clip", "lazy", "cache_scripts", "highlight_color"] {
+            XCTAssertFalse(SketchyBarBoolean.isBooleanKey(key), "\(key) should not be a boolean key")
+        }
     }
 
     // MARK: - Invalid drafts
