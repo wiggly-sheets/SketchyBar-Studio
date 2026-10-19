@@ -5,46 +5,22 @@ struct SidebarView: View {
     @SceneStorage("sidebar.expanded.groups") private var expandedGroupStorage = ""
     @State private var expandedGroups: Set<String> = Set(SidebarCategory.defaultExpandedIDs)
 
+    static let missingFilesGroupID = "group.missing-files"
+
     var body: some View {
         VStack(spacing: 0) {
             List(selection: $store.selectedFileID) {
                 ForEach(sidebarGroups) { group in
-                    DisclosureGroup(
-                        isExpanded: expansionBinding(for: group.id),
-                        content: {
-                            ForEach(group.files) { file in
-                                ConfigFileRow(
-                                    file: file,
-                                    unsavedChangeCount: store.unsavedChangeCount(fileID: file.id),
-                                    onMoveUp: { store.moveItem(fileID: file.id, direction: .up) },
-                                    onMoveDown: { store.moveItem(fileID: file.id, direction: .down) },
-                                    onActiveChange: { store.setActive($0, fileID: file.id) },
-                                    onDropFileID: { droppedID in store.moveItem(fileID: droppedID, before: file.id) }
-                                )
-                                    .tag(file.id)
-                            }
-
-                            ForEach(group.folders) { folder in
-                                SidebarFolderNodeView(
-                                    folder: folder,
-                                    expansionBinding: expansionBinding,
-                                    unsavedChangeCount: { store.unsavedChangeCount(fileID: $0) },
-                                    onMove: { file, direction in
-                                        store.moveItem(fileID: file.id, direction: direction)
-                                    },
-                                    onActiveChange: { file, isActive in
-                                        store.setActive(isActive, fileID: file.id)
-                                    },
-                                    onDrop: { droppedID, targetFile in
-                                        store.moveItem(fileID: droppedID, before: targetFile.id)
-                                    }
-                                )
-                            }
-                        },
-                        label: {
-                            Label(group.title, systemImage: group.systemImage)
-                        }
+                    SidebarGroupSection(
+                        group: group,
+                        store: store,
+                        expansionBinding: expansionBinding,
+                        erroredFileIDs: erroredFileIDs
                     )
+                }
+
+                if !store.missingFiles.isEmpty {
+                    MissingFilesSection(store: store, expansionBinding: expansionBinding)
                 }
             }
             .listStyle(.sidebar)
@@ -71,6 +47,10 @@ struct SidebarView: View {
         return SidebarGrouper.group(files: filtered)
     }
 
+    private var erroredFileIDs: Set<ConfigFile.ID> {
+        Set(store.files.filter { store.loadError(for: $0) != nil }.map(\.id))
+    }
+
     private func expansionBinding(for id: String) -> Binding<Bool> {
         Binding(
             get: { expandedGroups.contains(id) },
@@ -85,13 +65,73 @@ struct SidebarView: View {
     }
 }
 
+private struct SidebarGroupSection: View {
+    let group: SidebarFileGroup
+    @ObservedObject var store: SketchyBarStore
+    let expansionBinding: (String) -> Binding<Bool>
+    let erroredFileIDs: Set<ConfigFile.ID>
+
+    var body: some View {
+        DisclosureGroup(
+            isExpanded: expansionBinding(group.id),
+            content: {
+                ForEach(group.files) { file in
+                    ConfigFileRow(
+                        file: file,
+                        unsavedChangeCount: store.unsavedChangeCount(fileID: file.id),
+                        isErrored: erroredFileIDs.contains(file.id),
+                        onMoveUp: { store.moveItem(fileID: file.id, direction: .up) },
+                        onMoveDown: { store.moveItem(fileID: file.id, direction: .down) },
+                        onActiveChange: { store.setActive($0, fileID: file.id) },
+                        onDropFileID: { droppedID in store.moveItem(fileID: droppedID, before: file.id) }
+                    )
+                    .tag(file.id)
+                }
+
+                ForEach(group.folders) { folder in
+                    SidebarFolderNodeView(
+                        folder: folder,
+                        store: store,
+                        expansionBinding: expansionBinding,
+                        erroredFileIDs: erroredFileIDs
+                    )
+                }
+            },
+            label: {
+                Label(group.title, systemImage: group.systemImage)
+            }
+        )
+    }
+}
+
+private struct MissingFilesSection: View {
+    @ObservedObject var store: SketchyBarStore
+    let expansionBinding: (String) -> Binding<Bool>
+
+    var body: some View {
+        DisclosureGroup(
+            isExpanded: expansionBinding(SidebarView.missingFilesGroupID),
+            content: {
+                ForEach(store.missingFiles) { file in
+                    MissingFileRow(
+                        file: file,
+                        unsavedChangeCount: store.unsavedChangeCount(fileID: file.id)
+                    )
+                    .tag(file.id)
+                }
+            },
+            label: {
+                Label("Missing Files", systemImage: "exclamationmark.triangle")
+            }
+        )
+    }
+}
+
 private struct SidebarFolderNodeView: View {
     let folder: SidebarFolderNode
+    @ObservedObject var store: SketchyBarStore
     let expansionBinding: (String) -> Binding<Bool>
-    let unsavedChangeCount: (ConfigFile.ID) -> Int
-    let onMove: (ConfigFile, MoveDirection) -> Void
-    let onActiveChange: (ConfigFile, Bool) -> Void
-    let onDrop: (ConfigFile.ID, ConfigFile) -> Void
+    let erroredFileIDs: Set<ConfigFile.ID>
 
     var body: some View {
         DisclosureGroup(
@@ -100,23 +140,22 @@ private struct SidebarFolderNodeView: View {
                 ForEach(folder.files) { file in
                     ConfigFileRow(
                         file: file,
-                        unsavedChangeCount: unsavedChangeCount(file.id),
-                        onMoveUp: { onMove(file, .up) },
-                        onMoveDown: { onMove(file, .down) },
-                        onActiveChange: { onActiveChange(file, $0) },
-                        onDropFileID: { droppedID in onDrop(droppedID, file) }
+                        unsavedChangeCount: store.unsavedChangeCount(fileID: file.id),
+                        isErrored: erroredFileIDs.contains(file.id),
+                        onMoveUp: { store.moveItem(fileID: file.id, direction: .up) },
+                        onMoveDown: { store.moveItem(fileID: file.id, direction: .down) },
+                        onActiveChange: { store.setActive($0, fileID: file.id) },
+                        onDropFileID: { droppedID in store.moveItem(fileID: droppedID, before: file.id) }
                     )
-                        .tag(file.id)
+                    .tag(file.id)
                 }
 
                 ForEach(folder.folders) { child in
                     SidebarFolderNodeView(
                         folder: child,
+                        store: store,
                         expansionBinding: expansionBinding,
-                        unsavedChangeCount: unsavedChangeCount,
-                        onMove: onMove,
-                        onActiveChange: onActiveChange,
-                        onDrop: onDrop
+                        erroredFileIDs: erroredFileIDs
                     )
                 }
             },
@@ -128,9 +167,41 @@ private struct SidebarFolderNodeView: View {
     }
 }
 
+private struct MissingFileRow: View {
+    let file: ConfigFile
+    let unsavedChangeCount: Int
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(file.displayName)
+                    .lineLimit(1)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 6)
+        }
+    }
+
+    private var detail: String {
+        if unsavedChangeCount > 0 {
+            return "\(unsavedChangeCount) unsaved \(unsavedChangeCount == 1 ? "change" : "changes") kept"
+        }
+        return "Missing from disk"
+    }
+}
+
 private struct ConfigFileRow: View {
     let file: ConfigFile
     let unsavedChangeCount: Int
+    let isErrored: Bool
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
     let onActiveChange: (Bool) -> Void
@@ -153,6 +224,12 @@ private struct ConfigFileRow: View {
             }
 
             Spacer(minLength: 6)
+
+            if isErrored {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(.red)
+                    .help("This file could not be read")
+            }
 
             if file.activationReference != nil {
                 Button { onMoveUp() } label: { Image(systemName: "chevron.up") }

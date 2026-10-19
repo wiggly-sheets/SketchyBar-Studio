@@ -134,6 +134,8 @@ SketchyBar Studio is deliberately conservative about config changes.
 | Edits simple scalar assignments | Complex Lua tables and computed values are not silently rewritten. |
 | Follows folders and symlinks | A config stored in a dotfiles repository remains in place. |
 | Changes loader order only when references are clear | Unusual or complex loader logic is not inferred or rewritten. |
+| Keeps unsaved edits in memory and asks before quitting | Quitting with unsaved edits offers Save All, Discard, or Cancel instead of dropping them. |
+| Keeps drafts when a file changes on disk | A draft follows its value even when lines move, and it is reported when the value is gone. |
 
 You can use the GUI for routine changes and keep the code preview open whenever you want to verify the underlying configuration.
 

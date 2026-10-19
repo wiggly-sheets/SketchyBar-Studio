@@ -66,6 +66,14 @@ private struct EditableFileView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                if let loadError {
+                    Label(loadError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                }
                 if showSourceEditor {
                     SourceEditorView(
                         store: store,
@@ -85,6 +93,7 @@ private struct EditableFileView: View {
                                         value: value,
                                         theme: theme,
                                         isSelected: selectedValueID == value.id,
+                                        isEditable: loadError == nil,
                                         onSelect: {
                                             selectedValueID = value.id
                                         },
@@ -162,7 +171,13 @@ private struct EditableFileView: View {
                 Label("Save File", systemImage: "square.and.arrow.down")
             }
             .keyboardShortcut("s", modifiers: .command)
+            .disabled(loadError != nil)
+            .help(loadError == nil ? "Save this file" : "This file could not be read, so it cannot be saved")
         }
+    }
+
+    private var loadError: String? {
+        store.loadError(for: file)
     }
 
     private var groupedValues: [EditableValueGroup] {
@@ -230,6 +245,7 @@ private struct EditableValueRow: View {
     let value: LuaEditableValue
     let theme: AppTheme
     let isSelected: Bool
+    let isEditable: Bool
     let onSelect: () -> Void
     let onChange: (String) -> Void
 
@@ -240,18 +256,19 @@ private struct EditableValueRow: View {
                     Text(value.keyPath)
                         .font(.body)
                         .fontWeight(.medium)
-                    Text("\(value.displayLine) - \(value.kind.rawValue)")
+                    Text(value.isMissingFromFile ? "Not in file any more - draft kept" : "\(value.displayLine) - \(value.kind.rawValue)")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(value.isMissingFromFile ? .red : .secondary)
                 }
                 .frame(width: 240, alignment: .leading)
 
                 editor
+                    .disabled(!isEditable)
 
                 if value.draftValue != value.originalValue {
                     Image(systemName: "circle.fill")
                         .foregroundStyle(.orange)
-                        .help("Unsaved change")
+                        .help(value.isMissingFromFile ? "Unsaved change - the key is no longer in the file" : "Unsaved change")
                 } else {
                     Color.clear.frame(width: 12, height: 12)
                 }

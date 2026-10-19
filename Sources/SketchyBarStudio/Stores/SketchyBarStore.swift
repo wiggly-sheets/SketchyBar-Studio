@@ -18,6 +18,7 @@ final class SketchyBarStore: ObservableObject {
     @Published var selectedConfigID: ConfigWorkspace.ID?
     @Published var files: [ConfigFile] = []
     @Published var selectedFileID: ConfigFile.ID?
+    @Published var missingFiles: [ConfigFile] = []
     @Published var profiles: [ConfigProfile] = []
     @Published var profileName = ""
     @Published var newConfigName = ""
@@ -30,6 +31,7 @@ final class SketchyBarStore: ObservableObject {
     }
 
     private var sessions: [ConfigFile.ID: DocumentSession] = [:]
+    private var valueIndex: [LuaEditableValue.ID: ConfigFile.ID] = [:]
     @Published private var stagedLoaderOrders: [String: [ConfigFile.ID]] = [:]
 
     private let locator = SketchyBarConfigLocator()
@@ -54,15 +56,24 @@ final class SketchyBarStore: ObservableObject {
 
         let defaultRoot = locator.defaultConfigRoot
         var libraryError: String?
-        let loadedConfigs: [ConfigWorkspace]
+        var loadedConfigs: [ConfigWorkspace]
         do {
             loadedConfigs = try configLibraryService.load(defaultConfigRoot: defaultRoot)
         } catch {
             libraryError = error.localizedDescription
             loadedConfigs = [ConfigWorkspace(id: "default", name: "Default", path: defaultRoot.path, createdAt: .now)]
         }
-        let savedConfigID = UserDefaults.standard.string(forKey: "selectedConfigID") ?? loadedConfigs.first?.id
-        let selected = loadedConfigs.first { $0.id == savedConfigID } ?? loadedConfigs.first
+        let savedConfigID = UserDefaults.standard.string(forKey: "selectedConfigID")
+        var selected = loadedConfigs.first { $0.id == savedConfigID }
+        if selected == nil, let savedRootPath = UserDefaults.standard.string(forKey: "configRoot") {
+            let restoredURL = URL(fileURLWithPath: NSString(string: savedRootPath).expandingTildeInPath)
+            if FileManager.default.fileExists(atPath: restoredURL.path) {
+                let restored = ConfigWorkspace.make(name: restoredURL.lastPathComponent, url: restoredURL)
+                loadedConfigs.append(restored)
+                selected = restored
+            }
+        }
+        selected = selected ?? loadedConfigs.first
         configRoot = selected?.url ?? defaultRoot
         configs = loadedConfigs
         selectedConfigID = selected?.id
@@ -79,8 +90,18 @@ final class SketchyBarStore: ObservableObject {
     }
 
     var selectedFile: ConfigFile? {
-        guard let selectedFileID else { return files.first }
-        return files.first { $0.id == selectedFileID } ?? files.first
+        guard let selectedFileID else { return nil }
+        return files.first { $0.id == selectedFileID } ?? missingFiles.first { $0.id == selectedFileID }
+    }
+
+    /// True when any session (including files that vanished from disk) or a
+    /// staged loader order still holds unsaved work.
+    var hasUnsavedChanges: Bool {
+        sessions.contains { $0.value.hasUnsavedChanges } || !stagedLoaderOrders.isEmpty
+    }
+
+    var selectedHasLoadError: Bool {
+        selectedFile.map { loadError(for: $0) != nil } ?? false
     }
 
     var unsavedFileCount: Int {
@@ -135,7 +156,7 @@ final class SketchyBarStore: ObservableObject {
     func updateConfigRoot(_ text: String) {
         let expanded = NSString(string: text).expandingTildeInPath
         let url = URL(fileURLWithPath: expanded)
-        if let match = configs.first(where: { $0.url.standardizedFileURL == url.standardizedFileURL }) {
+        if let match = configs.first(where: { SketchyBarStore.isSameConfigFolder($0.url, url) }) {
             selectConfig(match.id)
         } else {
             addConfig(name: url.lastPathComponent.isEmpty ? "Config" : url.lastPathComponent, path: url.path, selectAfterAdd: true)
@@ -144,12 +165,25 @@ final class SketchyBarStore: ObservableObject {
 
     func selectConfig(_ id: ConfigWorkspace.ID) {
         guard let config = configs.first(where: { $0.id == id }) else { return }
+        if id == selectedConfigID {
+            // Same entry: keep the sessions and their drafts, just refresh.
+            reload()
+            return
+        }
+        // Sessions only exist for the current root, so switching configs
+        // drops the drafts of the old root. Refuse while they are unsaved.
+        if hasUnsavedChanges(in: configRoot) {
+            statusMessage = "Save or discard your edits in \(selectedConfig?.name ?? configRoot.lastPathComponent) before switching configs."
+            return
+        }
         selectedConfigID = id
         configRoot = config.url
         newConfigPath = config.path
         UserDefaults.standard.set(id, forKey: "selectedConfigID")
         UserDefaults.standard.set(config.path, forKey: "configRoot")
         selectedFileID = nil
+        sessions.removeAll()
+        valueIndex.removeAll()
         reload()
     }
 
@@ -160,8 +194,13 @@ final class SketchyBarStore: ObservableObject {
             statusMessage = "Choose a config folder first."
             return
         }
-        if let existing = configs.first(where: { $0.url.standardizedFileURL == url.standardizedFileURL }) {
+        if let existing = configs.first(where: { SketchyBarStore.isSameConfigFolder($0.url, url) }) {
             if selectAfterAdd { selectConfig(existing.id) }
+            return
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            statusMessage = "No config folder found at \(url.path)."
             return
         }
         let config = ConfigWorkspace.make(name: name, url: url)
@@ -200,14 +239,17 @@ final class SketchyBarStore: ObservableObject {
     }
 
     func update(valueID: LuaEditableValue.ID, draftValue: String) {
-        guard let fileID = sessions.first(where: { $0.value.file.values.contains { $0.id == valueID } })?.key else { return }
+        guard let fileID = valueIndex[valueID] else {
+            statusMessage = "That value no longer exists — reload the file to pick up changes."
+            return
+        }
         guard sessions[fileID]?.hasRawDraft != true else {
             statusMessage = "Save or revert the source draft before changing this file with controls."
             return
         }
-        guard var session = sessions[fileID], let valueIndex = session.file.values.firstIndex(where: { $0.id == valueID }) else { return }
+        guard var session = sessions[fileID], let valuePosition = session.file.values.firstIndex(where: { $0.id == valueID }) else { return }
         var values = session.file.values
-        values[valueIndex].draftValue = draftValue
+        values[valuePosition].draftValue = draftValue
         session.file = ConfigFile(url: session.file.url, rootURL: session.file.rootURL, kind: session.file.kind, values: values, activationReference: session.file.activationReference)
         sessions[fileID] = session
         syncFiles()
@@ -216,15 +258,15 @@ final class SketchyBarStore: ObservableObject {
     @discardableResult
     func saveSelectedFile() -> Bool {
         guard let selectedFile, var session = sessions[selectedFile.id] else { return false }
-        let stagedKey = loaderKey(for: selectedFile).flatMap { stagedLoaderOrders[$0] == nil ? nil : $0 }
         guard !(session.hasRawDraft && session.hasStructuredDraft) else {
             statusMessage = DocumentSessionError.competingDrafts.localizedDescription
             return false
         }
-        guard session.hasUnsavedChanges || stagedKey != nil else {
+        guard session.hasUnsavedChanges || !stagedLoaderOrders.isEmpty else {
             statusMessage = "No unsaved changes in \(selectedFile.displayName)."
             return true
         }
+        let droppedDrafts = missingDraftCount(in: session)
         var fileContentsSaved = false
         do {
             if session.hasUnsavedChanges {
@@ -232,9 +274,9 @@ final class SketchyBarStore: ObservableObject {
                 sessions[selectedFile.id] = session
                 fileContentsSaved = true
             }
-            if let stagedKey { try applyStagedLoaderOrder(forKey: stagedKey) }
+            for key in stagedLoaderOrders.keys.sorted() { try applyStagedLoaderOrder(forKey: key) }
             reload(preservingDraftsExcept: [selectedFile.id])
-            statusMessage = "Saved \(selectedFile.displayName) and backed up the original under backups/."
+            statusMessage = "Saved \(selectedFile.displayName) and backed up the original under backups/." + droppedDraftSuffix(droppedDrafts)
             return true
         } catch {
             if fileContentsSaved {
@@ -255,6 +297,7 @@ final class SketchyBarStore: ObservableObject {
             return true
         }
         var savedFileIDs: Set<ConfigFile.ID> = []
+        var droppedDrafts = 0
         guard !files.contains(where: { sessions[$0.id]?.hasRawDraft == true && $0.hasUnsavedChanges }) else {
             statusMessage = DocumentSessionError.competingDrafts.localizedDescription
             return false
@@ -262,13 +305,14 @@ final class SketchyBarStore: ObservableObject {
         do {
             for fileID in changedIDs {
                 guard var session = sessions[fileID] else { continue }
+                droppedDrafts += missingDraftCount(in: session)
                 try session.save(using: luaScanner, shellScanner: shellScanner, backupService: backupService)
                 sessions[fileID] = session
                 savedFileIDs.insert(fileID)
             }
             for key in stagedLoaderOrders.keys.sorted() { try applyStagedLoaderOrder(forKey: key) }
             reload(preservingDraftsExcept: savedFileIDs)
-            statusMessage = "Saved \(changedIDs.count) changed \(changedIDs.count == 1 ? "file" : "files")."
+            statusMessage = "Saved \(changedIDs.count) changed \(changedIDs.count == 1 ? "file" : "files")." + droppedDraftSuffix(droppedDrafts)
             return true
         } catch {
             if !savedFileIDs.isEmpty { reload(preservingDraftsExcept: savedFileIDs) }
@@ -288,7 +332,7 @@ final class SketchyBarStore: ObservableObject {
         sessions.removeValue(forKey: fileID)
         discardStagedLoaderChange(fileID: fileID)
         reload(preservingDraftsExcept: [fileID])
-        selectedFileID = fileID
+        if files.contains(where: { $0.id == fileID }) { selectedFileID = fileID }
         statusMessage = "Discarded unsaved edits for \(selectedFile.displayName)."
     }
 
@@ -307,8 +351,12 @@ final class SketchyBarStore: ObservableObject {
     }
 
     func sourceContents(for file: ConfigFile) -> String { sessions[file.id]?.sourceContents ?? "" }
-    func sourceLoadError(for file: ConfigFile) -> String? { sessions[file.id]?.loadError }
+    func sourceLoadError(for file: ConfigFile) -> String? { loadError(for: file) }
     func sourceHasUnsavedChanges(for file: ConfigFile) -> Bool { sessions[file.id]?.sourceHasUnsavedChanges == true }
+
+    /// The read error of a file, if it could not be loaded. Such a file is
+    /// not editable until it is read again.
+    func loadError(for file: ConfigFile) -> String? { sessions[file.id]?.loadError }
 
     func updateSourceContents(_ contents: String, for file: ConfigFile) {
         guard !file.hasUnsavedChanges else {
@@ -396,8 +444,9 @@ final class SketchyBarStore: ObservableObject {
         guard let file = files.first(where: { $0.id == fileID }), canMutateLoader(for: file) else { return }
         do {
             try activationService.setActive(isActive, for: file)
-            statusMessage = isActive ? "Activated \(file.displayName)." : "Deactivated \(file.displayName)."
-            reload()
+            let warnings = reload(preservingDraftsExcept: [])
+            let confirmation = isActive ? "Activated \(file.displayName)." : "Deactivated \(file.displayName)."
+            statusMessage = warnings.isEmpty ? confirmation : confirmation + " " + warnings.joined(separator: " ")
         } catch {
             statusMessage = "Activation update failed: \(error.localizedDescription)"
         }
@@ -428,10 +477,16 @@ final class SketchyBarStore: ObservableObject {
         }
     }
 
-    private func reload(preservingDraftsExcept discardedFileIDs: Set<ConfigFile.ID>) {
+    /// Re-reads every config file. Drafts are carried over by stable key, so
+    /// they survive line shifts. Files that vanished from disk keep their
+    /// session so their drafts are not lost. Returns the warnings that
+    /// belong in the status message.
+    @discardableResult
+    private func reload(preservingDraftsExcept discardedFileIDs: Set<ConfigFile.ID>) -> [String] {
         let configURLs = locator.configFiles(in: configRoot)
         let activationReferences = activationService.references(for: configURLs, rootURL: configRoot)
         var nextSessions: [ConfigFile.ID: DocumentSession] = [:]
+        var warnings: [String] = []
         for url in configURLs {
             guard let kind = locator.kind(for: url) else { continue }
             let scanned = ConfigFile(url: url, rootURL: configRoot, kind: kind, values: scanValues(url: url, kind: kind), activationReference: activationReferences[url.path])
@@ -439,34 +494,91 @@ final class SketchyBarStore: ObservableObject {
                 nextSessions[scanned.id] = DocumentSession.loading(scanned)
             } else if var existing = sessions[scanned.id] {
                 if !existing.hasRawDraft { existing.refreshFromDisk() }
-                existing.merge(from: scanned)
+                let missingDrafts = existing.merge(from: scanned)
+                if missingDrafts > 0 {
+                    warnings.append("\(missingDrafts) edited \(missingDrafts == 1 ? "value" : "values") no longer \(missingDrafts == 1 ? "exists" : "exist") in \(scanned.url.lastPathComponent) and \(missingDrafts == 1 ? "was kept as a draft" : "were kept as drafts").")
+                }
                 nextSessions[scanned.id] = existing
             } else {
                 nextSessions[scanned.id] = DocumentSession.loading(scanned)
             }
         }
+        // Files that vanished from disk keep their session so drafts survive.
+        var vanishedFiles: [ConfigFile] = []
+        for (fileID, session) in sessions where nextSessions[fileID] == nil {
+            var kept = session
+            kept.markMissingFromDisk()
+            nextSessions[fileID] = kept
+            vanishedFiles.append(kept.file)
+        }
         sessions = nextSessions
+        vanishedFiles.sort { $0.id < $1.id }
+        missingFiles = vanishedFiles
         files = configURLs.compactMap { nextSessions[$0.path]?.file }
         pruneStagedLoaderOrders()
         profiles = profileService.listProfiles(for: selectedConfigProfileID)
-        if selectedFileID == nil || !files.contains(where: { $0.id == selectedFileID }) { selectedFileID = files.first?.id }
-        statusMessage = files.isEmpty
+        rebuildValueIndex()
+        if selectedFileID == nil {
+            selectedFileID = files.first?.id
+        } else if !files.contains(where: { $0.id == selectedFileID }) && !missingFiles.contains(where: { $0.id == selectedFileID }) {
+            selectedFileID = files.first?.id
+        }
+        for file in missingFiles {
+            warnings.append("\(file.displayName) is missing from disk; its unsaved draft was kept.")
+        }
+        var message = files.isEmpty
             ? "No supported Lua or shell config files found in \(configRoot.path)."
             : "Loaded \(files.count) config files from \(selectedConfig?.name ?? configRoot.lastPathComponent)."
+        if !warnings.isEmpty { message += " " + warnings.joined(separator: " ") }
+        statusMessage = message
+        return warnings
     }
 
     private func syncFiles() {
         let orderedIDs = files.map(\.id)
         var next = orderedIDs.compactMap { sessions[$0]?.file }
-        next.append(contentsOf: sessions.values.map(\.file).filter { !orderedIDs.contains($0.id) })
+        let leftovers = sessions.values
+            .map(\.file)
+            .filter { !orderedIDs.contains($0.id) && !$0.isMissingFromDisk }
+            .sorted { $0.id < $1.id }
+        next.append(contentsOf: leftovers)
         files = next
     }
 
+    private func rebuildValueIndex() {
+        var index: [LuaEditableValue.ID: ConfigFile.ID] = [:]
+        for (fileID, session) in sessions {
+            for value in session.file.values where index[value.id] == nil {
+                index[value.id] = fileID
+            }
+        }
+        valueIndex = index
+    }
+
+    private func missingDraftCount(in session: DocumentSession) -> Int {
+        session.file.values.filter { $0.isMissingFromFile && $0.draftValue != $0.originalValue }.count
+    }
+
+    private func droppedDraftSuffix(_ count: Int) -> String {
+        guard count > 0 else { return "" }
+        return " \(count) edited \(count == 1 ? "value" : "values") no longer \(count == 1 ? "exists" : "exist") in the file and could not be saved."
+    }
+
+    /// Two paths point at the same folder when they resolve to the same
+    /// physical location, so a symlinked config is not added twice. The
+    /// paths are compared as strings because a resolved directory URL can
+    /// carry a trailing slash.
+    private static func isSameConfigFolder(_ lhs: URL, _ rhs: URL) -> Bool {
+        lhs.resolvingSymlinksInPath().standardizedFileURL.path == rhs.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    /// Checks every session, not only the files currently listed, so drafts
+    /// in files that vanished from disk are counted too. Sessions only exist
+    /// for the current config root.
     private func hasUnsavedChanges(in rootURL: URL) -> Bool {
         let rootPath = rootURL.standardizedFileURL.path + "/"
-        if files.contains(where: { $0.url.standardizedFileURL.path.hasPrefix(rootPath) && hasUnsavedChanges(fileID: $0.id) }) { return true }
         return sessions.contains { fileID, session in
-            URL(fileURLWithPath: fileID).standardizedFileURL.path.hasPrefix(rootPath) && session.hasRawDraft
+            URL(fileURLWithPath: fileID).standardizedFileURL.path.hasPrefix(rootPath) && session.hasUnsavedChanges
         }
     }
 

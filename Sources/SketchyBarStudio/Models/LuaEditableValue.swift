@@ -30,6 +30,12 @@ struct LuaEditableValue: Identifiable, Hashable {
     let valueStartOffset: Int
     let valueEndOffset: Int
     let sourceSnapshot: String
+    /// Identity that survives line shifts: the key path plus the ordinal
+    /// occurrence of that key path inside the file.
+    var stableKey: String = ""
+    /// True when the key no longer exists in the file on disk. The draft is
+    /// kept so the user can see it, but it cannot be written back.
+    var isMissingFromFile: Bool = false
 
     var displayLine: String {
         "Line \(lineNumber)"
@@ -51,5 +57,21 @@ struct LuaEditableValue: Identifiable, Hashable {
     var isWidthValue: Bool {
         let leaf = keyPath.lowercased().split(separator: ".").last.map(String.init) ?? keyPath.lowercased()
         return leaf == "width"
+    }
+}
+
+extension LuaEditableValue {
+    /// Assigns every value a stable key: its key path plus the ordinal
+    /// occurrence of that key path inside the file. Line shifts do not
+    /// change the key, so drafts survive edits made above them.
+    static func assigningStableKeys(_ values: [LuaEditableValue]) -> [LuaEditableValue] {
+        var occurrences: [String: Int] = [:]
+        return values.map { value in
+            var updated = value
+            let index = occurrences[value.keyPath, default: 0]
+            occurrences[value.keyPath] = index + 1
+            updated.stableKey = "\(value.keyPath)#\(index)"
+            return updated
+        }
     }
 }

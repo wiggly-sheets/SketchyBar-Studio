@@ -166,8 +166,14 @@ struct ConfigActivationService {
                 )
             }
 
-            let filesByEntrypoint = Dictionary(grouping: rootFiles) { file in
-                currentReferences[file.url.path]!.entrypointURL.standardizedFileURL.path
+            var filesByEntrypoint: [String: [ConfigFile]] = [:]
+            for file in rootFiles {
+                guard let reference = currentReferences[file.url.path] else {
+                    throw ActivationUpdateError.referenceChanged(
+                        file.activationReference?.entrypointURL ?? rootURL
+                    )
+                }
+                filesByEntrypoint[reference.entrypointURL.standardizedFileURL.path, default: []].append(file)
             }
             for entrypointFiles in filesByEntrypoint.values {
                 guard let firstFile = entrypointFiles.first,

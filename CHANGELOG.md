@@ -6,7 +6,23 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ## [Unreleased]
 
+### Added
+
+- Quitting now asks what to do with unsaved edits: Save All, Discard, or Cancel. Closing the last window keeps the app alive while drafts exist.
+- Files that disappeared from disk keep their session and draft. They are listed in a "Missing Files" section of the sidebar and the draft comes back when the file returns.
+- The structured editor shows a file's read error, marks the sidebar row with a red dot, and disables the value editors and the save button for that file.
+
 ### Fixed
+
+- Drafts are matched by a stable key (key path plus its ordinal occurrence) instead of by line number, so saving an unrelated file no longer discards another file's draft when a line above it moved.
+- An edited value that no longer exists in the file is kept as a draft and reported instead of being dropped.
+- `selectedFileID` cleared by the sidebar no longer shows a different file in the detail pane.
+- The activation message is no longer overwritten by the reload that follows it.
+- Saving one file now applies every staged loader order, not only the one of the selected file.
+- A config folder that is a symlink to a folder already in the library is no longer added a second time.
+- Adding a config folder that does not exist is reported instead of creating a broken library entry.
+- The last used config folder is restored on launch.
+- Editing a value that no longer exists reports it instead of dropping the keystroke.
 
 - Editing a symlinked config file keeps the symlink: the write lands on the real file instead of replacing the link with a regular file.
 - Backups of symlinked files are regular files with the original content, and a failed copy keeps the previous backup instead of emptying the slot.
