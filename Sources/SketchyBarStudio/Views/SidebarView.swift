@@ -4,13 +4,16 @@ struct SidebarView: View {
     @ObservedObject var store: SketchyBarStore
     @SceneStorage("sidebar.expanded.groups") private var expandedGroupStorage = ""
     @State private var expandedGroups: Set<String> = Set(SidebarCategory.defaultExpandedIDs)
+    /// The grouped files. They are rebuilt only when the files, the search
+    /// text or the filters change, not on every body pass.
+    @State private var groups: [SidebarFileGroup] = []
 
     static let missingFilesGroupID = "group.missing-files"
 
     var body: some View {
         VStack(spacing: 0) {
             List(selection: $store.selectedFileID) {
-                ForEach(sidebarGroups) { group in
+                ForEach(groups) { group in
                     SidebarGroupSection(
                         group: group,
                         store: store,
@@ -30,21 +33,27 @@ struct SidebarView: View {
         }
         .navigationTitle("SketchyBar")
         .onAppear {
+            rebuildGroups()
             if !expandedGroupStorage.isEmpty {
                 expandedGroups = Set(expandedGroupStorage.split(separator: "|").map(String.init))
             }
         }
+        .onChange(of: store.files) { _, _ in rebuildGroups() }
+        .onChange(of: store.searchText) { _, _ in rebuildGroups() }
+        .onChange(of: store.showModifiedOnly) { _, _ in rebuildGroups() }
+        .onChange(of: store.sourceDraftRevision) { _, _ in rebuildGroups() }
+        .onChange(of: store.stagedChangedFileIDs) { _, _ in rebuildGroups() }
         .onChange(of: expandedGroups) { _, newValue in
             expandedGroupStorage = newValue.sorted().joined(separator: "|")
         }
     }
 
-    private var sidebarGroups: [SidebarFileGroup] {
+    private func rebuildGroups() {
         let filtered = store.files.filter { file in
             file.matchesSearch(store.searchText) &&
                 (!store.showModifiedOnly || store.hasUnsavedChanges(fileID: file.id))
         }
-        return SidebarGrouper.group(files: filtered)
+        groups = SidebarGrouper.group(files: filtered)
     }
 
     private var erroredFileIDs: Set<ConfigFile.ID> {
@@ -421,7 +430,6 @@ enum SidebarGrouper {
     private static func category(for file: ConfigFile) -> SidebarCategory {
         let path = file.displayName.lowercased()
         let components = file.sidebarPathComponents.map { $0.lowercased() }
-        let keys = file.values.map { $0.keyPath.lowercased() }
         let colorValueCount = file.values.filter { $0.kind == .color }.count
 
         if let folderCategory = categoryFromTopLevelFolder(components.first) {
@@ -434,11 +442,11 @@ enum SidebarGrouper {
         }
 
         if path.contains("script") || path.contains("plugin") ||
-            keys.contains(where: { $0 == "script" || $0 == "click_script" || $0 == "mach_helper" || $0 == "update_freq" }) {
+            file.values.contains(where: { scriptKeys.contains($0.keyPath.lowercased()) }) {
             return .scripts
         }
 
-        if path.contains("bar") || keys.contains(where: { barKeys.contains($0) }) {
+        if path.contains("bar") || file.values.contains(where: { barKeys.contains($0.keyPath.lowercased()) }) {
             return .bar
         }
 
@@ -446,7 +454,7 @@ enum SidebarGrouper {
             return .widgets
         }
 
-        if path.contains("item") || keys.contains(where: { itemKeys.contains($0) }) {
+        if path.contains("item") || file.values.contains(where: { itemKeys.contains($0.keyPath.lowercased()) }) {
             return .items
         }
 
@@ -482,6 +490,13 @@ enum SidebarGrouper {
         "notch_offset",
         "font_smoothing",
         "sticky"
+    ]
+
+    private static let scriptKeys: Set<String> = [
+        "script",
+        "click_script",
+        "mach_helper",
+        "update_freq"
     ]
 
     private static let itemKeys: Set<String> = [

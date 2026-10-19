@@ -48,6 +48,7 @@ private struct EditableFileView: View {
             if showCodePreview {
                 CodePreviewView(
                     file: file,
+                    contents: previewContents,
                     selectedLine: selectedValue?.lineNumber,
                     highlightedLines: Set(file.values.filter { $0.draftValue != $0.originalValue }.map(\.lineNumber)),
                     theme: theme,
@@ -178,6 +179,11 @@ private struct EditableFileView: View {
 
     private var loadError: String? {
         store.loadError(for: file)
+    }
+
+    /// The preview shows the pending draft, not the file on disk.
+    private var previewContents: String {
+        store.effectiveContents(for: file) ?? ""
     }
 
     private var groupedValues: [EditableValueGroup] {
@@ -389,6 +395,7 @@ private struct EditableValueRow: View {
 
 private struct CodePreviewView: View {
     let file: ConfigFile
+    let contents: String
     let selectedLine: Int?
     let highlightedLines: Set<Int>
     let theme: AppTheme
@@ -414,10 +421,10 @@ private struct CodePreviewView: View {
 
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 3) {
-                    ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                    ForEach(lines.indices, id: \.self) { index in
                         CodeLineView(
                             number: index + 1,
-                            text: line,
+                            text: lines[index],
                             isSelected: selectedLine == index + 1,
                             isChanged: highlightedLines.contains(index + 1),
                             theme: theme,
@@ -433,12 +440,11 @@ private struct CodePreviewView: View {
         .background(theme.background.opacity(0.45))
         .onAppear(perform: loadLines)
         .onChange(of: file.id) { _, _ in loadLines() }
-        .onChange(of: file) { _, _ in loadLines() }
+        .onChange(of: contents) { _, _ in loadLines() }
         .onChange(of: refreshToken) { _, _ in loadLines() }
     }
 
     private func loadLines() {
-        let contents = (try? String(contentsOf: file.url, encoding: .utf8)) ?? ""
         lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
     }
 }
@@ -550,6 +556,16 @@ enum CodeSyntaxHighlighter {
     ]
 
     static func tokens(for line: String, kind: ConfigFileKind) -> [CodeToken] {
+        let key = TokenCacheKey(text: line, kind: kind)
+        if let cached = TokenCache.shared.tokens(for: key) {
+            return cached
+        }
+        let tokens = tokenize(line, kind: kind)
+        TokenCache.shared.store(tokens, for: key)
+        return tokens
+    }
+
+    private static func tokenize(_ line: String, kind: ConfigFileKind) -> [CodeToken] {
         var tokens: [CodeToken] = []
         var index = line.startIndex
 
@@ -633,5 +649,33 @@ enum CodeSyntaxHighlighter {
             if lower.hasPrefix("--") { return .flag }
             return rcKeywords.contains(lower) ? .keyword : .plain
         }
+    }
+}
+
+private struct TokenCacheKey: Hashable {
+    let text: String
+    let kind: ConfigFileKind
+}
+
+/// Keeps the tokens of the lines that were already tokenized, so a
+/// re-render does not tokenize the same lines again.
+private final class TokenCache {
+    static let shared = TokenCache()
+
+    private let lock = NSLock()
+    private var storage: [TokenCacheKey: [CodeToken]] = [:]
+    private let limit = 4000
+
+    func tokens(for key: TokenCacheKey) -> [CodeToken]? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage[key]
+    }
+
+    func store(_ tokens: [CodeToken], for key: TokenCacheKey) {
+        lock.lock()
+        defer { lock.unlock() }
+        if storage.count >= limit { storage.removeAll(keepingCapacity: true) }
+        storage[key] = tokens
     }
 }

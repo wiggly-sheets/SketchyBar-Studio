@@ -12,6 +12,20 @@ private enum SourceDraftError: LocalizedError {
     }
 }
 
+/// One config file read from disk together with the values scanned from it.
+private struct ScannedConfigFile {
+    let file: ConfigFile
+    let contents: String?
+    let loadError: String?
+}
+
+/// Where a value lives inside its file.
+private struct ValueLocation {
+    let fileID: ConfigFile.ID
+    let position: Int
+}
+
+@MainActor
 final class SketchyBarStore: ObservableObject {
     @Published var configRoot: URL
     @Published var configs: [ConfigWorkspace] = []
@@ -31,8 +45,18 @@ final class SketchyBarStore: ObservableObject {
     }
 
     private var sessions: [ConfigFile.ID: DocumentSession] = [:]
-    private var valueIndex: [LuaEditableValue.ID: ConfigFile.ID] = [:]
+    private var valueIndex: [LuaEditableValue.ID: ValueLocation] = [:]
     @Published private var stagedLoaderOrders: [String: [ConfigFile.ID]] = [:]
+    /// The files whose loader position differs from the saved loader order.
+    @Published private(set) var stagedChangedFileIDs: Set<ConfigFile.ID> = []
+    /// Bumped whenever a raw source draft changes. The source views read it
+    /// so they re-evaluate their enablement after every source edit.
+    @Published private(set) var sourceDraftRevision = 0
+    /// Guards against an out-of-order background reload.
+    private var reloadGeneration = 0
+    /// Kept so the status message can report a config library that could
+    /// not be read.
+    private var libraryErrorMessage: String?
 
     private let locator = SketchyBarConfigLocator()
     private let luaScanner = LuaConfigScanner()
@@ -78,10 +102,13 @@ final class SketchyBarStore: ObservableObject {
         configs = loadedConfigs
         selectedConfigID = selected?.id
         newConfigPath = configRoot.path
-        reload()
-        if let libraryError {
-            statusMessage = "Config library could not be read: \(libraryError)"
-        }
+        libraryErrorMessage = libraryError
+        // The first scan runs in the background so the window opens right
+        // away instead of waiting for the whole config to be read.
+        statusMessage = libraryError.map {
+            "Loading config files... Config library could not be read: \($0)"
+        } ?? "Loading config files..."
+        reloadAsync()
     }
 
     var selectedConfig: ConfigWorkspace? {
@@ -105,7 +132,11 @@ final class SketchyBarStore: ObservableObject {
     }
 
     var unsavedFileCount: Int {
-        Set(files.compactMap { hasUnsavedChanges(fileID: $0.id) ? $0.id : nil }).count
+        var changed = stagedChangedFileIDs
+        for file in files where sessions[file.id]?.hasUnsavedChanges == true {
+            changed.insert(file.id)
+        }
+        return changed.count
     }
 
     var selectedHasUnsavedChanges: Bool {
@@ -120,37 +151,48 @@ final class SketchyBarStore: ObservableObject {
     }
 
     var filesInPreviewOrder: [ConfigFile] {
-        files.sorted { lhs, rhs in
-            let lhsKey = loaderKey(for: lhs)
-            let rhsKey = loaderKey(for: rhs)
-            if let lhsKey, lhsKey == rhsKey {
-                let order = stagedLoaderOrders[lhsKey] ?? baseLoaderOrder(forKey: lhsKey)
-                let lhsIndex = order.firstIndex(of: lhs.id) ?? .max
-                let rhsIndex = order.firstIndex(of: rhs.id) ?? .max
+        let orderIndexes = loaderOrderIndexes()
+        return files.sorted { lhs, rhs in
+            if let key = loaderKey(for: lhs), key == loaderKey(for: rhs), let indexes = orderIndexes[key] {
+                let lhsIndex = indexes[lhs.id] ?? .max
+                let rhsIndex = indexes[rhs.id] ?? .max
                 if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }
             }
             let lhsLine = lhs.activationReference?.lineNumber ?? .max
             let rhsLine = rhs.activationReference?.lineNumber ?? .max
-            return lhsLine == rhsLine
-                ? lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
-                : lhsLine < rhsLine
+            if lhsLine != rhsLine { return lhsLine < rhsLine }
+            return lhs.displayName < rhs.displayName
         }
     }
 
     func hasUnsavedChanges(fileID: ConfigFile.ID) -> Bool {
-        sessions[fileID]?.hasUnsavedChanges == true || hasStagedLoaderChange(fileID: fileID)
+        _ = sourceDraftRevision
+        return sessions[fileID]?.hasUnsavedChanges == true || stagedChangedFileIDs.contains(fileID)
     }
 
     func unsavedChangeCount(fileID: ConfigFile.ID) -> Int {
         guard let session = sessions[fileID] else { return 0 }
         let structured = session.file.values.filter { $0.draftValue != $0.originalValue }.count
         let source = session.hasRawDraft ? 1 : 0
-        let order = hasStagedLoaderChange(fileID: fileID) ? 1 : 0
+        let order = stagedChangedFileIDs.contains(fileID) ? 1 : 0
         return structured + source + order
     }
 
     func reload() {
         reload(preservingDraftsExcept: [])
+    }
+
+    /// Reloads the config in the background so the window stays responsive
+    /// while the files are read and scanned.
+    func reloadAsync() {
+        reloadGeneration += 1
+        let generation = reloadGeneration
+        let rootURL = configRoot
+        let configURLs = locator.configFiles(in: rootURL)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let scanned = SketchyBarStore.scanConfig(rootURL: rootURL, configURLs: configURLs)
+            await self?.applyIfCurrent(scanned, generation: generation)
+        }
     }
 
     func updateConfigRoot(_ text: String) {
@@ -239,17 +281,20 @@ final class SketchyBarStore: ObservableObject {
     }
 
     func update(valueID: LuaEditableValue.ID, draftValue: String) {
-        guard let fileID = valueIndex[valueID] else {
+        guard let location = valueIndex[valueID] else {
             statusMessage = "That value no longer exists — reload the file to pick up changes."
             return
         }
+        let fileID = location.fileID
         guard sessions[fileID]?.hasRawDraft != true else {
             statusMessage = "Save or revert the source draft before changing this file with controls."
             return
         }
-        guard var session = sessions[fileID], let valuePosition = session.file.values.firstIndex(where: { $0.id == valueID }) else { return }
+        guard var session = sessions[fileID],
+              location.position < session.file.values.count,
+              session.file.values[location.position].id == valueID else { return }
         var values = session.file.values
-        values[valuePosition].draftValue = draftValue
+        values[location.position].draftValue = draftValue
         session.file = ConfigFile(url: session.file.url, rootURL: session.file.rootURL, kind: session.file.kind, values: values, activationReference: session.file.activationReference)
         sessions[fileID] = session
         syncFiles()
@@ -344,6 +389,7 @@ final class SketchyBarStore: ObservableObject {
         guard var session = sessions[file.id] else { return }
         if session.draftContents == nil { session.loadRawDraft() }
         sessions[file.id] = session
+        sourceDraftRevision &+= 1
     }
 
     func canEditSource(for file: ConfigFile) -> Bool {
@@ -352,7 +398,25 @@ final class SketchyBarStore: ObservableObject {
 
     func sourceContents(for file: ConfigFile) -> String { sessions[file.id]?.sourceContents ?? "" }
     func sourceLoadError(for file: ConfigFile) -> String? { loadError(for: file) }
-    func sourceHasUnsavedChanges(for file: ConfigFile) -> Bool { sessions[file.id]?.sourceHasUnsavedChanges == true }
+    func sourceHasUnsavedChanges(for file: ConfigFile) -> Bool {
+        _ = sourceDraftRevision
+        return sessions[file.id]?.sourceHasUnsavedChanges == true
+    }
+
+    /// The contents the file would have with the pending drafts applied: the
+    /// raw source draft when there is one, otherwise the saved contents with
+    /// the structured drafts applied.
+    func effectiveContents(for file: ConfigFile) -> String? {
+        guard let session = sessions[file.id] else { return nil }
+        if session.hasRawDraft { return session.sourceContents }
+        guard session.hasStructuredDraft else { return session.savedContents }
+        switch file.kind {
+        case .lua:
+            return luaScanner.updatedContents(values: session.file.values, originalContents: session.savedContents)
+        case .shell, .sketchybarRC:
+            return shellScanner.updatedContents(values: session.file.values, originalContents: session.savedContents)
+        }
+    }
 
     /// The read error of a file, if it could not be loaded. Such a file is
     /// not editable until it is read again.
@@ -366,12 +430,14 @@ final class SketchyBarStore: ObservableObject {
         guard var session = sessions[file.id] else { return }
         session.updateSourceContents(contents)
         sessions[file.id] = session
+        sourceDraftRevision &+= 1
     }
 
     func discardSourceChanges(for file: ConfigFile) {
         guard var session = sessions[file.id] else { return }
         session.discardSourceChanges()
         sessions[file.id] = session
+        sourceDraftRevision &+= 1
         if session.loadError == nil { statusMessage = "Reverted source edits for \(file.displayName)." }
     }
 
@@ -384,6 +450,7 @@ final class SketchyBarStore: ObservableObject {
         do {
             try session.save(using: luaScanner, shellScanner: shellScanner, backupService: backupService)
             sessions[file.id] = session
+            sourceDraftRevision &+= 1
             reload(preservingDraftsExcept: [file.id])
             statusMessage = "Saved source for \(file.displayName) and backed up the original under backups/."
             return true
@@ -404,15 +471,10 @@ final class SketchyBarStore: ObservableObject {
     }
 
     func applySketchyBarReload() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["sketchybar", "--reload"]
-        do {
-            try process.run()
-            process.waitUntilExit()
-            statusMessage = process.terminationStatus == 0 ? "SketchyBar reloaded." : "sketchybar --reload exited with code \(process.terminationStatus)."
-        } catch {
-            statusMessage = "Could not run sketchybar --reload: \(error.localizedDescription)"
+        statusMessage = "Reloading SketchyBar..."
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let message = SketchyBarStore.runSketchyBarReload()
+            await self?.setStatusMessage(message)
         }
     }
 
@@ -477,30 +539,78 @@ final class SketchyBarStore: ObservableObject {
         }
     }
 
+    /// Reads every config file once and scans it. It only touches file
+    /// URLs, so it can run off the main actor.
+    nonisolated private static func scanConfig(rootURL: URL, configURLs: [URL]) -> [ScannedConfigFile] {
+        let locator = SketchyBarConfigLocator()
+        let activationReferences = ConfigActivationService().references(for: configURLs, rootURL: rootURL)
+
+        return configURLs.compactMap { url in
+            guard let kind = locator.kind(for: url) else { return nil }
+
+            var contents: String?
+            var loadError: String?
+            do {
+                contents = try String(contentsOf: url, encoding: .utf8)
+            } catch {
+                loadError = error.localizedDescription
+            }
+
+            let text = contents ?? ""
+            let values: [LuaEditableValue]
+            switch kind {
+            case .lua: values = LuaConfigScanner().scan(fileURL: url, contents: text)
+            case .shell, .sketchybarRC: values = ShellConfigScanner().scan(fileURL: url, contents: text)
+            }
+
+            let file = ConfigFile(
+                url: url,
+                rootURL: rootURL,
+                kind: kind,
+                values: values,
+                activationReference: activationReferences[url.path]
+            )
+            return ScannedConfigFile(file: file, contents: contents, loadError: loadError)
+        }
+    }
+
     /// Re-reads every config file. Drafts are carried over by stable key, so
     /// they survive line shifts. Files that vanished from disk keep their
     /// session so their drafts are not lost. Returns the warnings that
     /// belong in the status message.
     @discardableResult
     private func reload(preservingDraftsExcept discardedFileIDs: Set<ConfigFile.ID>) -> [String] {
-        let configURLs = locator.configFiles(in: configRoot)
-        let activationReferences = activationService.references(for: configURLs, rootURL: configRoot)
+        reloadGeneration += 1
+        let scanned = Self.scanConfig(rootURL: configRoot, configURLs: locator.configFiles(in: configRoot))
+        return apply(scanned, preservingDraftsExcept: discardedFileIDs)
+    }
+
+    /// Takes over a freshly scanned config and rebuilds the session state.
+    @discardableResult
+    private func apply(_ scanned: [ScannedConfigFile], preservingDraftsExcept discardedFileIDs: Set<ConfigFile.ID>) -> [String] {
         var nextSessions: [ConfigFile.ID: DocumentSession] = [:]
         var warnings: [String] = []
-        for url in configURLs {
-            guard let kind = locator.kind(for: url) else { continue }
-            let scanned = ConfigFile(url: url, rootURL: configRoot, kind: kind, values: scanValues(url: url, kind: kind), activationReference: activationReferences[url.path])
-            if discardedFileIDs.contains(scanned.id) {
-                nextSessions[scanned.id] = DocumentSession.loading(scanned)
-            } else if var existing = sessions[scanned.id] {
-                if !existing.hasRawDraft { existing.refreshFromDisk() }
-                let missingDrafts = existing.merge(from: scanned)
+        for scannedFile in scanned {
+            let scannedConfig = scannedFile.file
+            if discardedFileIDs.contains(scannedConfig.id) {
+                nextSessions[scannedConfig.id] = DocumentSession(
+                    file: scannedConfig,
+                    savedContents: scannedFile.contents ?? "",
+                    loadError: scannedFile.loadError
+                )
+            } else if var existing = sessions[scannedConfig.id] {
+                if !existing.hasRawDraft { existing.refresh(with: scannedFile.contents, loadError: scannedFile.loadError) }
+                let missingDrafts = existing.merge(from: scannedConfig)
                 if missingDrafts > 0 {
-                    warnings.append("\(missingDrafts) edited \(missingDrafts == 1 ? "value" : "values") no longer \(missingDrafts == 1 ? "exists" : "exist") in \(scanned.url.lastPathComponent) and \(missingDrafts == 1 ? "was kept as a draft" : "were kept as drafts").")
+                    warnings.append("\(missingDrafts) edited \(missingDrafts == 1 ? "value" : "values") no longer \(missingDrafts == 1 ? "exists" : "exist") in \(scannedConfig.url.lastPathComponent) and \(missingDrafts == 1 ? "was kept as a draft" : "were kept as drafts").")
                 }
-                nextSessions[scanned.id] = existing
+                nextSessions[scannedConfig.id] = existing
             } else {
-                nextSessions[scanned.id] = DocumentSession.loading(scanned)
+                nextSessions[scannedConfig.id] = DocumentSession(
+                    file: scannedConfig,
+                    savedContents: scannedFile.contents ?? "",
+                    loadError: scannedFile.loadError
+                )
             }
         }
         // Files that vanished from disk keep their session so drafts survive.
@@ -514,7 +624,7 @@ final class SketchyBarStore: ObservableObject {
         sessions = nextSessions
         vanishedFiles.sort { $0.id < $1.id }
         missingFiles = vanishedFiles
-        files = configURLs.compactMap { nextSessions[$0.path]?.file }
+        files = scanned.compactMap { nextSessions[$0.file.id]?.file }
         pruneStagedLoaderOrders()
         profiles = profileService.listProfiles(for: selectedConfigProfileID)
         rebuildValueIndex()
@@ -529,27 +639,67 @@ final class SketchyBarStore: ObservableObject {
         var message = files.isEmpty
             ? "No supported Lua or shell config files found in \(configRoot.path)."
             : "Loaded \(files.count) config files from \(selectedConfig?.name ?? configRoot.lastPathComponent)."
+        if let libraryErrorMessage {
+            message += " Config library could not be read: \(libraryErrorMessage)"
+        }
         if !warnings.isEmpty { message += " " + warnings.joined(separator: " ") }
         statusMessage = message
         return warnings
     }
 
+    /// Takes over a scan that finished in the background, unless a newer
+    /// reload started in the meantime.
+    private func applyIfCurrent(_ scanned: [ScannedConfigFile], generation: Int) {
+        guard reloadGeneration == generation else { return }
+        apply(scanned, preservingDraftsExcept: [])
+    }
+
+    private func setStatusMessage(_ message: String) {
+        statusMessage = message
+    }
+
+    /// Runs `sketchybar --reload` and waits for it with a timeout, so an
+    /// Automation prompt cannot freeze the app.
+    nonisolated private static func runSketchyBarReload() -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["sketchybar", "--reload"]
+
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+        do {
+            try process.run()
+        } catch {
+            return "Could not run sketchybar --reload: \(error.localizedDescription)"
+        }
+
+        if finished.wait(timeout: .now() + 10) == .timedOut {
+            process.terminate()
+            _ = finished.wait(timeout: .now() + 1)
+            return "sketchybar --reload did not finish within 10 seconds and was stopped."
+        }
+        return process.terminationStatus == 0
+            ? "SketchyBar reloaded."
+            : "sketchybar --reload exited with code \(process.terminationStatus)."
+    }
+
     private func syncFiles() {
         let orderedIDs = files.map(\.id)
+        let orderedIDSet = Set(orderedIDs)
         var next = orderedIDs.compactMap { sessions[$0]?.file }
         let leftovers = sessions.values
             .map(\.file)
-            .filter { !orderedIDs.contains($0.id) && !$0.isMissingFromDisk }
+            .filter { !orderedIDSet.contains($0.id) && !$0.isMissingFromDisk }
             .sorted { $0.id < $1.id }
         next.append(contentsOf: leftovers)
         files = next
     }
 
     private func rebuildValueIndex() {
-        var index: [LuaEditableValue.ID: ConfigFile.ID] = [:]
+        var index: [LuaEditableValue.ID: ValueLocation] = [:]
         for (fileID, session) in sessions {
-            for value in session.file.values where index[value.id] == nil {
-                index[value.id] = fileID
+            for (position, value) in session.file.values.enumerated() where index[value.id] == nil {
+                index[value.id] = ValueLocation(fileID: fileID, position: position)
             }
         }
         valueIndex = index
@@ -589,20 +739,37 @@ final class SketchyBarStore: ObservableObject {
             .sorted {
                 let lhs = $0.activationReference?.lineNumber ?? .max
                 let rhs = $1.activationReference?.lineNumber ?? .max
-                return lhs == rhs ? $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending : lhs < rhs
+                return lhs == rhs ? $0.displayName < $1.displayName : lhs < rhs
             }
             .map(\.id)
+    }
+
+    /// The position of every file inside its loader, built once so the
+    /// preview sort does not sort the loader again for every comparison.
+    private func loaderOrderIndexes() -> [String: [ConfigFile.ID: Int]] {
+        var result: [String: [ConfigFile.ID: Int]] = [:]
+        for key in Set(files.compactMap { loaderKey(for: $0) }) {
+            let order = stagedLoaderOrders[key] ?? baseLoaderOrder(forKey: key)
+            result[key] = Dictionary(order.enumerated().map { ($0.element, $0.offset) }, uniquingKeysWith: { first, _ in first })
+        }
+        return result
     }
 
     private func setStagedLoaderOrder(_ order: [ConfigFile.ID], forKey key: String) {
         if order == baseLoaderOrder(forKey: key) { stagedLoaderOrders.removeValue(forKey: key) }
         else { stagedLoaderOrders[key] = order }
+        recomputeStagedChangedFileIDs()
     }
 
-    private func hasStagedLoaderChange(fileID: ConfigFile.ID) -> Bool {
-        guard let file = files.first(where: { $0.id == fileID }), let key = loaderKey(for: file), let staged = stagedLoaderOrders[key] else { return false }
-        let base = baseLoaderOrder(forKey: key)
-        return staged.firstIndex(of: fileID) != base.firstIndex(of: fileID)
+    private func recomputeStagedChangedFileIDs() {
+        var changed: Set<ConfigFile.ID> = []
+        for (key, staged) in stagedLoaderOrders {
+            let base = baseLoaderOrder(forKey: key)
+            for fileID in base where staged.firstIndex(of: fileID) != base.firstIndex(of: fileID) {
+                changed.insert(fileID)
+            }
+        }
+        stagedChangedFileIDs = changed
     }
 
     private func discardStagedLoaderChange(fileID: ConfigFile.ID) {
@@ -619,14 +786,16 @@ final class SketchyBarStore: ObservableObject {
     }
 
     private func pruneStagedLoaderOrders() {
-        for key in Array(stagedLoaderOrders.keys) {
-            guard let staged = stagedLoaderOrders[key] else { continue }
+        var pruned: [String: [ConfigFile.ID]] = [:]
+        for (key, staged) in stagedLoaderOrders {
             let base = baseLoaderOrder(forKey: key)
             let available = Set(base)
             var next = staged.filter { available.contains($0) }
             next.append(contentsOf: base.filter { !next.contains($0) })
-            setStagedLoaderOrder(next, forKey: key)
+            if next != base { pruned[key] = next }
         }
+        stagedLoaderOrders = pruned
+        recomputeStagedChangedFileIDs()
     }
 
     private func applyStagedLoaderOrder(forKey key: String) throws {
@@ -635,11 +804,13 @@ final class SketchyBarStore: ObservableObject {
         }
         guard let desired = stagedLoaderOrders[key], desired.count > 1 else {
             stagedLoaderOrders.removeValue(forKey: key)
+            recomputeStagedChangedFileIDs()
             return
         }
         let orderedFiles = desired.compactMap { id in files.first(where: { $0.id == id }) }
         try activationService.moveReferences(in: orderedFiles, to: desired)
         stagedLoaderOrders.removeValue(forKey: key)
+        recomputeStagedChangedFileIDs()
     }
 
     private func canMutateLoader(for file: ConfigFile) -> Bool {
@@ -649,13 +820,6 @@ final class SketchyBarStore: ObservableObject {
             return false
         }
         return true
-    }
-
-    private func scanValues(url: URL, kind: ConfigFileKind) -> [LuaEditableValue] {
-        switch kind {
-        case .lua: return luaScanner.scan(fileURL: url)
-        case .shell, .sketchybarRC: return shellScanner.scan(fileURL: url)
-        }
     }
 
     private func saveConfigLibrary() {

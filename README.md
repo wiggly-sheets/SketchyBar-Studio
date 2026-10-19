@@ -48,7 +48,7 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 - Supports Lua files alongside `sketchybarrc`, `.sketchybarrc`, and shell-based configurations.
 - Presents a path-first sidebar: `items`, `widgets`, `bar`, `themes`, and `scripts`, including nested folders. Item folders named `left`, `center`, or `right` are recognized directly; otherwise items are grouped from their simple `position` values, including compact Lua item tables.
 - Finds files and editable values with search, and can show only unsaved changes.
-- Keeps a read-only, hideable code preview close to the editor.
+- Keeps a read-only, hideable code preview close to the editor. The preview shows the pending draft, so it matches what will be written to disk.
 
 ### Purpose-built editing
 

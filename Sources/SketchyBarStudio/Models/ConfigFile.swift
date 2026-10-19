@@ -73,3 +73,24 @@ struct ConfigFile: Identifiable, Hashable {
         }
     }
 }
+
+extension ConfigFile {
+    /// Compares the file without walking the values' source snapshots.
+    static func == (lhs: ConfigFile, rhs: ConfigFile) -> Bool {
+        lhs.url == rhs.url &&
+        lhs.rootURL == rhs.rootURL &&
+        lhs.kind == rhs.kind &&
+        lhs.values == rhs.values &&
+        lhs.activationReference == rhs.activationReference &&
+        lhs.isMissingFromDisk == rhs.isMissingFromDisk
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(url)
+        hasher.combine(rootURL)
+        hasher.combine(kind)
+        hasher.combine(values)
+        hasher.combine(activationReference)
+        hasher.combine(isMissingFromDisk)
+    }
+}

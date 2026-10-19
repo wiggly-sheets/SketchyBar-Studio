@@ -12,7 +12,15 @@ This project follows a human-readable changelog style and aims to use semantic v
 - Files that disappeared from disk keep their session and draft. They are listed in a "Missing Files" section of the sidebar and the draft comes back when the file returns.
 - The structured editor shows a file's read error, marks the sidebar row with a red dot, and disables the value editors and the save button for that file.
 
+### Changed
+
+- The code preview shows the pending draft instead of the file on disk, so the preview and the editor no longer disagree.
+- Reloading the config and running `sketchybar --reload` no longer block the window. The reload happens in the background, and `sketchybar --reload` is stopped after 10 seconds instead of waiting forever on a permission prompt.
+
 ### Fixed
+
+- Source editor edits can be saved again. The "Revert" and "Save Source" buttons, the toolbar save buttons, and the "Discard" button now enable as soon as the source draft changes.
+- Editing a value no longer makes the app slow down: the preview, the sidebar and the bar preview only rebuild when their inputs change.
 
 - Drafts are matched by a stable key (key path plus its ordinal occurrence) instead of by line number, so saving an unrelated file no longer discards another file's draft when a line above it moved.
 - An edited value that no longer exists in the file is kept as a draft and reported instead of being dropped.

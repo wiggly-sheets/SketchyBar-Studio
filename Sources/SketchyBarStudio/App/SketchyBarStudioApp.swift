@@ -62,7 +62,7 @@ struct SketchyBarStudioApp: App {
                 .keyboardShortcut("s", modifiers: [.command, .option])
 
                 Button("Reload Configs") {
-                    store.reload()
+                    store.reloadAsync()
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
 
