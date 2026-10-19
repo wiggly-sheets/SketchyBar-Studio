@@ -19,6 +19,27 @@ struct SketchyBarFont {
         ) ?? NSFont.systemFont(ofSize: CGFloat(size))
     }
 
+    /// The font of a family and a style.
+    ///
+    /// The style of the config is matched to the style of the font, so
+    /// `Bold` gives the bold member of the family. The system font is the
+    /// fallback when the family is not installed.
+    static func nsFont(family: String, style: String, size: Double) -> NSFont {
+        let pointSize = CGFloat(size)
+        let familyName = family.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !familyName.isEmpty else { return NSFont.systemFont(ofSize: pointSize) }
+
+        let member = NSFontManager.shared.availableMembers(ofFontFamily: familyName)?.first { member in
+            guard member.count > 1, let memberStyle = member[1] as? String else { return false }
+            return memberStyle.caseInsensitiveCompare(style) == .orderedSame
+        }
+        let traits = member.map { NSFontTraitMask(rawValue: ($0[3] as? UInt) ?? 0) } ?? []
+        let weight = member.flatMap { $0[2] as? Int } ?? 5
+
+        return NSFontManager.shared.font(withFamily: familyName, traits: traits, weight: weight, size: pointSize)
+            ?? NSFont.systemFont(ofSize: pointSize)
+    }
+
     static func parse(_ value: String) -> SketchyBarFont? {
         let parts = value.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
         guard parts.count == 3, let size = Double(parts[2]) else {

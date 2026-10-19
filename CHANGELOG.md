@@ -16,6 +16,7 @@ This project follows a human-readable changelog style and aims to use semantic v
 - The structured editor shows a file's read error, marks the sidebar row with a red dot, and disables the value editors and the save button for that file.
 - A reachability map shows what SketchyBar really loads. The new toolbar button opens a sheet with the files no loader reaches, the loader lines that point at files that are gone, and the require cycles. The map only reads the config and never changes it.
 - A config validator finds the problems SketchyBar ignores. The new "Diagnostics" toolbar button opens a sheet with the unknown options of an item, the values SketchyBar cannot use, the aliases that are used twice, the loader lines that point at a file that is gone, the files no loader reaches, the files with unbalanced brackets, and the item files that declare nothing. Every finding names the file and the line, and clicking it reveals the file in Finder. The validator only reads the config and never changes it.
+- The bar preview draws the real item: an SF Symbol, the icon of an installed app, a media artwork or the text of the icon, the real label, and the font, the text color and the background color of the config. An SF Symbol that SketchyBar would reject is shown with a warning, and an app that is not installed is shown with a placeholder.
 
 ### Changed
 
