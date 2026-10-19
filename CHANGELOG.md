@@ -23,10 +23,15 @@ This project follows a human-readable changelog style and aims to use semantic v
 - The sidebar lists the categories in the documented order: items, widgets, bar, themes, scripts.
 - The source editor shows line numbers next to the text.
 - The Settings window uses the same dark scheme as the main window, and the folder picker opens as a sheet.
+- A shell value keeps the quoting it has in the file. A double quoted value keeps its `$` and backtick live, a single quoted value stays single quoted and literal, and an unquoted value stays unquoted when it is a safe word.
+- The shell scanner only offers values that are SketchyBar options. Function locals such as `local result=5` and loop counters are no longer listed as editable options, while `export FOO=bar` still is.
+- A `sketchybarrc` that holds Lua code is read as Lua. Its `require(...)` lines are loader references, so the files they load can be switched off and ordered.
 
 ### Fixed
 
 - Values that are built by an expression, such as `position = "popup." .. name` or `color = colors.red`, are no longer offered as editable values. Only the leading literal of such a value was found before, so editing it wrote back a part of the expression and broke the item.
+- Toggling or reordering a loader reference no longer deletes the byte-order mark of the file.
+- Restoring a profile keeps the `backups/` folder of the config root, so the backup mirror of a dotfiles repository survives the restore.
 - Number fields only accept numbers. Text that is not a number is marked with a warning and never reaches the file.
 - The color picker keeps the format of the value it replaces, so `#ff8800` stays `#ff8800` instead of turning into `0xffff8800`. A color that cannot be read is reported next to the field.
 - The font panel no longer writes a half typed font family, so a name that does not exist cannot reach the file.

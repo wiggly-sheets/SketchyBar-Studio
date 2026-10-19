@@ -5,6 +5,23 @@ struct ShellConfigScanner {
         pattern: #"(?:^|[ \t])([A-Za-z_][A-Za-z0-9_\.]*)=("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:\\.|[^ \t\\])*)"#
     )
 
+    /// Keywords that declare a variable inside a function instead of setting
+    /// a SketchyBar option.
+    private static let localKeywords: Set<String> = ["local", "declare", "readonly", "typeset"]
+    /// Words the shell reads as keywords, so they are never written unquoted.
+    private static let shellKeywords: Set<String> = [
+        "if", "then", "else", "fi", "do", "done", "case", "esac",
+        "function", "export", "local", "return"
+    ]
+    /// A value that can be written without quotes.
+    private static let safeTokenRegex = try? NSRegularExpression(
+        pattern: #"^[A-Za-z0-9_@%+=:,./-]+$"#
+    )
+    /// The first segment of a key path, such as `icon` in `icon.font.size`.
+    private static let optionKeys: Set<String> = Set(
+        SketchyBarOptionDocs.all.map { $0.key.lowercased() }
+    )
+
     private let optionCatalog = SketchyBarOptionCatalog()
 
     func scan(fileURL: URL) -> [LuaEditableValue] {
@@ -17,6 +34,12 @@ struct ShellConfigScanner {
     /// Scans values from contents that were read elsewhere, so the file is
     /// not read twice.
     func scan(fileURL: URL, contents: String) -> [LuaEditableValue] {
+        // A `sketchybarrc` can hold Lua code. The Lua scanner knows the Lua
+        // syntax, so the shell quoting never touches it.
+        if LuaSourceDetection.isLua(contents) {
+            return LuaConfigScanner().scan(fileURL: fileURL, contents: contents)
+        }
+
         guard let regex = Self.assignmentRegex else {
             return []
         }
@@ -56,6 +79,17 @@ struct ShellConfigScanner {
                 }
 
                 let keyPath = String(line[keyRange])
+                // The word in front of the key says what the assignment is:
+                // `local result=5` is a variable of a function, `export FOO=1`
+                // exports a variable, and everything else sets an option.
+                let word = Self.lastWord(in: String(line[line.startIndex..<keyRange.lowerBound]))
+                if let word, Self.localKeywords.contains(word) {
+                    continue
+                }
+                guard word == "export" || Self.isKnownOption(keyPath) else {
+                    continue
+                }
+
                 let displayValue = SketchyBarValueRules.normalizedDisplayValue(
                     SketchyBarValueRules.displayValue(for: rawValue, keyPath: keyPath),
                     keyPath: keyPath
@@ -90,6 +124,10 @@ struct ShellConfigScanner {
         let changedValues = values.filter { $0.draftValue != $0.originalValue && !$0.isMissingFromFile }
         guard !changedValues.isEmpty else { return }
         var contents = try String(contentsOf: fileURL, encoding: .utf8)
+        if LuaSourceDetection.isLua(contents) {
+            try LuaConfigScanner().save(values: values, to: fileURL, rootURL: rootURL)
+            return
+        }
         guard changedValues.allSatisfy({
             $0.fileURL.standardizedFileURL == fileURL.standardizedFileURL && $0.sourceSnapshot == contents
         }) else {
@@ -111,6 +149,10 @@ struct ShellConfigScanner {
     /// The contents the file would have with the drafts applied. This is the
     /// exact text the save writes.
     func updatedContents(values: [LuaEditableValue], originalContents: String) -> String {
+        if LuaSourceDetection.isLua(originalContents) {
+            return LuaConfigScanner().updatedContents(values: values, originalContents: originalContents)
+        }
+
         let changedValues = values.filter { $0.draftValue != $0.originalValue && !$0.isMissingFromFile }
         var contents = originalContents
         for value in changedValues.sorted(by: { $0.valueStartOffset > $1.valueStartOffset }) {
@@ -127,7 +169,7 @@ struct ShellConfigScanner {
         switch value.kind {
         case .string:
             guard !SketchyBarValueRules.containsLineBreak(value.draftValue) else { return original }
-            return "\"\(escapeDoubleQuotedString(value.draftValue))\""
+            return Self.serializedShellString(value.draftValue, original: original)
         case .number:
             return SketchyBarValueRules.serializedNumber(value.draftValue, original: original)
         case .color:
@@ -143,8 +185,72 @@ struct ShellConfigScanner {
         return value.sourceSnapshot[start..<end]
     }
 
-    /// Escapes the characters that a double quoted shell string would still expand.
-    private func escapeDoubleQuotedString(_ string: String) -> String {
+    // MARK: - Shell quoting
+
+    /// Writes the value with the quoting the file already uses, so the
+    /// expansion of the original line is preserved.
+    private static func serializedShellString(_ draft: String, original: String) -> String {
+        if original.hasPrefix("'") {
+            return "'" + escapeSingleQuoted(draft) + "'"
+        }
+        if original.hasPrefix("\"") {
+            return "\"" + escapeDoubleQuoted(draft) + "\""
+        }
+        if isSafeUnquotedToken(draft) {
+            return draft
+        }
+        return "\"" + escapeLiteral(draft) + "\""
+    }
+
+    /// Escapes a value for a single quoted string. Only the single quote
+    /// itself needs escaping, everything else stays literal.
+    private static func escapeSingleQuoted(_ string: String) -> String {
+        string.replacingOccurrences(of: "'", with: "'\\''")
+    }
+
+    /// Escapes a value for a double quoted string. `$` and the backtick stay
+    /// live, so the expansion of the original line is preserved.
+    ///
+    /// A backslash that already escapes a special character is kept as it is:
+    /// doubling it would turn an escaped `\$` into a live `$` and run a
+    /// command the original file never ran.
+    private static func escapeDoubleQuoted(_ string: String) -> String {
+        var escaped = ""
+        var index = string.startIndex
+
+        while index < string.endIndex {
+            let character = string[index]
+            if character == "\"" {
+                escaped.append("\\\"")
+                index = string.index(after: index)
+                continue
+            }
+            if character == "\\" {
+                let next = string.index(after: index)
+                if next < string.endIndex, isDoubleQuotedEscape(string[next]) {
+                    escaped.append("\\")
+                    escaped.append(string[next])
+                    index = string.index(after: next)
+                } else {
+                    escaped.append("\\\\")
+                    index = next
+                }
+                continue
+            }
+            escaped.append(character)
+            index = string.index(after: index)
+        }
+
+        return escaped
+    }
+
+    /// The characters a backslash escapes inside a double quoted string.
+    private static func isDoubleQuotedEscape(_ character: Character) -> Bool {
+        character == "$" || character == "`" || character == "\"" || character == "\\" || character == "\n"
+    }
+
+    /// Escapes a value so the shell reads it literally.
+    private static func escapeLiteral(_ string: String) -> String {
         var escaped = ""
 
         for character in string {
@@ -155,5 +261,32 @@ struct ShellConfigScanner {
         }
 
         return escaped
+    }
+
+    /// True when the value can be written without quotes.
+    private static func isSafeUnquotedToken(_ value: String) -> Bool {
+        guard !value.isEmpty, let regex = safeTokenRegex else { return false }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        guard regex.firstMatch(in: value, range: range) != nil else { return false }
+        return !shellKeywords.contains(value.lowercased())
+    }
+
+    // MARK: - Assignments
+
+    /// The last word in front of the key, such as `local` in `local result=5`.
+    private static func lastWord(in prefix: String) -> String? {
+        let trimmed = prefix.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed.split(whereSeparator: { $0 == " " || $0 == "\t" }).last.map(String.init)
+    }
+
+    /// True when the key is a SketchyBar option.
+    private static func isKnownOption(_ keyPath: String) -> Bool {
+        let key = keyPath.lowercased()
+        guard !key.isEmpty else { return false }
+        if let first = key.split(separator: ".").first.map(String.init), optionKeys.contains(first) {
+            return true
+        }
+        return SketchyBarOptionDocs.doc(for: key) != nil
     }
 }

@@ -112,6 +112,9 @@ struct ProfileArchiveService {
         }
 
         try copyConfigTree(from: source, to: staging)
+        // The backup mirror of the user stays in the config root: a restore
+        // replaces the config files, not the history of the backups.
+        try carryOverBackupMirror(from: destination, to: staging)
 
         // The displaced copy lives in Application Support so a full copy of
         // the config never shows up in the user's config repository.
@@ -132,6 +135,35 @@ struct ProfileArchiveService {
         let children = try fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
         for child in children where child.lastPathComponent != "backups" {
             try fileManager.copyItem(at: child, to: staging.appendingPathComponent(child.lastPathComponent))
+        }
+    }
+
+    /// Carries the `backups/` folder of the replaced config root over to the
+    /// restored root.
+    ///
+    /// The folder of the user is kept as it is: a symlink stays a symlink,
+    /// and a backup file that is already there is never overwritten.
+    private func carryOverBackupMirror(from root: URL, to staging: URL) throws {
+        let source = root.appendingPathComponent("backups")
+        let target = staging.appendingPathComponent("backups")
+
+        if replacer.isSymlink(source) {
+            try fileManager.copyItem(at: source, to: target)
+            return
+        }
+
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: source.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return
+        }
+
+        try fileManager.createDirectory(at: target, withIntermediateDirectories: true)
+        let children = try fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)
+        for child in children {
+            let destination = target.appendingPathComponent(child.lastPathComponent)
+            guard !replacer.itemExists(at: destination) else { continue }
+            try fileManager.copyItem(at: child, to: destination)
         }
     }
 
