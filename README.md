@@ -49,6 +49,7 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 - Presents a path-first sidebar: `items`, `widgets`, `bar`, `themes`, and `scripts`, including nested folders. Item folders named `left`, `center`, or `right` are recognized directly; otherwise items are grouped from their simple `position` values, including compact Lua item tables.
 - Finds files and editable values with search, and can show only unsaved changes.
 - Keeps a read-only, hideable code preview close to the editor. The preview shows the pending draft, so it matches what will be written to disk.
+- Shows the diff of a save before the file is written. The sheet shows the file on disk and the text that would be written, line by line, and the file is only written after the change is accepted.
 - Shows a reachability map of the config: the files the loaders reach, the files no loader loads, the loader lines that point at files that are gone, and the require cycles. The map only reads the config.
 - Checks the config for the problems SketchyBar silently ignores: unknown options, values SketchyBar cannot use, duplicate item aliases, missing require targets, orphan files, unbalanced brackets, and item files that declare nothing. The diagnostics sheet names the file and the line of every finding, and clicking a finding reveals the file in Finder. The check only reads the config.
 
@@ -137,6 +138,7 @@ SketchyBar Studio is deliberately conservative about config changes.
 | What Studio does | What that means |
 | --- | --- |
 | Makes copies under `backups/` before writing | You have a local backup of the original file before an edit is saved. The backup holds the exact text that is about to be overwritten. |
+| Shows the diff before it writes | A save opens a review sheet with the file on disk and the text that would be written, so a change is checked before it reaches the file. |
 | Keeps the quoting of a shell value | A value keeps the quotes it had in the file, so `$HOME` still expands and a single quoted value stays literal. |
 | Restores profiles without losing the `backups/` folder | The backup mirror of your config root is still there after a restore. |
 | Edits simple scalar assignments | Complex Lua tables and computed values are not silently rewritten. |

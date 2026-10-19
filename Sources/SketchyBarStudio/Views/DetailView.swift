@@ -44,12 +44,21 @@ struct DetailView: View {
     }
 }
 
+/// What a save would change, worked out when the review is opened.
+private struct SaveReview {
+    let fileName: String
+    let hunks: [DiffEngine.Hunk]
+    let readError: String?
+}
+
 private struct EditableFileView: View {
     @ObservedObject var store: SketchyBarStore
     let file: ConfigFile
     let theme: AppTheme
     @State private var selectedValueID: LuaEditableValue.ID?
     @State private var codePreviewVersion = 0
+    @State private var isShowingSaveReview = false
+    @State private var saveReview: SaveReview?
     @AppStorage("detail.showCodePreview") private var showCodePreview = true
     @AppStorage("detail.showSourceEditor") private var showSourceEditor = false
 
@@ -73,6 +82,23 @@ private struct EditableFileView: View {
         .onChange(of: file.id) { _, _ in
             selectedValueID = nil
             codePreviewVersion += 1
+        }
+        .sheet(isPresented: $isShowingSaveReview) {
+            SaveReviewView(
+                fileName: saveReview?.fileName ?? file.displayName,
+                theme: theme,
+                hunks: saveReview?.hunks ?? [],
+                readError: saveReview?.readError,
+                onSave: {
+                    isShowingSaveReview = false
+                    if store.saveSelectedFile() {
+                        codePreviewVersion += 1
+                    }
+                },
+                onCancel: {
+                    isShowingSaveReview = false
+                }
+            )
         }
     }
 
@@ -182,7 +208,9 @@ private struct EditableFileView: View {
             }
 
             Button {
-                if store.saveSelectedFile() {
+                if store.hasUnsavedChanges(fileID: file.id) {
+                    openSaveReview()
+                } else if store.saveSelectedFile() {
                     codePreviewVersion += 1
                 }
             } label: {
@@ -192,6 +220,29 @@ private struct EditableFileView: View {
             .disabled(loadError != nil)
             .help(loadError == nil ? "Save this file" : "This file could not be read, so it cannot be saved")
         }
+    }
+
+    /// Reads the file from disk and works out what the save would change.
+    ///
+    /// The file is only read here. The write is done by the store, after
+    /// the user accepted the diff.
+    private func openSaveReview() {
+        guard let newContents = store.effectiveContents(for: file) else {
+            saveReview = SaveReview(fileName: file.displayName, hunks: [], readError: "The changes of this file cannot be read.")
+            isShowingSaveReview = true
+            return
+        }
+        do {
+            let diskContents = try String(contentsOf: file.url, encoding: .utf8)
+            saveReview = SaveReview(
+                fileName: file.displayName,
+                hunks: DiffEngine.diff(old: diskContents, new: newContents),
+                readError: nil
+            )
+        } catch {
+            saveReview = SaveReview(fileName: file.displayName, hunks: [], readError: error.localizedDescription)
+        }
+        isShowingSaveReview = true
     }
 
     private var loadError: String? {
