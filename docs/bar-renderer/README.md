@@ -23,27 +23,22 @@ Reference implementation: `/Users/Zeb/Developer/SketchyBar`, checkout `v2.24.0-5
 ## Why the plan vendors SketchyBar's C
 
 * **Reimplementing the layout in Swift** (roughly 800-1300 lines): the result would be "visually equivalent", not exact, and it would miss defaults inheritance, exotic item types, `q`/`e` positions, dynamic width and `scroll_texts`.
-* **Running a second SketchyBar process and screen-capturing it**: two blockers — the compiled SbarLua module at `~/.local/share/sketchybar_lua/sketchybar.so` hard-codes the Mach bootstrap name `git.felix.sketchybar` (verified with `strings`), and a SketchyBar bar is inherently full-display-width (`src/bar.c:437-494`), so inside an app panel it becomes an unreadable ~7pt strip.
+* **Running a second SketchyBar process and screen-capturing it**: two blockers — the compiled SbarLua module at `~/.local/share/sketchybar_lua/sketchybar.so` hard-codes the Mach bootstrap name `git.felix.sketchybar` (UNVERIFIED-IN-THIS-CHECKOUT: the string is in the installed module, but the module is not part of the `v2.24.0-50-gf23f4f4` checkout, so confirm it with `strings` before relying on it), and a SketchyBar bar is inherently full-display-width (`src/bar.c:437-494`), so inside an app panel it becomes an unreadable ~7pt strip.
 * **Capturing the user's real bar** — rejected as the primary path, kept as a feature: it needs Screen Recording permission, and `SLSCaptureWindowsContentsToRectWithOptions` exists in SketchyBar at `src/window.c:347-378`; screen capture has been blocked on this machine, so that test is treated as unavailable ([testing.md](testing.md)).
-* **Linking a vendored SketchyBar into an MIT app**: GPL-3.0 covered linking into an MIT app would force the whole app to GPLv3; that blocker is gone under D5. "SketchyBar" as a product name is a trademark risk, not a GPL risk: GPLv3 §7(e) carves trademarks out of the licence (`LICENSE.md:379-380`), so using the name descriptively to talk about the file format is fine. SbarLua is **not** vendored; its licence could not be determined.
+* **Linking a vendored SketchyBar into an MIT app**: GPL-3.0 covered linking into an MIT app would force the whole app to GPLv3; that blocker is gone under D5. "SketchyBar" as a product name is a trademark risk, not a GPL risk: GPLv3 §7(e) carves trademarks out of the licence (`LICENSE.md:379-380`), so using the name descriptively to talk about the file format is fine. The app already carries the name in its own product name, which is a question for the owner, not a GPL question; [Stage 0](phase-0-license.md) states it. SbarLua is **not** vendored; its licence could not be determined.
 * The live-update mode of D4 is **retained as an optional feature**, and is [Stage 7](phase-7-live-update-mode.md).
 
 ## Scope
 
 ### In scope
 
-* A vendored, headless subset of SketchyBar 2.24 that lays out and paints a bar into a bitmap.
-* A config bridge that turns the app's parsed SbarLua (and shell) config into SketchyBar property assignments, including `sbar.default({...})` and `sketchybar --default k=v`.
-* Live item values in the preview, produced by running the item scripts with a `PATH` shim that captures `--set` calls.
-* A preview pane in the detail view with an Edit / Preview toggle, a profile picker and a scaled-to-fit / 1:1 display control.
-* A live-update setting (`Never` / `On Apply` / `While Editing`) with an explicit Restore, and a snapshot of the live bar before anything is pushed.
-* A differential test against the installed `sketchybar --query <item>` output, and golden-image tests of the rendered bar.
+The stages below are the scope. Each stage file states its own in scope and out of scope. In one line each: the vendored headless renderer ([Stage 1](phase-1-vendor-core.md) to [Stage 4](phase-4-layout-and-render.md)), the config bridge ([Stage 3](phase-3-config-bridge.md)), the preview pane ([Stage 5](phase-5-preview-pane.md)), the live values ([Stage 6](phase-6-live-values.md)), the live-update mode ([Stage 7](phase-7-live-update-mode.md)), and the exactness work ([Stage 8](phase-8-exactness-and-diff.md)).
 
 ### Out of scope
 
 * Re-implementing SketchyBar behaviour in Swift. The C code is the renderer.
 * Vendoring SbarLua or any Lua interpreter.
-* Popups as interactive windows. SketchyBar draws popups in separate windows (`src/bar.c:33-80`); the preview renders the bar only. A popup may be drawn into a second offscreen bitmap later.
+* Popups as interactive windows. SketchyBar draws popups in separate windows (`src/popup.c:375-383`); the preview renders the bar only. A popup may be drawn into a second offscreen bitmap later.
 * Window-server-backed content in the preview: `alias` items (a captured window image), `space` items, the front-app icon and `media.artwork` cannot be produced without the window server. These render as a placeholder with the same geometry, and the preview says so.
 * Mouse interaction with the preview.
 * Any change to the user's config files. The renderer reads the config and the drafts in memory; it never writes.
@@ -68,7 +63,9 @@ The original plan had nine phases, and its Phase 1 was an XL task. It is split h
 
 ## The preview scale (confirmed by the owner on 2026-10-20)
 
-The in-app preview shows the rendered bar **scaled to fit the panel with one uniform scale**, so the real menu-bar aspect ratio survives: the bar is display-width wide and bar-height tall, and it is never re-laid-out or distorted to the panel's shape. A **1:1 toggle** shows the bar at its true pixel size; at 1:1 the bar overflows the panel and the pane scrolls horizontally. The render uses the **target display's real width**, so the proportions are right, and the width can be overridden. [Stage 5](phase-5-preview-pane.md) implements it.
+The in-app preview draws the bar at its **true size** and lets the **view** apply **one uniform scale** that fits the pane width. That scale preserves the real menu-bar aspect ratio: display width minus twice the margin, by the bar height. The bar is **never re-laid-out** and **never stretched or distorted** to the pane's shape. A **1:1 toggle** shows the bar at its true pixel size; at 1:1 the bar overflows the panel and the pane scrolls horizontally. The render uses the **target display's real width in points**, not the main screen's width, so the proportions are right, and the user can override the width. [Stage 5](phase-5-preview-pane.md) implements it.
+
+The layout, the item rectangles and the `bounding_rects` of `sketchybar --query` are in **points**, and the bitmap is rendered at the fixed scale of **2.0** whatever the scale of the display. [Stage 2](phase-2-headless-core.md) and [Stage 4](phase-4-layout-and-render.md) implement it.
 
 ## Module and file table
 
@@ -85,93 +82,39 @@ Sources/CSketchyBar/                          C target: vendored SketchyBar subs
   LICENSE.md                                   the upstream licence, kept with the files
   MODIFICATIONS.md                             every patch this project makes
   UPSTREAM.md                                  the upstream commit that was vendored
-
-Sources/SketchyBarStudio/Models/
-  BarRenderModels.swift                       BarRenderRequest, BarRenderResult, LiveUpdateMode
-  BarRenderItemModel.swift                    the item tree the preview renders
-
-Sources/SketchyBarStudio/Services/
-  PreviewConfigBridge.swift                   parsed config -> SketchyBar property assignments
-  BarRendererService.swift                    drives the C target, returns a CGImage
-  PreviewScriptRunner.swift                   runs item scripts, enforces timeout and kill
-  PreviewScriptShim.swift                     writes the shim script, reads the sink
-  LiveBarService.swift                        snapshot, push and restore of the live bar
-  SketchyBarQueryParser.swift                 tolerant parser for the --query reply
-
-Sources/SketchyBarStudio/Support/
-  SketchyBarPreviewC.swift                    thin Swift wrapper over the C API
-
-Sources/SketchyBarStudio/Views/
-  BarRenderView.swift                         the preview pane (image, 1:1 toggle, warnings)
-  BarRenderProfilePicker.swift                picks the config or profile to render
-  DetailView.swift                            hosts the Edit / Preview toggle (edited)
-  SettingsView.swift                          hosts the live-update mode setting (edited)
-
-Tests/SketchyBarStudioTests/
-  PreviewConfigBridgeTests.swift              unit tests for the bridge
-  PreviewScriptShimTests.swift                unit tests for the shim
-  SketchyBarQueryParserTests.swift            unit tests for the tolerant query parser
-  BarRenderGoldenTests.swift                  golden-image tests of the rendered bar
-  BarRenderDifferentialTests.swift            compares against sketchybar --query
-  PreviewIsolationTests.swift                 no config writes, no live-bar mutation
 ```
 
-Public API sketch of the Swift side:
+Every file on the Swift side, with the stage that owns it, is in the **Files** section of that stage file. The new files are `Models/BarRenderModels.swift` and `Models/BarRenderItemModel.swift` (Stage 3), `Services/PreviewConfigBridge.swift` (Stage 3), `Support/SketchyBarPreviewC.swift` (Stage 1), `Services/BarRendererService.swift` and `Views/BarRenderView.swift` and `Views/BarRenderProfilePicker.swift` (Stage 5), `Services/PreviewScriptShim.swift` and `Services/PreviewScriptRunner.swift` (Stage 6), `Services/LiveBarService.swift` (Stage 7), and `Services/SketchyBarQueryParser.swift` (Stage 8). The test files are in the stage that adds them, and the test files that already exist in the repository are listed in [reference.md](reference.md#the-repository-files-this-plan-touches).
+
+Public API sketch of the Swift side. The C API and its contract are in [Stage 2](phase-2-headless-core.md).
 
 ```swift
-/// A request to render one bar.
 struct BarRenderRequest {
-    /// The config or profile to render.
     let source: BarRenderSource
-    /// The item aliases in draw order.
     let items: [BarRenderItem]
-    /// The bar level properties, including the defaults of the bar.
     let bar: [String: String]
-    /// Values captured from the item scripts, keyed by alias.
+    /// The default-item properties, applied before the items are added.
+    let defaults: [String: String]
     let scriptValues: [String: [String: String]]
 }
-
-/// The result of a render.
 struct BarRenderResult {
     let image: CGImage
     let pixelSize: CGSize
-    /// The origin and size of every item, in pixels.
+    /// The origin and size of every item, in points.
     let itemRects: [String: CGRect]
-    /// Messages from the vendored code and from the script shim.
     let warnings: [String]
 }
-
-/// Renders a bar through the vendored SketchyBar subset.
 enum BarRenderer {
     static func render(_ request: BarRenderRequest) throws -> BarRenderResult
 }
-
-/// How the app may change the user's live bar.
-enum LiveUpdateMode: String, CaseIterable {
-    case never
-    case onApply
-    case whileEditing
-}
+enum LiveUpdateMode: String, CaseIterable { case never, onApply, whileEditing }
 ```
 
 Data flow:
 
 ```
-config files on disk (+ in-memory drafts)
-        |
-        v
-app parsers  (LuaTableParser / SbarLuaItemParser / ShellConfigScanner)
-        |  aliases + qualified key paths
-        v
-config bridge  (PreviewConfigBridge)
-        |  property assignments
-        v
-vendored SketchyBar subset  (items, defaults inheritance, layout, CoreGraphics paint)
-        |
-        |  CGImage
-        v
-SwiftUI preview pane  (scaled to fit, or 1:1)
-
+config files (+ in-memory drafts)
+  -> app parsers -> config bridge -> vendored SketchyBar subset -> CGImage -> preview pane
 item scripts --(fork_exec, PATH shim)--> sink file --> property assignments --> re-render
 ```
 
@@ -185,6 +128,23 @@ item scripts --(fork_exec, PATH shim)--> sink file --> property assignments --> 
 * Keep master green after every merge: `swift build`, `swift test`, `./script/build_and_run.sh --package`.
 * Never push unless the owner says so.
 * Update `CHANGELOG.md` in the same stage as the change, under `## [Unreleased]`.
+
+**How a stage actually runs.**
+
+* The orchestrator creates the worktree and the branch before the coder starts:
+
+  ```
+  git worktree add /private/var/folders/0j/qfzrfr8928jbh4b0dh9w97qr0000gn/T/opencode/sbs-stage-N -b feat/bar-renderer/stage-N master
+  ```
+
+  The exact path is whatever the orchestrator creates; the rule is that it lives under the temp opencode directory and never in the main checkout.
+* The orchestrator hands the coder two things: the stage file to read, and the absolute path of the worktree to work in. The coder works only in that worktree.
+* The coder commits on the stage branch, and hands the commit range back to the orchestrator.
+* The reviewer reviews the commit range read-only.
+* The orchestrator runs the post-merge verification — `swift build`, `swift test`, `./script/build_and_run.sh --package` on master — before the next stage starts.
+* After the merge, the orchestrator removes the worktree: `git worktree remove <path>`, and `git worktree prune`.
+* A stage does not start until the previous stage is merged and master is green.
+* The scribe records **deviations** from the plan in the plan itself, so the documents describe what was actually built.
 
 **Roles.**
 
@@ -208,7 +168,7 @@ item scripts --(fork_exec, PATH shim)--> sink file --> property assignments --> 
 
 ## Licensing
 
-The repository is MIT today. Vendoring SketchyBar's GPL-3.0 code means the whole app must be GPL-3.0. The owner accepted that under D5. Stage 0 makes the switch before any GPL code lands. The full requirements — corresponding source, notices, declaration of modification, installation information, attribution of both upstream projects, and the SbarLua exclusion — are in [phase-0-license.md](phase-0-license.md).
+The repository is MIT today. Vendoring SketchyBar's GPL-3.0 code means the whole app must be GPL-3.0. The owner accepted that under D5. Stage 0 makes the switch before any GPL code lands. The full requirements — corresponding source, notices, declaration of modification, installation information, attribution of both upstream projects, the trademark question, and the SbarLua exclusion — are in [phase-0-license.md](phase-0-license.md).
 
 ## Definition of done
 
@@ -219,7 +179,7 @@ The feature is done when all of the following hold.
 3. The preview shows live values: the item scripts run and their `--set` calls reach the preview.
 4. The live bar is provably unchanged by a preview cycle, in every live-update mode that is not `While Editing` and not an explicit push.
 5. The live-update mode has the three settings and an explicit Restore, and Restore returns the live bar to the state it had before the first push.
-6. The item rectangles of the renderer match `sketchybar --query <item>` within one pixel for the fixture configs.
+6. The item rectangles of the renderer match `sketchybar --query <item>` within one point for the fixture configs.
 7. `swift build`, `swift test` and `./script/build_and_run.sh --package` pass, and the packaged app runs.
 8. The repository is GPL-3.0, the vendored code keeps its notices, the modifications are declared, and the release notes make the source offer.
 9. The README, the CHANGELOG and the release checklist describe the shipped behaviour.
@@ -234,15 +194,15 @@ The feature is done when all of the following hold.
 | Private frameworks leak back into the link. | The app would need the same private entitlements as SketchyBar, and the bundle would break. | Acceptance criterion in Stage 1: `otool -L` shows no SkyLight, DisplayServices or MediaRemote. | [Stage 1](phase-1-vendor-core.md) |
 | The app is MIT today and the vendored code is GPL-3.0. | The app cannot ship as MIT. | Stage 0 switches the licence before any GPL code lands. The decision is already taken by the owner. | [Stage 0](phase-0-license.md) |
 | The renderer is not exact for the item types the app cannot produce. | The user sees a preview that differs from the real bar. | The window-server limits are stated in the app and in the README, and the differential test only claims the geometry it can check. | [Stage 8](phase-8-exactness-and-diff.md) |
-| A preview script reaches the live bar. | The user's real bar changes without consent. | The PATH shim, the patched child environment, the "no live-bar mutation" test, and the rule that the shim never forwards an unknown command. A script that calls the binary by absolute path is a known limit and is stated. | [Stage 6](phase-6-live-values.md) |
-| `--set` on the server re-splits a value on spaces, so a label with a space cannot be pushed. | Live values with spaces are wrong, or a push fails. | Open question 1. The transport preserves spaces, so the risk is in the per-property parse. Confirm before Stage 6 and Stage 7 rely on it. | [Stage 6](phase-6-live-values.md) |
-| The preview leaks memory or file descriptors over a long session. | The app slows down or crashes. | The preview is created and destroyed per render; the golden tests and the live-value loop are run in a soak test. | [Stage 2](phase-2-headless-core.md) |
-| The vendored code drifts from the SketchyBar release the user runs. | The preview matches an older SketchyBar. | Record the upstream commit in `Sources/CSketchyBar/UPSTREAM.md` and show it in the About panel or the release notes. | [Stage 1](phase-1-vendor-core.md), [Stage 9](phase-9-docs-and-release.md) |
+| A preview script reaches the live bar. | The user's real bar changes without consent. | The PATH shim, the patched child environment, the "no live-bar mutation" test, and the rule that the shim never forwards an unknown command. A script that calls the binary by absolute path is a known limit; the child `PATH` is scrubbed so it cannot reach the real binary, and the preview warns when a script references an absolute `sketchybar` path. | [Stage 6](phase-6-live-values.md) |
+| Whether a value with a space survives the per-property parse is **UNVERIFIED**. | Live values with spaces are wrong, or a push fails. | Open question 1. The transport and the `=` split preserve spaces; confirm `bar_item_parse_set_message` and the text parser by experiment before the live-values and live-update stages rely on it. | [Stage 6](phase-6-live-values.md) |
+| The preview leaks memory or file descriptors over a long session. | The app slows down or crashes. | The preview is created and destroyed per render; Stage 2 runs a soak test of a thousand create / destroy cycles, and Stage 6 runs a soak test of the live-value loop. | [Stage 2](phase-2-headless-core.md), [Stage 6](phase-6-live-values.md) |
+| The vendored code drifts from the SketchyBar release the user runs. | The preview matches an older SketchyBar. | Stage 1 records the upstream commit in `Sources/CSketchyBar/UPSTREAM.md`, and Stage 9 shows it in the About panel or the release notes. | [Stage 1](phase-1-vendor-core.md), [Stage 9](phase-9-docs-and-release.md) |
 | The renderer pushes the wrong item order, so the preview is misleading. | The user trusts a wrong preview. | The differential test compares the rectangles per alias, not just the count. | [Stage 8](phase-8-exactness-and-diff.md) |
 
 ## Open questions
 
-Every item below is **UNVERIFIED** and must be confirmed against the source or by experiment before the stage that depends on it starts. The full text, with the citations, is in [reference.md](reference.md).
+Every item below is **UNVERIFIED** and must be confirmed against the source or by experiment before the stage that depends on it starts. The full text, with the citations, is in [reference.md](reference.md#open-questions).
 
 1. Does the SketchyBar `--set` server re-split a `property=value` argument on spaces? (Stage 6, Stage 7)
 2. Does the vendored subset compile cleanly after the private-framework files are removed? (Stage 1)

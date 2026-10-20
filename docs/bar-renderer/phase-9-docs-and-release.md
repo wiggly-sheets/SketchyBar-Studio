@@ -16,12 +16,13 @@ The docs describe what the app now does, and the release notes follow the projec
 
 ## Tasks
 
-1. Update the README feature list, the known limits, the licence section and the build-from-source section. The lines that need changing are in the table below.
+1. Update the README feature list, the known limits, the licence section and the build-from-source section. The lines that need changing are in the README-lines table below.
 2. Add the CHANGELOG entries, one per stage, under `## [Unreleased]`, using the existing `### Added` / `### Changed` / `### Fixed` sections and the existing one-sentence-per-change style.
 3. Add the rows for the new checks to `docs/RELEASE_CHECKLIST.md`:
    * the preview renders a bar of a config that is not the live one;
    * the preview shows live values and the live bar is unchanged;
    * Restore puts the live bar back;
+   * every README claim about the preview is checked against the shipped app;
    * `swift build`, `swift test` and `./script/build_and_run.sh --package` pass.
 4. Note in the release notes that the binary contains GPL-3.0 code and that the corresponding source is available (§6.d).
 5. Show the upstream commit that was vendored, in the About panel or in the release notes. The commit is recorded in `Sources/CSketchyBar/UPSTREAM.md`.
@@ -50,7 +51,7 @@ The docs describe what the app now does, and the release notes follow the projec
 
 ## Acceptance criteria
 
-* Every README claim about the preview matches the shipped behaviour.
+* Every README claim about the preview has a row in `docs/RELEASE_CHECKLIST.md`, and every one of those rows is checked against the shipped app before the release.
 * The README states the licence and points at the source offer.
 * The CHANGELOG has an entry for each stage.
 * The release checklist has the new rows.

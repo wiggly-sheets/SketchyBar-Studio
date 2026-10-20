@@ -10,7 +10,7 @@ None. This is the first stage.
 
 ## In scope / Out of scope
 
-**In scope.** The `LICENSE` text, the `NOTICE` file, the licence lines of `README.md`, the `CHANGELOG.md` entry, and `CONTRIBUTING.md` if it states the licence.
+**In scope.** The `LICENSE` text, the `NOTICE` file, the licence lines of `README.md`, and the `CHANGELOG.md` entry. `CONTRIBUTING.md` is checked but changed only if it states the licence, which it does not today.
 
 **Out of scope.** Any code change, any vendored file, and the release notes for the GPL source offer (that belongs to [Stage 9](phase-9-docs-and-release.md)).
 
@@ -20,14 +20,14 @@ None. This is the first stage.
 2. Update the licence badge in `README.md:16` and the licence line in `README.md:219`.
 3. Add a `NOTICE` file naming upstream FelixKratz and the wiggly-sheets fork, stating that the vendored code is modified, and pointing at the source offer.
 4. Add a `CHANGELOG.md` entry under `## [Unreleased]`.
-5. Update `CONTRIBUTING.md` if it states the licence.
+5. Check `CONTRIBUTING.md`. It states no licence today, so it needs no change; if a licence statement appears there later, update it in the same stage.
 
 ### What GPLv3 requires of this repository
 
 * **Ship the full corresponding source** (§6). The vendored SketchyBar source must be in the repository, and the release must offer the complete source of the distributed binary, including the Swift app.
-* **Keep the licence and copyright notices** (§5). The upstream `LICENSE.md` and the copyright notices of every vendored file stay with the vendored files.
-* **State that the code was modified** (§5). The patches this project makes (the headless shim, the window-record replacement, the `fork_exec` environment patch) must be declared, in the vendored tree and in the app's notices.
-* **Installation Information for User Products** (§6.d). The app ships a macOS binary and the ability to run a modified version, so the release notes must tell the user how to get the source and how to build a modified version.
+* **Keep the licence and copyright notices** (§4(a) for verbatim copies, §6(a) for non-source forms). The upstream `LICENSE.md` and the copyright notices of every vendored file stay with the vendored files.
+* **State that the code was modified** (§5, "Conveying Modified Source Versions", and specifically §5(b)). The patches this project makes (the headless shim, the window-record replacement, the `fork_exec` environment patch) must be declared, in the vendored tree and in the app's notices.
+* **Installation Information for User Products** (§6.d). This duty bites only when the Corresponding Source is **not** distributed with the object code. Stage 0 requires the source to be distributed with the release, and the release notes carry a source pointer. If a binary ever ships without the source, the release notes must carry the installation information: how to get the source and how to build a modified version.
 
 ### What must be attributed
 
@@ -40,13 +40,15 @@ None. This is the first stage.
 
 ### Trademark note
 
-GPLv3 §7(e) carves trademarks out of the licence (`LICENSE.md:379-380`). "SketchyBar" is a product name of its authors. Using the name descriptively — to name the file format, the config directory, the CLI and the daemon the app talks to — is fine. Using it as the app's own product name, or as a brand for this app, is a separate trademark question and is out of scope for this plan.
+The GPL analysis is correct. GPLv3 §7(e) carves trademarks out of the licence (`LICENSE.md:379-380`), so using the name descriptively — to name the file format, the config directory, the CLI and the daemon the app talks to — is fine.
+
+The app already carries "SketchyBar" in its own product name: it is called "SketchyBar Studio" (`README.md:5`), the repository is `wiggly-sheets/SketchyBar-Studio` (`README.md:15-16`), and the copyright line reads "Copyright (c) 2026 Wiggly-Sheets" (`LICENSE:3`). Whether that is a trademark question is a question for the owner, not a GPL question, and this plan does not change the product name. It is flagged here so the owner decides it explicitly rather than by accident.
 
 ## Files
 
 **Create.** `NOTICE`.
 
-**Modify.** `LICENSE`, `README.md` (lines 16 and 219), `CHANGELOG.md`, `CONTRIBUTING.md` (only if it states the licence).
+**Modify.** `LICENSE`, `README.md` (lines 16 and 219), `CHANGELOG.md`. `CONTRIBUTING.md` is read but not modified unless it states the licence.
 
 **Do not touch.** `Package.swift`, everything under `Sources/`, everything under `Tests/`, `script/`, `dist/`, and any file under a user config root.
 
@@ -65,7 +67,7 @@ None needed; this stage changes no code. `swift build` and `swift test` still ha
 ## Risks and unknowns
 
 * The app is MIT today and the vendored code is GPL-3.0. The app cannot ship as MIT. This stage is the mitigation: the licence switches before any GPL code lands. The decision is already taken by the owner (D5).
-* `CONTRIBUTING.md` may state the licence in a place other than the obvious one. Grep the whole repository for "MIT" and for "licence" before merging.
+* `CONTRIBUTING.md` states no licence today, so the "update it if it states the licence" task is a no-op. Grep the whole repository for "MIT" and for "licence" before merging, in case another file states one.
 
 ## Done when
 

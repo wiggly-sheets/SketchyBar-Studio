@@ -24,9 +24,9 @@ The vendored SketchyBar runs headlessly. A shim replaces the window-server and d
    * a `fork_exec` that can set a preview environment for the child process.
 
    The file names are in the module table in [README.md](README.md#module-and-file-table).
-2. Implement the C API. It is deliberately narrow, so the Swift side never depends on SketchyBar internals.
-3. Implement the item tree: `sb_preview_add_item` records an alias, `sb_preview_set_item` and `sb_preview_set_bar` record one key/value pair each. The recorded values are the input of the layout in [Stage 4](phase-4-layout-and-render.md).
-4. Provide the `fork_exec` replacement `shim/sketchybar_preview_fork.c`. [Stage 6](phase-6-live-values.md) patches it to put the shim directory first on `PATH` and to set the sink variable.
+2. Implement the C API. It is deliberately narrow, so the Swift side never depends on SketchyBar internals. The header is below, and the contract of the API is stated below it.
+3. Implement the item tree: `sb_preview_add_item` records an alias, `sb_preview_set_item` and `sb_preview_set_bar` record one key/value pair each, and `sb_preview_set_default` records a property of the default item. The recorded values are the input of the layout in [Stage 4](phase-4-layout-and-render.md). The default item is inherited at item creation, so the implementation has to apply the recorded defaults to an item when the item is added, not when the default is set.
+4. Provide the `fork_exec` replacement `shim/sketchybar_preview_fork.c`. [Stage 6](phase-6-live-values.md) patches it to put the shim directory first on `PATH` and to set the sink variable. The shim script that this environment serves accepts `--set`, `-m --set` and `--message --set`, and the marker is skipped before the alias is read; the script and its rules are in [Stage 6](phase-6-live-values.md). The child environment it builds must not carry `BAR_NAME`, which the daemon sets for its own children (`src/sketchybar.c:208`).
 
 ### The C API
 
@@ -48,24 +48,47 @@ SB_API void          sb_preview_destroy(sb_preview_t* preview);
 /* Bar level: key is a SketchyBar bar property, e.g. "position", "margin". */
 SB_API int  sb_preview_set_bar(sb_preview_t* preview, const char* key, const char* value);
 
+/* Default-item level: key is a SketchyBar item property, e.g. "icon.font".
+   These are the properties of the DEFAULT ITEM, not of the bar. They are a
+   snapshot taken when an item is created, so they must be set BEFORE the
+   items are added. See the defaults contract below. */
+SB_API int  sb_preview_set_default(sb_preview_t* preview, const char* key, const char* value);
+
 /* Item level: alias first, then one property at a time. */
 SB_API int  sb_preview_add_item(sb_preview_t* preview, const char* alias);
 SB_API int  sb_preview_set_item(sb_preview_t* preview, const char* alias,
                                 const char* key, const char* value);
 
-/* Renders into a bitmap and returns a retained CGImage. */
-SB_API CGImageRef sb_preview_render(sb_preview_t* preview);
+/* The virtual display the bar is laid out for. The width and the height are
+   in POINTS. The scale is the scale of the backing bitmap, which is fixed at
+   2.0 in SketchyBar and is not the scale of the screen. */
+SB_API int  sb_preview_set_display(sb_preview_t* preview,
+                                   double widthPoints, double heightPoints, double scale);
 
-/* The origin and size of one item, in pixels, after layout. */
+/* Renders into a bitmap and returns a retained CGImage. The caller owns it
+   and releases it with sb_preview_release_image. */
+SB_API CGImageRef sb_preview_render(sb_preview_t* preview);
+SB_API void sb_preview_release_image(CGImageRef image);
+
+/* The origin and size of one item, in POINTS, after layout. */
 SB_API int sb_preview_item_rect(sb_preview_t* preview, const char* alias,
                                 CGRect* outRect);
 
-/* Messages the vendored code produced, one per line. */
+/* Messages the vendored code produced, one per line. The returned pointer is
+   owned by the preview: it stays valid until the next call that can produce
+   a message, and until sb_preview_destroy. The caller must not free it. */
 SB_API const char* sb_preview_messages(sb_preview_t* preview);
 #endif
 ```
 
 `sb_preview_render` and `sb_preview_item_rect` are declared here and implemented in [Stage 4](phase-4-layout-and-render.md).
+
+### The contract of the API
+
+* **Ownership.** `sb_preview_render` returns a retained `CGImageRef`; the caller owns it and releases it with `sb_preview_release_image`. `sb_preview_messages` returns a `const char*` owned by the preview; the caller must not free it, and it stays valid until the next message-producing call or until `sb_preview_destroy`.
+* **Points and pixels.** Every rectangle the API reports is in **points**. The backing bitmap is rendered at the fixed scale of **2.0**, which is what SketchyBar itself uses (`src/surface.c:37`, `src/surface.c:47`, `src/surface.c:53`, `src/window.c:81`, `src/layer.m:19`, `src/layer.m:53`), independent of the scale of the display. The bitmap is therefore twice the size of the point geometry.
+* **Defaults are a snapshot.** `sb_preview_set_default` writes to the default item, exactly like `sketchybar --default` does (`src/misc/help.h:12-13`, `src/message.c:335`). The default item is inherited when an item is created (`src/bar_manager.c:463`, `src/bar_item.c:68`, `src/bar_item.c:883-933`), so **every call to `sb_preview_set_default` must come before the first `sb_preview_add_item`**. A default set after an item exists never reaches that item, and there is no way to reach an existing item afterwards through this API.
+* **The display.** `sb_preview_set_display` takes the width and the height of the virtual display in points. The scale argument is the backing scale of the bitmap, which the preview keeps at 2.0. The display scale of the screen is not a parameter of the layout.
 
 ## Files
 
@@ -77,12 +100,15 @@ SB_API const char* sb_preview_messages(sb_preview_t* preview);
 
 ## Acceptance criteria
 
-* `sb_preview_create`, `sb_preview_set_bar`, `sb_preview_add_item`, `sb_preview_set_item` and `sb_preview_destroy` are callable from Swift and link into the app.
+* `sb_preview_create`, `sb_preview_set_bar`, `sb_preview_set_default`, `sb_preview_add_item`, `sb_preview_set_item`, `sb_preview_set_display` and `sb_preview_destroy` are callable from Swift and link into the app.
 * A create / add / set / destroy cycle opens no window and makes no connection to the Mach service. Checkable: no window appears in the accessibility list, and no connection to the Mach service appears for the process.
+* The same check without the manual observation: `nm -u` on the built C target shows no `bootstrap_register` and no `SLS*` symbol.
 * The vendored tree no longer calls into a SkyLight window. Checkable: the compiled target contains no reference to `SLSNewWindowWithOpaqueShapeAndContext` (`src/window.c:65`) and no call to `window_set_frame` on a real window.
 * `otool -L` on the built binary shows no SkyLight, DisplayServices or MediaRemote.
+* A default set with `sb_preview_set_default` before `sb_preview_add_item` is inherited by the item that is added afterwards, and a default set after the item exists does not reach it. That is the upstream behaviour (`src/bar_manager.c:463`, `src/bar_item.c:68`, `src/bar_item.c:883-933`), and the test pins it.
 * Every patch to a vendored file is listed in `Sources/CSketchyBar/MODIFICATIONS.md`.
 * A preview that is created and destroyed a thousand times in a loop leaves the process with the same number of open file descriptors and the same resident memory within one page.
+* The child environment of the `fork_exec` replacement contains no `BAR_NAME` and no `mach_send_message` symbol is reachable from the preview target.
 
 ## Tests
 
@@ -90,7 +116,7 @@ A C-level smoke test, driven from Swift: create a preview, add one item with a f
 
 ## Risks and unknowns
 
-* The preview leaks memory or file descriptors over a long session. The app slows down or crashes. Mitigation: the preview is created and destroyed per render, and the soak test above runs the live-value loop's shape.
+* The preview leaks memory or file descriptors over a long session. The app slows down or crashes. Mitigation: the preview is created and destroyed per render, the soak test above runs a thousand create / destroy cycles, and [Stage 6](phase-6-live-values.md) runs the same shape over the live-value loop.
 * The item tree has no defined error semantics yet. The API returns `int`; agree on the meaning (0 for success) in this stage and use it consistently, because the config bridge in [Stage 3](phase-3-config-bridge.md) and the script runner in [Stage 6](phase-6-live-values.md) both report failures through it.
 
 ## Done when

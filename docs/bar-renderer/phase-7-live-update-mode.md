@@ -69,7 +69,7 @@ Plus an explicit **Restore** action that puts the live bar back.
 
 ## Risks and unknowns
 
-* Open question 1: `--set` on the server re-splits a value on spaces, so a label with a space cannot be pushed. The transport preserves spaces (`src/sketchybar.c:60-108`, `src/misc/helpers.h:260-276`); the risk is in the per-property parse. Confirm before this stage relies on it.
+* Open question 1: whether a value with a space survives the per-property parse is **UNVERIFIED**. The transport and the `=` split preserve spaces (`src/sketchybar.c:60-108`, `src/misc/helpers.h:260-276`, `src/message.c:468-478`); confirm `bar_item_parse_set_message` and the text parser by experiment before this stage relies on it.
 * A push that half succeeds leaves the live bar in a mixed state. Mitigation: rule 5, plus a snapshot taken before the first push, so Restore can put it back.
 * The snapshot is written to disk and holds the user's live bar values. It must stay inside the app's own support directory, and it must not be written under the user's config root.
 

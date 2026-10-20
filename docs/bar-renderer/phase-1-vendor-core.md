@@ -35,11 +35,17 @@ DROP:
   src/volume.m        src/wifi.m
 ```
 
+This list is a starting point, not the answer. Three files call the window server and are **not** in it, and each needs a decision in this stage:
+
+* `src/alias.c` calls `window_capture` (`src/alias.c:237`) to grab the captured window image. Disposition: keep the item model, stub the capture, and render the `alias` item as a placeholder.
+* `src/popup.c` creates and frames the popup window (`window_open` at `src/popup.c:383`, `window_set_frame` at `src/popup.c:375`). Disposition: stub the window, keep the popup geometry.
+* `src/mouse.c` handles the mouse and the event tap. Disposition: drop it, and stub the callers.
+
 `src/display_nsscreen.m` is not named in that list. It provides the NSScreen-backed display provider, and the preview needs a virtual display instead. Its fate is UNVERIFIED and is settled in this stage.
 
 `src/symbol.m` is the only Objective-C file the subset is expected to need; it uses public AppKit APIs (`NSImage imageWithSystemSymbolName:variableValue:...`). SwiftPM C targets accept `.m` sources, but this is a compile risk in this stage.
 
-The files that talk to the window server are exactly: `app_windows.c`, `bar_manager.c`, `bar.c`, `display.c`, `event.c`, `sketchybar.c`, `surface.c`, `window.c` (the result of `grep -ln g_connection`). The build shape of the upstream project and the frame list are in [reference.md](reference.md#how-sketchybar-renders-today).
+The files that call into the window server are: `app_windows.c`, `bar_manager.c`, `bar.c`, `display.c`, `event.c`, `sketchybar.c`, `surface.c`, `window.c`, and `src/misc/helpers.h` (which holds `g_connection` at `src/misc/helpers.h:20` and the Space helpers at `src/misc/helpers.h:468`, `src/misc/helpers.h:496`, `src/misc/helpers.h:524`, `src/misc/helpers.h:537`). `bar.c` and `bar_manager.c` hold the layout code, so they stay and their window-server calls are stubbed: `SLSSpaceGetType(g_connection, …)` at `src/bar.c:543` and `src/bar_manager.c:956` both need a stub.
 
 ### The SwiftPM target
 
@@ -62,7 +68,7 @@ targets: [
 ]
 ```
 
-`-fvisibility=hidden` comes from the upstream `makefile:1`; the preview API header marks its own exports with a visibility attribute so the rest of the C code stays hidden. The framework list above is the *upper* bound from `makefile:6-18`; the minimum set the subset actually needs is an output of this stage. The private frameworks (SkyLight, DisplayServices, MediaRemote) are not needed by the subset and must not be linked.
+`-fvisibility=hidden` comes from the upstream `makefile:1`; the preview API header marks its own exports with a visibility attribute so the rest of the C code stays hidden. The framework list above is the *upper* bound from the `LIBS` block at `makefile:3-13`; the minimum set the subset actually needs is an output of this stage. The private frameworks (SkyLight, DisplayServices, MediaRemote) are not needed by the subset and must not be linked.
 
 ## Files
 

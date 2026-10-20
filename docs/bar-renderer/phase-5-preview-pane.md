@@ -26,10 +26,11 @@ The user can look at a rendered bar of any config or profile, from the detail vi
 
 A SketchyBar bar is full menu-bar width (display width minus twice the margin, `src/bar.c:437-494`) and bar-height tall. The detail pane is far narrower, so:
 
-* The scaled-to-fit view applies **one uniform factor to both axes**. The bar is never re-laid-out to the panel's shape and never distorted: the drawn image keeps the aspect ratio of the real menu bar, which is the rendered width against the rendered height.
-* At **1:1** the bar overflows the panel and the pane **scrolls horizontally**. The user sees the left part of the bar and can scroll to the rest.
+* The bar is drawn at its **true size**, and the **view** applies **one uniform scale** that fits the pane width. That scale preserves the real menu-bar aspect ratio: display width minus twice the margin, by the bar height.
+* The bar is **never re-laid-out** and **never stretched or distorted** to the pane's shape. The bar is one image, and the view scales that image.
+* At **1:1** the bar overflows the pane and the pane **scrolls horizontally**. The user sees the left part of the bar and can scroll to the rest.
 * The rendered image is drawn at its true pixel size and scaled by the view, so the pixels are never re-sampled by the renderer.
-* The render uses the **target display's real width**, so the proportions are right. The width can be overridden, and the override is visible in the UI.
+* The render uses the **target display's real width in points**, not the main screen's width, so the proportions are right. The width can be overridden, and the override is visible in the UI.
 
 ### The existing preview
 
@@ -45,18 +46,20 @@ The current preview is `Sources/SketchyBarStudio/Views/BarPreviewView.swift`. It
 
 ## Acceptance criteria
 
-* A user can open the preview of a config that is not the live one, and see a bar.
+* A user can open the preview of a config that is not the live one, and see a bar, and the rendered image has the width of the virtual display and is not blank.
 * The preview of the live config shows the unsaved draft of the selected file.
 * The 1:1 toggle shows the image at one image pixel per screen point, and the pane scrolls horizontally.
 * Switching between Edit and Preview does not lose a draft.
 * In the scaled-to-fit view the drawn image has the same width-to-height ratio as the rendered image, and the rendered image has the ratio of the target display width against the bar height. Checkable by comparing the two ratios.
+* The fitted image's aspect ratio equals the rendered image's aspect ratio within 0.1%.
 * The scaled-to-fit view applies the same factor to both axes. Checkable by measuring the drawn width and height against the image size.
 * The preview never re-lays the bar out to the panel's shape: the number of items in the rendered image is the number of items in the config, whatever the pane width.
 * The width used for the render is the target display's real width in points, unless the user overrides it, and the override is shown in the UI.
+* The width override changes the bar's proportions: a different width produces a different aspect ratio, and the bar is still drawn at its true size in the view.
 
 ## Tests
 
-`ViewLogicTests.swift` (existing file) gains a test for the toggle state and for the picker default. A render test asserts the image size matches the virtual display, not the pane: the image width is the target display width times the scale, and the image height is the bar height times the scale.
+`ViewLogicTests.swift` (existing file) gains a test for the toggle state and for the picker default. A render test asserts the image size matches the virtual display, not the pane: the image width is the target display width in points times 2, and the image height is the bar height in points times 2. A view test asserts the fitted image's aspect ratio equals the rendered image's aspect ratio within 0.1%, that the 1:1 pane scrolls horizontally, and that the width override changes the bar's proportions.
 
 ## Risks and unknowns
 

@@ -16,8 +16,8 @@ The rendered bar matches the real SketchyBar. The item rectangles of the vendore
 
 ## Tasks
 
-1. Write the differential test: for a fixture config, compare the item rectangles from the vendored renderer against the `bounding_rects` of the installed `sketchybar --query <item>`. The `bounding_rects` block is the computed layout, with the origin and the size per display (`src/bar_item.c:1080-1094`).
-2. Write a tolerant parser for the query reply, because the reply is JSON-like but not valid JSON (tab indent, `"on"` / `"off"` instead of booleans, trailing commas).
+1. Write the differential test: for the fixture config, compare the item rectangles from the vendored renderer against the `bounding_rects` of the installed `sketchybar --query <item>`. The `bounding_rects` block is the computed layout, with the origin and the size per display (`src/bar_item.c:1080-1094`). Those values are **window frames in points**, so the comparison is in points.
+2. Write a tolerant parser for the query reply, because the reply is close to valid JSON but is not always valid JSON. Tab indent is legal JSON whitespace, `"on"` / `"off"` are quoted strings (`src/misc/helpers.h:79-81`) and parse fine, and there are no trailing commas before the closing braces. The real breakers are the backslash, which `escape_string` does not escape (`src/misc/helpers.h:83-103`), so a value holding a backslash emits an invalid escape, and the error path, which returns `"[!] …"` (`src/message.c:512`, `src/message.c:529`) and is not JSON at all. The parser has to survive both, and it has to detect the `"[!]"` error prefix.
 3. Fix every difference the differential test finds, one item type at a time.
 4. Check the defaults inheritance, the `align` behaviour, `max_chars`, `scroll_texts`, the group background and the symbol size model.
 5. Add the known limits to the preview as warnings: `alias`, `space`, front-app icon and `media.artwork` cannot be produced without the window server.
@@ -26,7 +26,7 @@ The semantics that decide each of these are listed in [reference.md](reference.m
 
 ## Files
 
-**Create.** `Tests/SketchyBarStudioTests/BarRenderDifferentialTests.swift`, `Sources/SketchyBarStudio/Services/SketchyBarQueryParser.swift`, `Tests/SketchyBarStudioTests/SketchyBarQueryParserTests.swift`.
+**Create.** `Tests/SketchyBarStudioTests/BarRenderDifferentialTests.swift`, `Tests/SketchyBarStudioTests/Fixtures/differential.sketchybarrc` (the fixture config the differential test renders), `Sources/SketchyBarStudio/Services/SketchyBarQueryParser.swift`, `Tests/SketchyBarStudioTests/SketchyBarQueryParserTests.swift`.
 
 **Modify.** `Sources/CSketchyBar/**` (the fixes), `Sources/CSketchyBar/MODIFICATIONS.md`, `Sources/SketchyBarStudio/Views/BarRenderView.swift` (the limit warnings).
 
@@ -34,8 +34,8 @@ The semantics that decide each of these are listed in [reference.md](reference.m
 
 ## Acceptance criteria
 
-* For the fixture config, every item rectangle matches the `bounding_rects` of the installed daemon within one pixel.
-* The query parser reads a real `--query` reply and a reply with the trailing commas and the `on` / `off` booleans.
+* For the fixture config, every item rectangle matches the `bounding_rects` of the installed daemon within one point.
+* The query parser reads a real `--query` reply and a reply whose value contains a backslash, and it detects the `"[!] …"` error prefix instead of trying to parse it as JSON.
 * The differential test is skipped, not failed, when the daemon is not running.
 * The differential test never calls `--set`; it only issues `--query`.
 * The preview shows a warning for `alias`, `space`, the front-app icon and `media.artwork` items, and for popups.
@@ -54,4 +54,4 @@ The differential test itself, plus the golden-image tests. The differential test
 
 ## Done when
 
-Every item rectangle of the fixture config matches the daemon within one pixel, the tolerant parser is covered by unit tests, the known limits are visible in the preview, the golden and differential tests pass, and the branch is merged into master with `git merge --no-ff` and master is green.
+Every item rectangle of the fixture config matches the daemon within one point, the tolerant parser is covered by unit tests, the known limits are visible in the preview, the golden and differential tests pass, and the branch is merged into master with `git merge --no-ff` and master is green.
