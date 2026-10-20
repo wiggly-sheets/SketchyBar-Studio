@@ -14,19 +14,25 @@ struct UndoAction {
     let coalescingKey: String?
     let undo: () -> Bool
     let redo: () -> Bool
+    /// True when the change can no longer be applied, because the value it
+    /// belongs to is gone. Such a step is dropped instead of blocking the
+    /// history for good.
+    let isDead: () -> Bool
 
     init(
         id: UUID = UUID(),
         title: String,
         coalescingKey: String? = nil,
         undo: @escaping () -> Bool,
-        redo: @escaping () -> Bool
+        redo: @escaping () -> Bool,
+        isDead: @escaping () -> Bool = { false }
     ) {
         self.id = id
         self.title = title
         self.coalescingKey = coalescingKey
         self.undo = undo
         self.redo = redo
+        self.isDead = isDead
     }
 }
 
@@ -79,7 +85,8 @@ struct UndoStack {
                     title: action.title,
                     coalescingKey: key,
                     undo: top.action.undo,
-                    redo: action.redo
+                    redo: action.redo,
+                    isDead: top.action.isDead
                 ),
                 registeredAt: date
             )
@@ -96,28 +103,50 @@ struct UndoStack {
 
     /// Applies the newest action in reverse. Returns false when the action
     /// refused to apply, so it stays on the stack.
+    ///
+    /// A step whose target is gone is dropped instead of blocking the
+    /// history. The method returns true when a step was dropped, because
+    /// the stack changed.
     @discardableResult
     mutating func undo() -> Bool {
-        guard let entry = undoEntries.popLast() else { return false }
-        guard entry.action.undo() else {
-            undoEntries.append(entry)
-            return false
+        var dropped = false
+        while let entry = undoEntries.popLast() {
+            if entry.action.isDead() {
+                dropped = true
+                continue
+            }
+            guard entry.action.undo() else {
+                undoEntries.append(entry)
+                return false
+            }
+            redoEntries.append(entry)
+            return true
         }
-        redoEntries.append(entry)
-        return true
+        return dropped
     }
 
     /// Applies the newest undone action again. Returns false when the
     /// action refused to apply, so it stays on the redo stack.
+    ///
+    /// A step whose target is gone is dropped instead of blocking the
+    /// history. The method returns true when a step was dropped, because
+    /// the stack changed.
     @discardableResult
     mutating func redo() -> Bool {
-        guard let entry = redoEntries.popLast() else { return false }
-        guard entry.action.redo() else {
-            redoEntries.append(entry)
-            return false
+        var dropped = false
+        while let entry = redoEntries.popLast() {
+            if entry.action.isDead() {
+                dropped = true
+                continue
+            }
+            guard entry.action.redo() else {
+                redoEntries.append(entry)
+                return false
+            }
+            undoEntries.append(entry)
+            return true
         }
-        undoEntries.append(entry)
-        return true
+        return dropped
     }
 
     mutating func clear() {

@@ -59,6 +59,7 @@ private struct EditableFileView: View {
     @State private var codePreviewVersion = 0
     @State private var isShowingSaveReview = false
     @State private var saveReview: SaveReview?
+    @State private var saveNotice: String?
     @AppStorage("detail.showCodePreview") private var showCodePreview = true
     @AppStorage("detail.showSourceEditor") private var showSourceEditor = false
 
@@ -68,15 +69,23 @@ private struct EditableFileView: View {
                 .frame(minWidth: 520)
 
             if showCodePreview {
-                CodePreviewView(
-                    file: file,
-                    contents: previewContents,
-                    selectedLine: selectedValue?.lineNumber,
-                    highlightedLines: Set(file.values.filter { $0.draftValue != $0.originalValue }.map(\.lineNumber)),
-                    theme: theme,
-                    refreshToken: codePreviewVersion
-                )
-                .frame(minWidth: 420)
+                if let contents = previewContents {
+                    CodePreviewView(
+                        file: file,
+                        contents: contents,
+                        selectedLine: selectedValue?.lineNumber,
+                        highlightedLines: Set(file.values.filter { $0.draftValue != $0.originalValue }.map(\.lineNumber)),
+                        theme: theme,
+                        refreshToken: codePreviewVersion
+                    )
+                    .frame(minWidth: 420)
+                } else {
+                    PreviewUnavailableView(
+                        message: store.previewIssue(for: file) ?? "The preview of this file cannot be shown.",
+                        theme: theme
+                    )
+                    .frame(minWidth: 420)
+                }
             }
         }
         .onChange(of: file.id) { _, _ in
@@ -113,6 +122,14 @@ private struct EditableFileView: View {
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                }
+                if let saveNotice {
+                    Label(saveNotice, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                 }
                 if showSourceEditor {
                     SourceEditorView(
@@ -227,21 +244,26 @@ private struct EditableFileView: View {
     /// The file is only read here. The write is done by the store, after
     /// the user accepted the diff.
     private func openSaveReview() {
-        guard let newContents = store.effectiveContents(for: file) else {
-            saveReview = SaveReview(fileName: file.displayName, hunks: [], readError: "The changes of this file cannot be read.")
+        guard let review = store.saveReview(for: file) else {
+            saveReview = SaveReview(
+                fileName: file.displayName,
+                hunks: [],
+                readError: store.previewIssue(for: file)
+                    ?? store.loadError(for: file)
+                    ?? "The changes of this file cannot be read."
+            )
             isShowingSaveReview = true
             return
         }
-        do {
-            let diskContents = try String(contentsOf: file.url, encoding: .utf8)
-            saveReview = SaveReview(
-                fileName: file.displayName,
-                hunks: DiffEngine.diff(old: diskContents, new: newContents),
-                readError: nil
-            )
-        } catch {
-            saveReview = SaveReview(fileName: file.displayName, hunks: [], readError: error.localizedDescription)
+        saveNotice = review.notice
+        if let notice = review.notice {
+            store.statusMessage = notice
         }
+        saveReview = SaveReview(
+            fileName: file.displayName,
+            hunks: DiffEngine.diff(old: review.base, new: review.contents),
+            readError: nil
+        )
         isShowingSaveReview = true
     }
 
@@ -250,8 +272,11 @@ private struct EditableFileView: View {
     }
 
     /// The preview shows the pending draft, not the file on disk.
-    private var previewContents: String {
-        store.effectiveContents(for: file) ?? ""
+    ///
+    /// It is empty when the drafts cannot be applied to the text the app
+    /// holds, which happens when the file changed on disk.
+    private var previewContents: String? {
+        store.effectiveContents(for: file)
     }
 
     private var groupedValues: [EditableValueGroup] {
@@ -273,6 +298,28 @@ private struct EditableFileView: View {
 
     private var filteredValues: [LuaEditableValue] {
         EditableValueGroup.filtered(file.values, searchText: store.searchText, showModifiedOnly: store.showModifiedOnly)
+    }
+}
+
+/// The message shown in the code pane when the preview cannot be built.
+private struct PreviewUnavailableView: View {
+    let message: String
+    let theme: AppTheme
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Label("No Preview", systemImage: "exclamationmark.triangle.fill")
+                .font(.headline)
+                .foregroundStyle(.orange)
+
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(theme.background.opacity(0.45))
     }
 }
 
