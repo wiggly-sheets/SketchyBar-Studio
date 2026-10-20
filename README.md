@@ -217,3 +217,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull-request guidance
 ## License
 
 GPL-3.0. See [LICENSE](LICENSE).
+
+SketchyBar Studio is not affiliated with or endorsed by the SketchyBar project.

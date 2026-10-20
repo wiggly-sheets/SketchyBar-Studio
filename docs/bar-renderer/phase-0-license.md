@@ -44,6 +44,14 @@ The GPL analysis is correct. GPLv3 §7(e) carves trademarks out of the licence (
 
 The app already carries "SketchyBar" in its own product name: it is called "SketchyBar Studio" (`README.md:5`), the repository is `wiggly-sheets/SketchyBar-Studio` (`README.md:15-16`), and the copyright line reads "Copyright (c) 2026 Wiggly-Sheets" (`LICENSE:3`). Whether that is a trademark question is a question for the owner, not a GPL question, and this plan does not change the product name. It is flagged here so the owner decides it explicitly rather than by accident.
 
+**Decision (TAKEN 2026-10-20, by the owner).**
+
+* GPLv3 §7(e) withholds trademark rights. The licence switch therefore settles the COPYING question only, not the NAME question.
+* Using "SketchyBar" descriptively — to name the config format, the config directory, the CLI and the daemon the app talks to — is fine.
+* Using it as the product name is the owner's call. The owner keeps the name "SketchyBar Studio" and adds the non-affiliation line to the README.
+* The owner owns the wiggly-sheets fork that Stage 1 vendors from, so only upstream Felix Kratz's mark is not the owner's.
+* No further trademark work is planned. Do not re-open this question.
+
 ## Files
 
 **Create.** `NOTICE`.
@@ -66,7 +74,7 @@ None needed; this stage changes no code. `swift build` and `swift test` still ha
 
 ## Risks and unknowns
 
-* The app is MIT today and the vendored code is GPL-3.0. The app cannot ship as MIT. This stage is the mitigation: the licence switches before any GPL code lands. The decision is already taken by the owner (D5).
+* The app was MIT when this stage was planned, and the vendored code is GPL-3.0. The app cannot ship as MIT. This stage was the mitigation: the licence switched before any GPL code landed. The decision is already taken by the owner (D5).
 * `CONTRIBUTING.md` states no licence today, so the "update it if it states the licence" task is a no-op. Grep the whole repository for "MIT" and for "licence" before merging, in case another file states one.
 
 ## Done when
