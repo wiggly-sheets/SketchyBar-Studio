@@ -250,7 +250,7 @@ struct ShellConfigScanner {
     }
 
     /// Escapes a value so the shell reads it literally.
-    private static func escapeLiteral(_ string: String) -> String {
+    static func escapeLiteral(_ string: String) -> String {
         var escaped = ""
 
         for character in string {

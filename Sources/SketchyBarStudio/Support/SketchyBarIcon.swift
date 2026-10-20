@@ -61,6 +61,29 @@ struct SketchyBarIcon: Equatable {
         case .unknown: return "unknown"
         }
     }
+
+    /// True when the value can be the bundle identifier of an app.
+    ///
+    /// A bundle identifier holds a dot, such as `com.apple.Safari`. A
+    /// value without one cannot name an app, so the system is never asked
+    /// for it.
+    static func canBeBundleIdentifier(_ value: String) -> Bool {
+        guard !value.isEmpty else { return false }
+        guard value.contains(".") else { return false }
+        return !value.contains(where: { $0.isWhitespace })
+    }
+
+    /// True when the image of the icon has to be looked up.
+    ///
+    /// A value that cannot name an app is never looked up, so a value that
+    /// is being typed does not ask the system on every key stroke.
+    var needsLookup: Bool {
+        switch kind {
+        case .symbol: return true
+        case .appIcon: return SketchyBarIcon.canBeBundleIdentifier(bundleIdentifier ?? "")
+        case .mediaArtwork, .text, .unknown: return false
+        }
+    }
 }
 
 /// The way SketchyBar draws an SF Symbol.
@@ -76,37 +99,77 @@ enum SketchyBarSymbolMode: String {
 /// The images of the icons in the preview.
 ///
 /// Looking up an app icon asks the system for the app, so the result is
-/// kept and reused. The cache holds one entry per icon value.
+/// kept and reused. The cache holds a limited number of entries, so it
+/// cannot grow without bound.
 final class SketchyBarIconImageCache {
     static let shared = SketchyBarIconImageCache()
+
+    /// The lookup of the image of an icon.
+    typealias Lookup = (SketchyBarIcon) -> NSImage?
+
+    /// How many images the cache keeps.
+    private static let limit = 64
 
     private enum Entry {
         case image(NSImage)
         case missing
     }
 
+    private let lookup: Lookup
     private var entries: [String: Entry] = [:]
+    /// The keys of the entries, oldest first.
+    private var keys: [String] = []
     private let lock = NSLock()
+
+    /// The cache with the lookup of the system.
+    ///
+    /// The tests use their own lookup, so they never ask the system.
+    init(lookup: Lookup? = nil) {
+        self.lookup = lookup ?? SketchyBarIconImageCache.systemLookup
+    }
 
     /// The image of an icon, when the system has one.
     func image(for icon: SketchyBarIcon) -> NSImage? {
-        let key = icon.cacheKey
-        lock.lock()
-        defer { lock.unlock() }
+        guard icon.needsLookup else { return nil }
 
-        if let entry = entries[key] {
-            switch entry {
+        let key = icon.cacheKey
+
+        lock.lock()
+        let cached = entries[key]
+        lock.unlock()
+
+        if let cached {
+            switch cached {
             case .image(let image): return image
             case .missing: return nil
             }
         }
 
-        let image = Self.resolve(icon)
-        entries[key] = image.map(Entry.image) ?? .missing
+        // The lookup asks the system for the app, so it runs without the
+        // lock.
+        let image = lookup(icon)
+        store(image, for: key)
         return image
     }
 
-    private static func resolve(_ icon: SketchyBarIcon) -> NSImage? {
+    /// Keeps the image of an icon and drops the oldest one when the cache
+    /// is full.
+    private func store(_ image: NSImage?, for key: String) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if entries[key] == nil {
+            keys.append(key)
+        }
+        entries[key] = image.map(Entry.image) ?? .missing
+
+        while keys.count > Self.limit {
+            entries[keys.removeFirst()] = nil
+        }
+    }
+
+    /// The image of an icon, read from the system.
+    private static func systemLookup(_ icon: SketchyBarIcon) -> NSImage? {
         switch icon.kind {
         case .symbol:
             guard let name = icon.symbolName else { return nil }

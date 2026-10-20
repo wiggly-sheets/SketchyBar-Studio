@@ -444,9 +444,12 @@ private struct LuaParser {
 
     private mutating func parseValue(at index: Int, limit: Int, depth: Int) -> ParsedValue {
         guard index < limit else {
+            // The field has no value. The range points at the place where
+            // the value would start, counted in characters.
+            let offset = index < tokens.count ? tokens[index].start : characters.count
             return ParsedValue(
                 kind: .literal(.expression),
-                range: LuaSourceRange(start: index, end: index),
+                range: LuaSourceRange(start: offset, end: offset),
                 text: "",
                 table: nil,
                 endIndex: index

@@ -41,6 +41,16 @@ enum DiffEngine {
         var removedCount: Int { lines.filter { $0.kind == .removed }.count }
     }
 
+    /// What a save would change.
+    ///
+    /// The hunks hold the changed lines. A difference that holds no changed
+    /// line, such as a trailing newline that was added, is held by the note.
+    struct Difference: Equatable {
+        let hunks: [Hunk]
+        /// What changed when no line changed.
+        let note: String?
+    }
+
     /// The diff of two texts, as hunks with context around every change.
     ///
     /// The comparison ignores the line ending, so a text that uses CRLF and
@@ -53,6 +63,20 @@ enum DiffEngine {
         return hunks(from: rows, contextLines: max(0, contextLines))
     }
 
+    /// The difference between two texts.
+    ///
+    /// The lines are compared without the line ending, so a text that uses
+    /// CRLF and the same text that uses LF hold the same lines. The bytes
+    /// are compared as well: a text that does not end with a newline and
+    /// the same text with one are different files, so the difference holds
+    /// a note and the review never says that nothing changed.
+    static func difference(old: String, new: String, contextLines: Int = 3) -> Difference {
+        guard old != new else { return Difference(hunks: [], note: nil) }
+        let hunks = diff(old: old, new: new, contextLines: contextLines)
+        guard hunks.isEmpty else { return Difference(hunks: hunks, note: nil) }
+        return Difference(hunks: [], note: lineEndingNote(old: old, new: new))
+    }
+
     /// A short description of what the hunks change.
     static func summary(for hunks: [Hunk]) -> String {
         let added = hunks.reduce(0) { $0 + $1.addedCount }
@@ -60,6 +84,12 @@ enum DiffEngine {
         let changed = added + removed
         guard changed > 0 else { return "No changes" }
         return "\(changed) \(changed == 1 ? "line" : "lines") changed, \(added) added, \(removed) removed"
+    }
+
+    /// A short description of what the difference changes.
+    static func summary(for difference: Difference) -> String {
+        if let note = difference.note { return note }
+        return summary(for: difference.hunks)
     }
 
     // MARK: - Text
@@ -73,6 +103,16 @@ enum DiffEngine {
         var lines = text.components(separatedBy: "\n")
         if lines.last == "" { lines.removeLast() }
         return lines.map { $0.hasSuffix("\r") ? String($0.dropLast()) : $0 }
+    }
+
+    /// The note for a difference that holds no changed line.
+    ///
+    /// The lines are the same, so the difference is in the line endings.
+    private static func lineEndingNote(old: String, new: String) -> String {
+        if old.hasSuffix("\n") != new.hasSuffix("\n") {
+            return "Only the trailing newline changed."
+        }
+        return "Only the line endings changed."
     }
 
     // MARK: - Rows
