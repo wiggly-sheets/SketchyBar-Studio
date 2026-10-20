@@ -86,6 +86,16 @@ struct CloneItemResult {
     let loaderFailureMessage: String?
 }
 
+/// The result of creating a new config.
+struct NewConfigResult {
+    /// The folder of the new config.
+    let rootURL: URL
+    /// The files that were written.
+    let fileURLs: [URL]
+    /// The entry of the config library.
+    let configID: ConfigWorkspace.ID
+}
+
 /// Where a value lives inside its file.
 private struct ValueLocation {
     let fileID: ConfigFile.ID
@@ -150,12 +160,19 @@ final class SketchyBarStore: ObservableObject {
     private let luaScanner = LuaConfigScanner()
     private let shellScanner = ShellConfigScanner()
     private let activationService = ConfigActivationService()
-    private let configLibraryService = ConfigLibraryService()
+    private let configLibraryService: ConfigLibraryService
     private let configSwitchService = ConfigSwitchService()
     private let profileService = ProfileArchiveService()
     private let backupService = ConfigBackupService()
 
-    init(configRoot initialConfigRoot: URL? = nil, undoStack: UndoStack? = nil) {
+    /// `libraryURL` points the config library at another file, so a test
+    /// never writes the library of the user.
+    init(
+        configRoot initialConfigRoot: URL? = nil,
+        undoStack: UndoStack? = nil,
+        libraryURL: URL? = nil
+    ) {
+        self.configLibraryService = ConfigLibraryService(libraryURL: libraryURL)
         self.undoStack = undoStack ?? UndoStack()
         if let initialConfigRoot {
             let config = ConfigWorkspace.make(name: initialConfigRoot.lastPathComponent, url: initialConfigRoot)
@@ -332,7 +349,12 @@ final class SketchyBarStore: ObservableObject {
         }
     }
 
-    func selectConfig(_ id: ConfigWorkspace.ID) {
+    /// Selects a config.
+    ///
+    /// `keepHistory` leaves the undo steps of the store alone. The undo of
+    /// a new config uses it, so moving away from that config does not take
+    /// the history of the user with it.
+    func selectConfig(_ id: ConfigWorkspace.ID, keepHistory: Bool = false) {
         guard let config = configs.first(where: { $0.id == id }) else { return }
         if id == selectedConfigID {
             // Same entry: keep the sessions and their drafts, just refresh.
@@ -354,8 +376,10 @@ final class SketchyBarStore: ObservableObject {
         sessions.removeAll()
         valueIndex.removeAll()
         // The steps belong to the old root, so they go with its drafts.
-        undoStack.clear()
-        undoRevision &+= 1
+        if !keepHistory {
+            undoStack.clear()
+            undoRevision &+= 1
+        }
         reload()
     }
 
@@ -1155,6 +1179,209 @@ final class SketchyBarStore: ObservableObject {
         return String(filePath.dropFirst(prefix.count))
     }
 
+    // MARK: - New configs
+
+    /// Creates a new config from a template.
+    ///
+    /// The folder of the config is created inside the folder the user
+    /// chose. The files are written through the guarded write of the app,
+    /// so a symlinked file keeps its link. A file that already exists is
+    /// only replaced with `overwrite`, and a replaced file is kept in the
+    /// backup mirror first.
+    ///
+    /// A file that cannot be written takes the files that were written
+    /// before it with it, so a half written config is never left behind.
+    ///
+    /// The config is added to the library and selected, so the new files
+    /// show up right away. The creation is undoable: undoing it removes the
+    /// files and the entry of the library.
+    @discardableResult
+    func createConfig(
+        name: String,
+        in folder: URL,
+        style: ConfigScaffolder.Style,
+        starterItems: [ConfigScaffolder.StarterItem],
+        overwrite: Bool = false
+    ) -> NewConfigResult? {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            statusMessage = "Give the config a name before creating it."
+            return nil
+        }
+        guard !trimmedName.contains("/"), trimmedName != ".", trimmedName != ".." else {
+            statusMessage = "The name of the config may not hold a slash."
+            return nil
+        }
+
+        let rootURL = folder.standardizedFileURL.appendingPathComponent(trimmedName)
+        let files = ConfigScaffolder().fileContents(style: style, starterItems: starterItems)
+        let rootExisted = FileManager.default.fileExists(atPath: rootURL.path)
+
+        guard let written = writeNewConfigFiles(files, rootURL: rootURL, overwrite: overwrite) else {
+            // The write took the files it wrote with it. The folder of the
+            // config only goes when the app created it.
+            if !rootExisted { try? FileManager.default.removeItem(at: rootURL) }
+            return nil
+        }
+
+        let config = ConfigWorkspace.make(name: trimmedName, url: rootURL)
+        configs.append(config)
+        saveConfigLibrary()
+        newConfigPath = rootURL.path
+        selectConfig(config.id)
+        let isSelected = selectedConfigID == config.id
+        statusMessage = createdConfigMessage(trimmedName, fileCount: written.count, isSelected: isSelected)
+
+        registerUndo(UndoAction(
+            title: "Create config \(trimmedName)",
+            // The creation of a config is never merged with another change.
+            coalescingKey: nil,
+            undo: { [weak self] in
+                self?.undoNewConfig(config: config, files: written, rootURL: rootURL, removeRoot: !rootExisted) ?? false
+            },
+            redo: { [weak self] in
+                self?.redoNewConfig(config: config, files: files, rootURL: rootURL) ?? false
+            }
+        ))
+        return NewConfigResult(rootURL: rootURL, fileURLs: written, configID: config.id)
+    }
+
+    /// Writes the files of a new config.
+    ///
+    /// The files are written through the guarded write of the app, so a
+    /// symlinked file keeps its link. A file that already exists is only
+    /// replaced with `overwrite`, and a replaced file is kept in the backup
+    /// mirror first.
+    ///
+    /// A file that cannot be written takes the files that were written
+    /// before it with it, so a half written config is never left behind.
+    /// The method returns the files that were written, or nil when the
+    /// creation was refused.
+    private func writeNewConfigFiles(
+        _ files: [String: String],
+        rootURL: URL,
+        overwrite: Bool
+    ) -> [URL]? {
+        let replacer = SafeFileReplacer()
+        var written: [URL] = []
+
+        for (relativePath, contents) in files.sorted(by: { $0.key < $1.key }) {
+            let url = rootURL.appendingPathComponent(relativePath).standardizedFileURL
+            guard isInside(url, root: rootURL) else {
+                removeNewConfigFiles(written, rootURL: rootURL, removeRoot: false)
+                statusMessage = "Refusing to write outside the config folder: \(url.path)"
+                return nil
+            }
+
+            if replacer.itemExists(at: url) {
+                guard overwrite else {
+                    removeNewConfigFiles(written, rootURL: rootURL, removeRoot: false)
+                    statusMessage = "\(relativePath) already exists. Confirm to replace it."
+                    return nil
+                }
+                do {
+                    // A file that is replaced is kept in the backup mirror
+                    // first.
+                    _ = try backupService.backup(fileURL: url, rootURL: rootURL)
+                } catch {
+                    removeNewConfigFiles(written, rootURL: rootURL, removeRoot: false)
+                    statusMessage = "Could not back up \(relativePath): \(error.localizedDescription)"
+                    return nil
+                }
+            }
+
+            do {
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try replacer.writeAtomicallyPreservingSymlinks(contents, to: url)
+            } catch {
+                removeNewConfigFiles(written, rootURL: rootURL, removeRoot: false)
+                statusMessage = "Could not create \(relativePath): \(error.localizedDescription)"
+                return nil
+            }
+            written.append(url)
+        }
+
+        return written
+    }
+
+    /// Removes the files of a new config and the folders that are empty
+    /// afterwards.
+    ///
+    /// A folder that still holds something is kept, so nothing of the user
+    /// is lost. The folder of the config only goes when the app created it.
+    private func removeNewConfigFiles(_ urls: [URL], rootURL: URL, removeRoot: Bool) {
+        for url in urls.reversed() {
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        let rootPath = rootURL.standardizedFileURL.path
+        let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        var folders: Set<URL> = []
+        for url in urls {
+            var folder = url.deletingLastPathComponent()
+            while folder.standardizedFileURL.path.hasPrefix(rootPrefix) {
+                folders.insert(folder)
+                folder = folder.deletingLastPathComponent()
+            }
+        }
+        for folder in folders.sorted(by: { $0.path.count > $1.path.count }) {
+            // A folder that still holds something is not removed.
+            try? FileManager.default.removeItem(at: folder)
+        }
+
+        if removeRoot {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+    }
+
+    /// Takes a new config back: the files and the entry of the library go.
+    private func undoNewConfig(
+        config: ConfigWorkspace,
+        files: [URL],
+        rootURL: URL,
+        removeRoot: Bool
+    ) -> Bool {
+        removeNewConfigFiles(files, rootURL: rootURL, removeRoot: removeRoot)
+        configs.removeAll { $0.id == config.id }
+        saveConfigLibrary()
+        if selectedConfigID == config.id, let first = configs.first {
+            // The history stays, so the creation can be done again.
+            selectConfig(first.id, keepHistory: true)
+        }
+        statusMessage = "Removed the config \(config.name)."
+        return true
+    }
+
+    /// Creates a new config again after an undo.
+    private func redoNewConfig(
+        config: ConfigWorkspace,
+        files: [String: String],
+        rootURL: URL
+    ) -> Bool {
+        guard let written = writeNewConfigFiles(files, rootURL: rootURL, overwrite: false) else {
+            return false
+        }
+        if !configs.contains(where: { $0.id == config.id }) {
+            configs.append(config)
+            saveConfigLibrary()
+        }
+        // The history stays, so the creation can be taken back again.
+        selectConfig(config.id, keepHistory: true)
+        let isSelected = selectedConfigID == config.id
+        statusMessage = createdConfigMessage(config.name, fileCount: written.count, isSelected: isSelected)
+        return true
+    }
+
+    /// The message of a created config.
+    private func createdConfigMessage(_ name: String, fileCount: Int, isSelected: Bool) -> String {
+        let message = "Created the config \(name) with \(fileCount) files."
+        guard !isSelected else { return message }
+        return message + " It was not selected, because the current config has unsaved edits."
+    }
+
     // MARK: - New item files
 
     /// Creates a new config file with the given contents.
@@ -1396,14 +1623,19 @@ final class SketchyBarStore: ObservableObject {
     }
 
     /// True when the url is inside the config root of the store.
+    private func isInsideConfigRoot(_ url: URL) -> Bool {
+        isInside(url, root: configRoot)
+    }
+
+    /// True when the url is inside the given root.
     ///
     /// Both the url and the root are resolved first, so a symlinked folder
     /// inside the root cannot be used to write outside of it. A symlinked
     /// root is fine: the resolved root is the real folder.
-    private func isInsideConfigRoot(_ url: URL) -> Bool {
-        let root = resolvedPath(of: configRoot)
+    private func isInside(_ url: URL, root: URL) -> Bool {
+        let rootPath = resolvedPath(of: root)
         let path = resolvedPath(of: url)
-        let prefix = root.hasSuffix("/") ? root : root + "/"
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
         return path.hasPrefix(prefix)
     }
 
