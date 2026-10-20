@@ -85,8 +85,8 @@ jobs:
           ## Homebrew
 
           ```bash
-          brew tap wiggly-sheets/sketchybar-studio
-          brew trust wiggly-sheets/sketchybar-studio
+          brew tap wiggly-sheets/homebrew-tap
+          brew trust wiggly-sheets/homebrew-tap
           brew install --cask sketchybar-studio
           ```
 
