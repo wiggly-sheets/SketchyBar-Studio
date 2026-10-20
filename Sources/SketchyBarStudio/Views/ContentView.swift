@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var store: SketchyBarStore
+    @ObservedObject var quickOpen: QuickOpenPresenter
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showsReachability = false
     @State private var showsDiagnostics = false
@@ -86,6 +87,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showsDiagnostics) {
             DiagnosticsView(rootURL: store.configRoot)
+        }
+        .sheet(isPresented: $quickOpen.isPresented) {
+            QuickOpenView(store: store)
         }
     }
 

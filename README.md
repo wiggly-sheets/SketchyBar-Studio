@@ -48,6 +48,7 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 - Supports Lua files alongside `sketchybarrc`, `.sketchybarrc`, and shell-based configurations.
 - Presents a path-first sidebar: `items`, `widgets`, `bar`, `themes`, and `scripts`, including nested folders. Item folders named `left`, `center`, or `right` are recognized directly; otherwise items are grouped from their simple `position` values, including compact Lua item tables.
 - Finds files and editable values with search, and can show only unsaved changes.
+- Searches the whole config, not only the open file. The "Quick Open…" command (Cmd-P) finds a file by its name and an option by its key path or its value, and jumps straight to it.
 - Keeps a read-only, hideable code preview close to the editor. The preview shows the pending draft, so it matches what will be written to disk.
 - Shows the diff of a save before the file is written. The sheet shows the file on disk and the text that would be written, line by line, and the file is only written after the change is accepted.
 - Shows a reachability map of the config: the files the loaders reach, the files no loader loads, the loader lines that point at files that are gone, and the require cycles. The map only reads the config.

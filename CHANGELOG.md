@@ -19,6 +19,7 @@ This project follows a human-readable changelog style and aims to use semantic v
 - Undo and redo for value edits, source edits, discards, loader reorders and activation toggles. The Edit menu names the change that will be undone, and Cmd-Z and Cmd-Shift-Z do the same. Several edits of the same value in one run are one step, so holding a key down does not fill the history. An undo that cannot be applied safely, because the file changed on disk in the meantime, is reported and stays in the history.
 - The bar preview draws the real item: an SF Symbol, the icon of an installed app, a media artwork or the text of the icon, the real label, and the font, the text color and the background color of the config. An SF Symbol that SketchyBar would reject is shown with a warning, and an app that is not installed is shown with a placeholder.
 - A save is reviewed before it is written. The sheet shows the file on disk and the text that would be written, line by line, so a change can be checked before it reaches the file. The file is written only after the change is accepted.
+- A global search finds a file or an option in any file of the config. The new "Quick Open…" command (Cmd-P) opens a sheet that searches the names of the files and the options of every file. Picking a file opens it, and picking an option opens the file and narrows the editor down to that option.
 
 ### Changed
 
