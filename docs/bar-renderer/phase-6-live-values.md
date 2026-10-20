@@ -1,0 +1,116 @@
+# Stage 6 — Live values in the preview
+
+## Goal
+
+The preview shows the values the item scripts produce. The scripts run inside the preview, and the `sketchybar --set` calls they make are captured by a shim, so a preview can never touch the user's live bar.
+
+## Depends on
+
+[Stage 5](phase-5-preview-pane.md) must be merged. The scripts run while the preview pane is visible.
+
+## In scope / Out of scope
+
+**In scope.** The script shim, the patched child environment, the script runner, the timeout, the warnings, and the timer.
+
+**Out of scope.** Pushing to the live bar ([Stage 7](phase-7-live-update-mode.md)), and the exactness work ([Stage 8](phase-8-exactness-and-diff.md)).
+
+## Tasks
+
+1. Write `PreviewScriptShim`: generate the `sh` script into a per-render temporary directory, make it executable, and delete it afterwards.
+2. Patch the vendored `fork_exec` so the child environment has the shim directory first on `PATH` and the sink variable set.
+3. Write `PreviewScriptRunner`: run the item scripts on a timer while the preview pane is visible, read the sink file, and turn the captured `--set` calls into property assignments.
+4. Enforce a timeout per script and kill the child when it overruns. Reuse the pattern of `SketchyBarStore.runSketchyBarReload` (`Stores/SketchyBarStore.swift:1806-1829`), which already runs a process with a timeout.
+5. Surface every call the shim could not handle as a warning in the preview.
+6. Stop the timer when the preview pane is not visible.
+
+### The script shim
+
+Item scripts run through `fork_exec` (`src/bar_item.c:166-168` → `src/misc/helpers.h:454-462` → `execvp("/usr/bin/env", {"env","sh","-c", command, NULL})`). A script normally does `sketchybar --set <alias> label="…"`, which would hit the user's live bar. The preview must never be able to touch the live bar.
+
+The shim is a small `sh` script written into a per-render temporary directory, placed first on `PATH` for the script child process. It captures `--set` calls and writes them to a sink file instead of sending them to the Mach service.
+
+```sh
+#!/bin/sh
+# The sink file comes from the environment, set by the preview runner.
+sink="$SKETCHYBAR_STUDIO_PREVIEW_SINK"
+
+# -m and --message are the message marker. The client strips it before it
+# sends the message (src/sketchybar.c:170-172), and the fork's own space item
+# uses this form (src/bar_item.c:430). Skip it before the alias is read.
+case "$1" in
+  -m|--message)
+    shift
+    ;;
+esac
+
+case "$1" in
+  --set)
+    # Remaining arguments are <alias> <prop>=<value> ...
+    shift
+    alias="$1"; shift
+    for pair in "$@"; do
+      printf '%s\t%s\n' "$alias" "$pair" >> "$sink"
+    done
+    exit 0
+    ;;
+  *)
+    # Not handled. Report it, never forward it to the real binary.
+    printf 'sketchybar: unsupported preview command: %s\n' "$*" >&2
+    exit 64
+    ;;
+esac
+```
+
+Rules the shim must obey:
+
+* It never executes or forwards to the real `sketchybar` binary.
+* A command it does not handle is reported on stderr, surfaced in the preview as a warning, and never sent onward.
+* The sink path comes from the environment, and the environment is set for the script child only.
+* It accepts `--set`, `-m --set` and `--message --set`. The marker is skipped before the alias is read, so a script written `sketchybar -m --set clock label="12:00"` reaches the same path as `sketchybar --set clock label="12:00"`.
+
+The vendored `fork_exec` must be patched to set the child environment (`PATH` with the shim directory first, plus the sink variable). That patch is a modification of the vendored code and must be declared, per GPLv3 §5.
+
+Known limit: the shim intercepts a `sketchybar` that is resolved through `PATH`. A script that calls the binary by absolute path is not intercepted, and such a call reaches the real daemon and does change the live bar. The mitigations are:
+
+* the child `PATH` is scrubbed so it does not contain the directory of the real binary, so a script that resolves `sketchybar` by name cannot reach the real one;
+* the preview warns when a script references an absolute `sketchybar` path, so the user knows the script was not intercepted.
+
+The acceptance criterion of this stage is therefore about the `PATH` case, not about an absolute path.
+
+## Files
+
+**Create.** `Sources/SketchyBarStudio/Services/PreviewScriptShim.swift`, `Sources/SketchyBarStudio/Services/PreviewScriptRunner.swift`, `Tests/SketchyBarStudioTests/PreviewScriptShimTests.swift`, `Tests/SketchyBarStudioTests/PreviewIsolationTests.swift`.
+
+**Modify.** `Sources/CSketchyBar/src/misc/helpers.h` (the `fork_exec` patch), `Sources/CSketchyBar/MODIFICATIONS.md`, `Sources/CSketchyBar/shim/sketchybar_preview_fork.c` if the patch is not fully contained in `helpers.h`. The "no writes to the user's config" safety case goes into the existing `Tests/SketchyBarStudioTests/FileSafetyTests.swift`.
+
+**Do not touch.** `Sources/SketchyBarStudio/Views/**`, `Sources/SketchyBarStudio/Stores/**`, `dist/`, and any file under a user config root.
+
+## Acceptance criteria
+
+* A script that does `sketchybar --set clock label="12:00"` changes the label in the preview.
+* A script that does `sketchybar -m --set clock label="12:00"` changes the label in the preview, the same way the plain `--set` form does.
+* A script that resolves `sketchybar` through `PATH` cannot change the live bar. Checkable with `sketchybar --query clock` before and after: the value is unchanged. These tests need a running daemon; they are skipped when `sketchybar --query bar` fails.
+* A script that sleeps for longer than the timeout is killed, and the preview reports the timeout.
+* A script that calls `sketchybar --something-unsupported` produces a warning and no change to the live bar.
+* The timer stops when the preview pane is hidden.
+* The shim never invokes the real `sketchybar` binary: the child process path resolves to the shim, and the shim exits with 64 for any command it does not handle.
+* The child `PATH` does not contain the directory of the real `sketchybar` binary.
+* The preview warns when a script references an absolute `sketchybar` path.
+* The shim script and its sink file are removed after the render, and the sink file is not written outside the per-render temporary directory.
+
+## Tests
+
+`PreviewScriptShimTests.swift` (unit tests for argument parsing and the sink format, including a test for the `-m --set` form) and `PreviewIsolationTests.swift` (the "no live-bar mutation without consent" test). The shared strategy is in [testing.md](testing.md).
+
+A soak test runs the live-value loop — create a preview, run the item scripts, read the sink, re-render, destroy — a few hundred times, and asserts that the file-descriptor count and the resident memory do not grow. It is the live-value counterpart of the Stage 2 soak test.
+
+## Risks and unknowns
+
+* A preview script reaches the live bar. The user's real bar changes without consent. Mitigation: the PATH shim, the patched child environment, the "no live-bar mutation" test, and the rule that the shim never forwards an unknown command. A script that calls the binary by absolute path is a known limit and is stated.
+* Open question 1: whether a value with a space survives the per-property parse is **UNVERIFIED**. The transport and the `=` split preserve spaces (`src/sketchybar.c:60-108`, `src/misc/helpers.h:260-276`, `src/message.c:468-478`); confirm `bar_item_parse_set_message` and the text parser by experiment before this stage and [Stage 7](phase-7-live-update-mode.md) rely on it.
+* Open question 7: how long does a typical item script take, and what timeout is right? The value is a project decision, informed by measurement.
+* The shim script reads the sink path from `$SKETCHYBAR_STUDIO_PREVIEW_SINK`. The environment variable is the mechanism; the script above already says so in its header comment.
+
+## Done when
+
+A script's `--set` call changes the preview and leaves the live bar untouched, an unsupported command produces a warning, the timeout kills a long script, the timer stops with the pane, the isolation tests pass, and the branch is merged into master with `git merge --no-ff` and master is green.
