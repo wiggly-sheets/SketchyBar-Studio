@@ -30,45 +30,46 @@ struct LuaConfigScanner {
     }
 
     /// The values of the SbarLua items of the file, with the key path of
-    /// every value relative to the table of its item. The ranges of the
+    /// every value relative to the table of its item. The values of the bar
+    /// have their own key paths, such as `bar.position`. The ranges of the
     /// values that are not a single literal are returned as well, so the
     /// plain scan does not match a literal inside them.
     private func structuredValues(fileURL: URL, contents: String) -> (values: [LuaEditableValue], excludedRanges: [LuaSourceRange]) {
         guard contents.contains("sbar") else { return ([], []) }
 
         let items = SbarLuaItemParser.items(in: contents)
-        guard !items.isEmpty else { return ([], []) }
+        let bar = SbarLuaItemParser.bar(in: contents)
+        guard !items.isEmpty || bar != nil else { return ([], []) }
 
         let lineStarts = Self.lineStarts(in: contents)
         var results: [LuaEditableValue] = []
 
-        for item in items {
-            for value in item.values {
-                let lineNumber = Self.lineNumber(for: value.valueStartOffset, lineStarts: lineStarts)
-                let displayValue = SketchyBarValueRules.normalizedDisplayValue(
-                    SketchyBarValueRules.displayValue(for: value.rawValue, keyPath: value.keyPath),
-                    keyPath: value.keyPath
-                )
+        for value in items.flatMap(\.values) + (bar?.values ?? []) {
+            let lineNumber = Self.lineNumber(for: value.valueStartOffset, lineStarts: lineStarts)
+            let displayValue = SketchyBarValueRules.normalizedDisplayValue(
+                SketchyBarValueRules.displayValue(for: value.rawValue, keyPath: value.keyPath),
+                keyPath: value.keyPath
+            )
 
-                results.append(
-                    LuaEditableValue(
-                        id: "\(fileURL.path):\(lineNumber):\(value.keyPath):\(value.valueStartOffset)",
-                        fileURL: fileURL,
-                        keyPath: value.keyPath,
-                        lineNumber: lineNumber,
-                        kind: SketchyBarValueRules.kind(for: value.rawValue, keyPath: value.keyPath),
-                        originalValue: displayValue,
-                        draftValue: displayValue,
-                        suggestedValues: optionCatalog.suggestedValues(for: value.keyPath, currentValue: displayValue),
-                        valueStartOffset: value.valueStartOffset,
-                        valueEndOffset: value.valueEndOffset,
-                        sourceSnapshot: contents
-                    )
+            results.append(
+                LuaEditableValue(
+                    id: "\(fileURL.path):\(lineNumber):\(value.keyPath):\(value.valueStartOffset)",
+                    fileURL: fileURL,
+                    keyPath: value.keyPath,
+                    lineNumber: lineNumber,
+                    kind: SketchyBarValueRules.kind(for: value.rawValue, keyPath: value.keyPath),
+                    originalValue: displayValue,
+                    draftValue: displayValue,
+                    suggestedValues: optionCatalog.suggestedValues(for: value.keyPath, currentValue: displayValue),
+                    valueStartOffset: value.valueStartOffset,
+                    valueEndOffset: value.valueEndOffset,
+                    sourceSnapshot: contents
                 )
-            }
+            )
         }
 
-        return (results, items.flatMap(\.excludedRanges))
+        let excludedRanges = items.flatMap(\.excludedRanges) + (bar?.excludedRanges ?? [])
+        return (results, excludedRanges)
     }
 
     /// The values of the file that the plain scan finds. The values that the

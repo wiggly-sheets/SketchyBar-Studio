@@ -3,6 +3,19 @@ import Foundation
 struct SketchyBarOptionCatalog {
     private let booleanValues = ["true", "false"]
 
+    /// The key path of a value that belongs to the bar, such as
+    /// `bar.position`.
+    ///
+    /// The `bar.` prefix makes the option reference resolve the bar level
+    /// of a property, so the validator, the picker and the option
+    /// reference read the same property. A property that has no `bar.`
+    /// entry falls back to the entry of its leaf.
+    static func barKeyPath(for keyPath: String) -> String {
+        let key = keyPath.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty, !key.hasPrefix("bar.") else { return key }
+        return "bar." + key
+    }
+
     func suggestedValues(for keyPath: String, currentValue: String) -> [String] {
         let key = keyPath.lowercased()
         let leaf = key.split(separator: ".").last.map(String.init) ?? key
@@ -12,10 +25,6 @@ struct SketchyBarOptionCatalog {
         }
 
         if key == "position" {
-            if currentValue == "top" || currentValue == "bottom" {
-                return ["top", "bottom"]
-            }
-
             var values = ["left", "right", "center", "q", "e"]
             if currentValue.hasPrefix("popup.") {
                 values.insert(currentValue, at: 0)
