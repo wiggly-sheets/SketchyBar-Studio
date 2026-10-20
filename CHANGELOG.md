@@ -6,6 +6,8 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-20
+
 ### Added
 
 - SbarLua item tables are now read with their real structure. A value inside a nested table keeps its full path, such as `icon.font.size` or `background.border_color`, instead of a flat `size` or `border_color` that could belong to any part of the item. The values are grouped by the part of the item they belong to, and the option reference shows the entry of the exact key.
