@@ -52,6 +52,7 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 - Shows the diff of a save before the file is written. The sheet shows the file on disk and the text that would be written, line by line, and the file is only written after the change is accepted.
 - Shows a reachability map of the config: the files the loaders reach, the files no loader loads, the loader lines that point at files that are gone, and the require cycles. The map only reads the config.
 - Checks the config for the problems SketchyBar silently ignores: unknown options, values SketchyBar cannot use, duplicate item aliases, missing require targets, orphan files, unbalanced brackets, and item files that declare nothing. The diagnostics sheet names the file and the line of every finding, and clicking a finding reveals the file in Finder. The check only reads the config.
+- Finds the item files of the config that are nearly the same. The duplication finder shows the pairs of files that match, how much they match, and the keys that drifted apart with both values side by side. It only reads the config.
 
 ### Purpose-built editing
 

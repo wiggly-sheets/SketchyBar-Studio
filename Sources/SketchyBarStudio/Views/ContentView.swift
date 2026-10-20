@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var showsReachability = false
     @State private var showsDiagnostics = false
+    @State private var showsDuplicates = false
     @State private var showsAddItem = false
 
     var body: some View {
@@ -87,6 +88,13 @@ struct ContentView: View {
                     Label("Diagnostics", systemImage: "stethoscope")
                 }
                 .help("Check the config for problems SketchyBar ignores")
+
+                Button {
+                    showsDuplicates = true
+                } label: {
+                    Label("Duplicates", systemImage: "square.on.square")
+                }
+                .help("Find item files that are nearly the same")
             }
         }
         .sheet(isPresented: $showsReachability) {
@@ -94,6 +102,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showsDiagnostics) {
             DiagnosticsView(rootURL: store.configRoot)
+        }
+        .sheet(isPresented: $showsDuplicates) {
+            DuplicatesView(rootURL: store.configRoot)
         }
         .sheet(isPresented: $showsAddItem) {
             AddItemWizard(store: store)
