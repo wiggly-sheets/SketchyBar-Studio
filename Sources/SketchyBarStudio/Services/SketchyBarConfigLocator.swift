@@ -47,12 +47,18 @@ struct SketchyBarConfigLocator {
         return urls.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
+    /// True when the path holds a `backups` folder.
+    ///
+    /// The folder is skipped at every depth, so a file in
+    /// `items/backups` is skipped as well. The graph of the config holds
+    /// the same rule, so a backup never shows up in the sidebar.
     private func isBackupDirectory(_ url: URL, rootURL: URL) -> Bool {
         let rootPath = rootURL.standardizedFileURL.path
         let filePath = url.standardizedFileURL.path
         let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
         guard filePath.hasPrefix(prefix) else { return false }
-        return String(filePath.dropFirst(prefix.count)) == "backups"
+        let relativePath = String(filePath.dropFirst(prefix.count))
+        return relativePath.split(separator: "/").contains("backups")
     }
 
     private func relativePath(of url: URL, from rootURL: URL) -> String? {

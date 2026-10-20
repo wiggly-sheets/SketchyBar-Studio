@@ -276,13 +276,13 @@ struct ItemScaffolder {
         switch spec.kind {
         case .text:
             lines.append(
-                "sketchybar --set \(alias) icon=\"\(Self.shellDoubleQuoted(icon))\" label=\"\(Self.shellDoubleQuoted(label))\""
+                "sketchybar --set \(alias) icon=\"\(ShellConfigScanner.escapeLiteral(icon))\" label=\"\(ShellConfigScanner.escapeLiteral(label))\""
             )
         case .script:
             lines.append("sketchybar --set \(alias) label=\"\(Self.shellSubstitution(spec))\"")
         case .appIcon:
             lines.append(
-                "sketchybar --set \(alias) icon=\"\(Self.shellDoubleQuoted(icon))\" label=\"\(Self.shellSubstitution(spec))\""
+                "sketchybar --set \(alias) icon=\"\(ShellConfigScanner.escapeLiteral(icon))\" label=\"\(Self.shellSubstitution(spec))\""
             )
         case .custom:
             break
@@ -292,6 +292,10 @@ struct ItemScaffolder {
     }
 
     /// The command that fills the label of the item.
+    ///
+    /// The command runs inside a command substitution, so the shell puts
+    /// the text of the command in the label. The command is the one of the
+    /// template, so the substitution is deliberate here.
     private static func setCommand(spec: Spec, alias: String) -> String {
         guard let labelCommand = spec.labelCommand else { return "" }
         return "sketchybar --set \(alias) label=\"$(\(labelCommand))\""
@@ -301,6 +305,9 @@ struct ItemScaffolder {
     ///
     /// The command keeps its own quoting: the substitution starts a new
     /// quoting context, so the quotes of the command stay as they are.
+    ///
+    /// Only the command of the template is substituted. The text the user
+    /// typed is escaped, so it never runs.
     private static func shellSubstitution(_ spec: Spec) -> String {
         guard let labelCommand = spec.labelCommand else { return "" }
         return "$(\(labelCommand))"
@@ -331,13 +338,6 @@ struct ItemScaffolder {
     static func luaSingleQuoted(_ value: String) -> String {
         var text = value.replacingOccurrences(of: "\\", with: "\\\\")
         text = text.replacingOccurrences(of: "'", with: "\\'")
-        return text
-    }
-
-    /// A value in a double quoted shell string.
-    static func shellDoubleQuoted(_ value: String) -> String {
-        var text = value.replacingOccurrences(of: "\\", with: "\\\\")
-        text = text.replacingOccurrences(of: "\"", with: "\\\"")
         return text
     }
 }
