@@ -56,10 +56,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct SketchyBarStudioApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = SketchyBarStore()
+    @StateObject private var quickOpen = QuickOpenPresenter()
 
     var body: some Scene {
         WindowGroup("SketchyBar Studio", id: "main") {
-            ContentView(store: store)
+            ContentView(store: store, quickOpen: quickOpen)
                 .frame(minWidth: 960, minHeight: 620)
                 .onAppear { appDelegate.store = store }
         }
@@ -76,6 +77,13 @@ struct SketchyBarStudioApp: App {
                 }
                 .keyboardShortcut("z", modifiers: [.command, .shift])
                 .disabled(!store.canRedo)
+            }
+
+            CommandGroup(after: .newItem) {
+                Button("Quick Open…") {
+                    quickOpen.isPresented = true
+                }
+                .keyboardShortcut("p", modifiers: .command)
             }
 
             CommandGroup(after: .saveItem) {
