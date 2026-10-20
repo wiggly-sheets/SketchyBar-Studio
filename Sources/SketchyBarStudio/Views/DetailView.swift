@@ -47,7 +47,8 @@ struct DetailView: View {
 /// What a save would change, worked out when the review is opened.
 private struct SaveReview {
     let fileName: String
-    let hunks: [DiffEngine.Hunk]
+    let difference: DiffEngine.Difference
+    let notice: String?
     let readError: String?
 }
 
@@ -96,7 +97,8 @@ private struct EditableFileView: View {
             SaveReviewView(
                 fileName: saveReview?.fileName ?? file.displayName,
                 theme: theme,
-                hunks: saveReview?.hunks ?? [],
+                difference: saveReview?.difference ?? DiffEngine.Difference(hunks: [], note: nil),
+                notice: saveReview?.notice,
                 readError: saveReview?.readError,
                 onSave: {
                     isShowingSaveReview = false
@@ -247,7 +249,8 @@ private struct EditableFileView: View {
         guard let review = store.saveReview(for: file) else {
             saveReview = SaveReview(
                 fileName: file.displayName,
-                hunks: [],
+                difference: DiffEngine.Difference(hunks: [], note: nil),
+                notice: nil,
                 readError: store.previewIssue(for: file)
                     ?? store.loadError(for: file)
                     ?? "The changes of this file cannot be read."
@@ -261,7 +264,8 @@ private struct EditableFileView: View {
         }
         saveReview = SaveReview(
             fileName: file.displayName,
-            hunks: DiffEngine.diff(old: review.base, new: review.contents),
+            difference: DiffEngine.difference(old: review.base, new: review.contents),
+            notice: review.notice,
             readError: nil
         )
         isShowingSaveReview = true
