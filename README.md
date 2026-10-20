@@ -112,8 +112,8 @@ SketchyBar Studio preview builds are ad-hoc signed, but not Developer ID signed 
 ### Install with Homebrew
 
 ```bash
-brew tap wiggly-sheets/sketchybar-studio
-brew trust wiggly-sheets/sketchybar-studio
+brew tap wiggly-sheets/homebrew-tap
+brew trust wiggly-sheets/homebrew-tap
 brew install --cask sketchybar-studio
 ```
 
