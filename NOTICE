@@ -1,0 +1,25 @@
+SketchyBar Studio
+Copyright (C) 2026 Wiggly-Sheets
+
+This project will include a modified subset of SketchyBar, the macOS menu bar
+customization tool. The notices of both upstream projects are given here:
+
+  SketchyBar
+  Felix Kratz — https://github.com/FelixKratz/SketchyBar
+
+  SketchyBar, wiggly-sheets fork
+  https://github.com/wiggly-sheets/SketchyBar
+
+The SketchyBar code vendored into this project is modified by this project.
+When that code lands (Stage 1), the upstream licence and copyright notices stay
+with the vendored files in Sources/CSketchyBar/LICENSE.md, and every change made
+to the vendored code is listed in Sources/CSketchyBar/MODIFICATIONS.md.
+
+SketchyBar Studio is free software under the GNU General Public License,
+version 3. See LICENSE for the full text.
+
+The complete corresponding source of every build of SketchyBar Studio,
+including the vendored SketchyBar subset and all changes made to it, is the
+source of this repository:
+
+  https://github.com/wiggly-sheets/SketchyBar-Studio

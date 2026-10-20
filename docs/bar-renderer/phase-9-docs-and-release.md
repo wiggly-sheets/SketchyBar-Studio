@@ -32,14 +32,14 @@ The docs describe what the app now does, and the release notes follow the projec
 
 | Line | Current claim | What changes |
 | --- | --- | --- |
-| `README.md:16` | Licence badge says MIT | GPL-3.0 |
+| `README.md:16` | Licence badge says GPL-3.0 (done in Stage 0) | Unchanged |
 | `README.md:36` | Intro paragraph | May mention the in-app preview |
 | `README.md:62` | "Includes an interactive draft bar preview" | Keep the reordering affordances, point at the new renderer |
 | `README.md:63` | "Draws the bar preview with the real values of the config" | The current mock does not do this; rewrite for the new renderer and state the window-server limits |
 | `README.md:88` | "optionally runs `sketchybar --reload`" | Mention the live-update mode and Restore |
 | `README.md:110` | "ad-hoc signed, but not Developer ID signed" | Unchanged, but the licence of the shipped binary changes |
 | `README.md:200-204` | "Known limits" | Add the renderer limits (alias, space, front app, media artwork, popups) |
-| `README.md:219` | "MIT. See [LICENSE](LICENSE)." | GPL-3.0, plus the source offer (§6.d) |
+| `README.md:219` | "GPL-3.0. See [LICENSE](LICENSE)." (done in Stage 0) | Add the source offer (§6.d) |
 
 ## Files
 

@@ -6,7 +6,7 @@ The vendored SketchyBar subset compiles and links into the app as a SwiftPM C ta
 
 ## Depends on
 
-[Stage 0](phase-0-license.md) must be merged. GPL-3.0 code cannot land in an MIT repository.
+[Stage 0](phase-0-license.md) must be merged. GPL-3.0 code cannot land in a non-GPL repository.
 
 ## In scope / Out of scope
 

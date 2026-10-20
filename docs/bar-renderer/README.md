@@ -1,6 +1,6 @@
 # Bar Renderer — stage documents
 
-Status: **Approved design. NOT STARTED.**
+Status: **Approved design. Stage 0 (the GPL-3.0 switch) merged; Stage 1 is next.**
 Date: 2026-10-20
 Owner: repository owner (sole contributor)
 Audience: orchestrating agents and coding agents picking this work up.
@@ -17,15 +17,15 @@ Reference implementation: `/Users/Zeb/Developer/SketchyBar`, checkout `v2.24.0-5
 | D2 | The in-app render shows live values, with item scripts executed. | A preview with hard-coded labels does not answer "what will my bar look like". Executing the scripts is the only way to get the real values. |
 | D3 | The render must be exact, pixel for pixel. This selects vendoring SketchyBar's C code. | See [Why the plan vendors SketchyBar's C](#why-the-plan-vendors-sketchybars-c). Exactness rules out a Swift re-implementation. |
 | D4 | "Show on the real bar" becomes a user-configurable live-update mode with three settings (`Never`, `On Apply`, `While Editing`) plus an explicit Restore. | Pushing to the real bar is a side effect on the user's running system. It must be opt-in, granular, and reversible. |
-| D5 | The project may switch to GPL-3.0. The owner is the only contributor and wants fully FOSS. | Vendoring SketchyBar's GPL-3.0 code is only possible if the app carries the same licence. The owner accepted this. |
-| D6 | Nothing is implemented yet. These documents are the starting point. | No code exists for the renderer. The stages are the contract for the first agent that starts. |
+| D5 | The project switched to GPL-3.0 (decided by the owner, executed in Stage 0). The owner is the only contributor and wants fully FOSS. | Vendoring SketchyBar's GPL-3.0 code is only possible if the app carries the same licence. The owner accepted this. |
+| D6 | No renderer code exists yet. Stage 0 (the licence switch) is done; the stages are the contract for the first agent that starts. | The renderer is not implemented. Stage 1 vendors the SketchyBar subset. |
 
 ## Why the plan vendors SketchyBar's C
 
 * **Reimplementing the layout in Swift** (roughly 800-1300 lines): the result would be "visually equivalent", not exact, and it would miss defaults inheritance, exotic item types, `q`/`e` positions, dynamic width and `scroll_texts`.
 * **Running a second SketchyBar process and screen-capturing it**: two blockers — the compiled SbarLua module at `~/.local/share/sketchybar_lua/sketchybar.so` hard-codes the Mach bootstrap name `git.felix.sketchybar` (UNVERIFIED-IN-THIS-CHECKOUT: the string is in the installed module, but the module is not part of the `v2.24.0-50-gf23f4f4` checkout, so confirm it with `strings` before relying on it), and a SketchyBar bar is inherently full-display-width (`src/bar.c:437-494`), so inside an app panel it becomes an unreadable ~7pt strip.
 * **Capturing the user's real bar** — rejected as the primary path, kept as a feature: it needs Screen Recording permission, and `SLSCaptureWindowsContentsToRectWithOptions` exists in SketchyBar at `src/window.c:347-378`; screen capture has been blocked on this machine, so that test is treated as unavailable ([testing.md](testing.md)).
-* **Linking a vendored SketchyBar into an MIT app**: GPL-3.0 covered linking into an MIT app would force the whole app to GPLv3; that blocker is gone under D5. "SketchyBar" as a product name is a trademark risk, not a GPL risk: GPLv3 §7(e) carves trademarks out of the licence (`LICENSE.md:379-380`), so using the name descriptively to talk about the file format is fine. The app already carries the name in its own product name, which is a question for the owner, not a GPL question; [Stage 0](phase-0-license.md) states it. SbarLua is **not** vendored; its licence could not be determined.
+* **Linking a vendored SketchyBar into a non-GPL app**: GPL-3.0 covered linking into an MIT app would force the whole app to GPLv3; that blocker is gone under D5, and Stage 0 switched the repository to GPL-3.0. "SketchyBar" as a product name is a trademark risk, not a GPL risk: GPLv3 §7(e) carves trademarks out of the licence (`LICENSE.md:379-380`), so using the name descriptively to talk about the file format is fine. The app already carries the name in its own product name; the owner decided that question on 2026-10-20 — the product name stays "SketchyBar Studio" and the README carries one non-affiliation line — so the question is closed. [Stage 0](phase-0-license.md#trademark-note) records the decision. SbarLua is **not** vendored; its licence could not be determined.
 * The live-update mode of D4 is **retained as an optional feature**, and is [Stage 7](phase-7-live-update-mode.md).
 
 ## Scope
@@ -168,7 +168,9 @@ item scripts --(fork_exec, PATH shim)--> sink file --> property assignments --> 
 
 ## Licensing
 
-The repository is MIT today. Vendoring SketchyBar's GPL-3.0 code means the whole app must be GPL-3.0. The owner accepted that under D5. Stage 0 makes the switch before any GPL code lands. The full requirements — corresponding source, notices, declaration of modification, installation information, attribution of both upstream projects, the trademark question, and the SbarLua exclusion — are in [phase-0-license.md](phase-0-license.md).
+The repository is GPL-3.0. Stage 0 switched the licence before any GPL code landed. Vendoring SketchyBar's GPL-3.0 code means the whole app must be GPL-3.0, and the owner accepted that under D5. The full requirements — corresponding source, notices, declaration of modification, installation information, attribution of both upstream projects, and the SbarLua exclusion — are in [phase-0-license.md](phase-0-license.md).
+
+**Trademark decision — taken 2026-10-20 by the owner.** GPLv3 §7(e) withholds trademark rights, so the licence switch settled the COPYING question only, not the name question. Using "SketchyBar" descriptively — for the config format, the config directory, the CLI and the daemon — is fine. The product name stays "SketchyBar Studio", and the README carries one non-affiliation line. The owner owns the wiggly-sheets fork that Stage 1 vendors from, so only upstream Felix Kratz's mark is not the owner's. The owner decides, and the question is closed: no further trademark work is planned. The reasoning and the decision are in [phase-0-license.md](phase-0-license.md#trademark-note).
 
 ## Definition of done
 
@@ -192,7 +194,7 @@ The feature is done when all of the following hold.
 | The vendored subset does not compile after the window-server files are stripped. | Stage 1 fails; the whole plan stops. | Stage 1 is an explicit gate with its own fallback (static library built by a script). The compile happens in Stage 1, before any other stage. | [Stage 1](phase-1-vendor-core.md) |
 | `src/symbol.m` (Objective-C) does not fit a SwiftPM C target. | SF Symbols cannot be drawn, so the render is not exact. | Verify in Stage 1, first. Fallback: build the subset as a static library and link it with `.unsafeFlags`. | [Stage 1](phase-1-vendor-core.md) |
 | Private frameworks leak back into the link. | The app would need the same private entitlements as SketchyBar, and the bundle would break. | Acceptance criterion in Stage 1: `otool -L` shows no SkyLight, DisplayServices or MediaRemote. | [Stage 1](phase-1-vendor-core.md) |
-| The app is MIT today and the vendored code is GPL-3.0. | The app cannot ship as MIT. | Stage 0 switches the licence before any GPL code lands. The decision is already taken by the owner. | [Stage 0](phase-0-license.md) |
+| The app was MIT and the vendored code is GPL-3.0. | The app cannot ship as MIT. | Stage 0 switched the licence before any GPL code landed. The decision is already taken by the owner. | [Stage 0](phase-0-license.md) |
 | The renderer is not exact for the item types the app cannot produce. | The user sees a preview that differs from the real bar. | The window-server limits are stated in the app and in the README, and the differential test only claims the geometry it can check. | [Stage 8](phase-8-exactness-and-diff.md) |
 | A preview script reaches the live bar. | The user's real bar changes without consent. | The PATH shim, the patched child environment, the "no live-bar mutation" test, and the rule that the shim never forwards an unknown command. A script that calls the binary by absolute path is a known limit; the child `PATH` is scrubbed so it cannot reach the real binary, and the preview warns when a script references an absolute `sketchybar` path. | [Stage 6](phase-6-live-values.md) |
 | Whether a value with a space survives the per-property parse is **UNVERIFIED**. | Live values with spaces are wrong, or a push fails. | Open question 1. The transport and the `=` split preserve spaces; confirm `bar_item_parse_set_message` and the text parser by experiment before the live-values and live-update stages rely on it. | [Stage 6](phase-6-live-values.md) |
@@ -217,3 +219,5 @@ The `icon` prefix semantics are a separate question to confirm, written up in [r
 ## Start here
 
 Read this file, then read the stage file you were given, then execute that stage. Nothing else needs to be read first.
+
+Status: Stage 0 (the GPL-3.0 switch) is done — this document lands with its merge. The next stage to run is Stage 1 — see `docs/bar-renderer/phase-1-vendor-core.md`.

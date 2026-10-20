@@ -13,7 +13,7 @@
 
   <p>
     <a href="https://github.com/wiggly-sheets/SketchyBar-Studio/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/wiggly-sheets/SketchyBar-Studio/ci.yml?branch=master&label=build" alt="Build status" /></a>
-    <a href="LICENSE"><img src="https://img.shields.io/github/license/wiggly-sheets/SketchyBar-Studio?color=blue" alt="License: MIT" /></a>
+    <a href="https://www.gnu.org/licenses/gpl-3.0.html"><img src="https://img.shields.io/badge/License-GPL%20v3-blue.svg" alt="License: GPL-3.0" /></a>
     <a href="https://github.com/wiggly-sheets/SketchyBar-Studio/releases/latest"><img src="https://img.shields.io/github/v/release/wiggly-sheets/SketchyBar-Studio?label=latest&color=red" alt="Latest release" /></a>
   </p>
 
@@ -216,4 +216,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development and pull-request guidance
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+GPL-3.0. See [LICENSE](LICENSE).
+
+SketchyBar Studio is not affiliated with or endorsed by the SketchyBar project.
