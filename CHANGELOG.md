@@ -66,6 +66,13 @@ This project follows a human-readable changelog style and aims to use semantic v
 - Adding a config folder that does not exist is reported instead of creating a broken library entry.
 - The last used config folder is restored on launch.
 - Editing a value that no longer exists reports it instead of dropping the keystroke.
+- The code preview no longer writes the offsets of an older version of the file into the text the app holds. A file that changed on disk is read again, and a preview that cannot be built is reported instead of ending the app.
+- Undoing the creation of a file no longer takes the loader line away when the file changed on disk. The content of the file is compared first, so a refused undo changes nothing.
+- Undoing the replacement of a file puts the original bytes back, even when the file is not plain UTF-8 text. A file whose bytes cannot be read is never replaced, because such a change could not be undone.
+- A step of the history whose value is gone is dropped instead of blocking every later undo. The same holds for the redo history.
+- A folder of the config that points outside the config folder is refused when a file is created in it. A config folder that is itself a symlink still works.
+- A loader file with an unsaved source draft is not changed when a new loader line is added, because that draft could never be saved afterwards.
+- The save review compares the change with the text the app holds, so the edit of another program is not shown as being reverted. A file that changed on disk gets a notice.
 
 - Editing a symlinked config file keeps the symlink: the write lands on the real file instead of replacing the link with a regular file.
 - Backups of symlinked files are regular files with the original content, and a failed copy keeps the previous backup instead of emptying the slot.

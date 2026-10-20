@@ -93,6 +93,16 @@ private struct ValueLocation {
     let position: Int
 }
 
+/// What a save would write, with the text it is compared against.
+struct SaveReviewPreview {
+    /// The text the app holds, which is the base of the write.
+    let base: String
+    /// The text the save would write.
+    let contents: String
+    /// The notice when the file changed on disk since it was loaded.
+    let notice: String?
+}
+
 @MainActor
 final class SketchyBarStore: ObservableObject {
     @Published var configRoot: URL
@@ -234,14 +244,23 @@ final class SketchyBarStore: ObservableObject {
 
     /// Undoes the newest edit. The edit itself reports why it was refused.
     func undo() {
+        reportDeadStep(undoStack.undoEntries.last?.action)
         guard undoStack.undo() else { return }
         undoRevision &+= 1
     }
 
     /// Does the newest undone edit again.
     func redo() {
+        reportDeadStep(undoStack.redoEntries.last?.action)
         guard undoStack.redo() else { return }
         undoRevision &+= 1
+    }
+
+    /// Tells the user that a step was dropped, because the value it
+    /// belongs to is gone.
+    private func reportDeadStep(_ action: UndoAction?) {
+        guard let action, action.isDead() else { return }
+        statusMessage = "The change cannot be undone any more, because the value it belongs to is gone. The step was dropped from the history."
     }
 
     var selectedHasUnsavedChanges: Bool {
@@ -411,16 +430,29 @@ final class SketchyBarStore: ObservableObject {
             coalescingKey: "value:\(location.fileID):\(valueID)",
             undo: { [weak self] in
                 guard let self else { return false }
-                guard self.applyDraft(valueID: valueID, draftValue: previous) else {
-                    self.statusMessage = "Undo failed: \(self.statusMessage)"
-                    return false
+                guard self.valueIsGone(valueID) else {
+                    guard self.applyDraft(valueID: valueID, draftValue: previous) else {
+                        self.statusMessage = "Undo failed: \(self.statusMessage)"
+                        return false
+                    }
+                    return true
                 }
+                // The value is gone, so there is nothing to undo.
+                self.statusMessage = "The value no longer exists, so the edit was skipped."
                 return true
             },
             redo: { [weak self] in
                 guard let self else { return false }
-                return self.applyDraft(valueID: valueID, draftValue: draftValue)
-            }
+                guard self.valueIsGone(valueID) else {
+                    return self.applyDraft(valueID: valueID, draftValue: draftValue)
+                }
+                // The value is gone, so there is nothing to redo.
+                self.statusMessage = "The value no longer exists, so the edit was skipped."
+                return true
+            },
+            // A step whose value is gone is dropped, so it cannot block the
+            // history for good.
+            isDead: { [weak self] in self?.valueIsGone(valueID) ?? true }
         ))
     }
 
@@ -462,6 +494,21 @@ final class SketchyBarStore: ObservableObject {
               session.file.values.indices.contains(location.position),
               session.file.values[location.position].id == location.valueID else { return nil }
         return session.file.values[location.position]
+    }
+
+    /// True when the value of an undo step is gone from the file.
+    ///
+    /// Such a step has nothing left to do, so it must not block the
+    /// history.
+    private func valueIsGone(_ valueID: LuaEditableValue.ID) -> Bool {
+        guard let location = valueIndex[valueID] else { return true }
+        return value(at: location) == nil
+    }
+
+    /// True when the file of an undo step is gone, so the step has nothing
+    /// left to do.
+    private func sourceIsGone(_ fileID: ConfigFile.ID) -> Bool {
+        sessions[fileID] == nil
     }
 
     /// Adds an undo step for a change the user made.
@@ -614,9 +661,15 @@ final class SketchyBarStore: ObservableObject {
             return
         }
         guard var session = sessions[file.id] else { return }
+        let loaded = session.savedContents
         if session.draftContents == nil { session.loadRawDraft() }
-        sessions[file.id] = session
+        // The values are read again, so their offsets belong to the text the
+        // app writes with.
+        store(session: rescanValues(in: session))
         sourceDraftRevision &+= 1
+        if loaded != session.savedContents {
+            statusMessage = "\(file.displayName) changed on disk. It was read again, so the preview shows the file as it is now."
+        }
     }
 
     func canEditSource(for file: ConfigFile) -> Bool {
@@ -633,16 +686,79 @@ final class SketchyBarStore: ObservableObject {
     /// The contents the file would have with the pending drafts applied: the
     /// raw source draft when there is one, otherwise the saved contents with
     /// the structured drafts applied.
+    ///
+    /// The result is nil when the drafts cannot be applied to the text the
+    /// app holds. That happens when the file changed on disk after the
+    /// values were scanned, because the offsets of a value belong to the
+    /// text it was scanned from.
     func effectiveContents(for file: ConfigFile) -> String? {
         guard let session = sessions[file.id] else { return nil }
         if session.hasRawDraft { return session.sourceContents }
         guard session.hasStructuredDraft else { return session.savedContents }
+        guard Self.draftsFitBase(session.file.values, base: session.savedContents) else {
+            reportPreviewIssue(for: file)
+            return nil
+        }
         switch file.kind {
         case .lua:
             return luaScanner.updatedContents(values: session.file.values, originalContents: session.savedContents)
         case .shell, .sketchybarRC:
             return shellScanner.updatedContents(values: session.file.values, originalContents: session.savedContents)
         }
+    }
+
+    /// True when the edited values of a file can be written into the text
+    /// the app holds.
+    ///
+    /// The offsets of a value belong to the text it was scanned from, so
+    /// they may only be used on that text.
+    static func draftsFitBase(_ values: [LuaEditableValue], base: String) -> Bool {
+        for value in values where value.draftValue != value.originalValue && !value.isMissingFromFile {
+            guard value.sourceSnapshot == base,
+                  value.valueStartOffset >= 0,
+                  value.valueEndOffset >= value.valueStartOffset,
+                  value.valueStartOffset <= base.count,
+                  value.valueEndOffset <= base.count else { return false }
+        }
+        return true
+    }
+
+    /// The reason the preview of a file cannot be shown, when it cannot.
+    func previewIssue(for file: ConfigFile) -> String? {
+        guard let session = sessions[file.id] else { return nil }
+        guard !session.hasRawDraft, session.hasStructuredDraft else { return nil }
+        guard Self.draftsFitBase(session.file.values, base: session.savedContents) else {
+            return "\(file.displayName) changed on disk, so the preview cannot be shown. Reload the config first."
+        }
+        return nil
+    }
+
+    /// Tells the user that the preview of a file cannot be shown.
+    ///
+    /// The message is set outside the view update, so the view is not
+    /// redrawn while it draws.
+    private func reportPreviewIssue(for file: ConfigFile) {
+        guard let message = previewIssue(for: file), statusMessage != message else { return }
+        Task { [weak self] in
+            guard let self, self.statusMessage != message else { return }
+            self.statusMessage = message
+        }
+    }
+
+    /// What a save would write, with the text it is compared against.
+    ///
+    /// The base is the text the app holds, not the text on disk, so the
+    /// review shows the change the write really makes. A file that changed
+    /// on disk gets a notice, because the save will be refused.
+    func saveReview(for file: ConfigFile) -> SaveReviewPreview? {
+        guard let session = sessions[file.id], session.loadError == nil else { return nil }
+        guard let contents = effectiveContents(for: file) else { return nil }
+        let base = session.savedContents
+        let disk = try? String(contentsOf: file.url, encoding: .utf8)
+        let notice = disk != nil && disk != base
+            ? "\(file.displayName) changed on disk since it was loaded. Reload it before saving; the diff below shows the change against the loaded text."
+            : nil
+        return SaveReviewPreview(base: base, contents: contents, notice: notice)
     }
 
     /// The read error of a file, if it could not be loaded. Such a file is
@@ -656,27 +772,40 @@ final class SketchyBarStore: ObservableObject {
         }
         guard var session = sessions[file.id] else { return }
         let previous = session.sourceContents
+        let base = session.savedContents
         session.updateSourceContents(contents)
-        sessions[file.id] = session
+        // The values are read again when the text the app writes with
+        // changed, so their offsets belong to that text.
+        if base != session.savedContents {
+            session = rescanValues(in: session)
+        }
+        store(session: session)
         sourceDraftRevision &+= 1
         registerUndo(UndoAction(
             title: "Edit source of \(file.displayName)",
             coalescingKey: "source:\(file.id)",
             undo: { [weak self] in self?.applySourceContents(previous, for: file.id) ?? false },
-            redo: { [weak self] in self?.applySourceContents(contents, for: file.id) ?? false }
+            redo: { [weak self] in self?.applySourceContents(contents, for: file.id) ?? false },
+            // A step whose file is gone is dropped, so it cannot block the
+            // history for good.
+            isDead: { [weak self] in self?.sourceIsGone(file.id) ?? true }
         ))
     }
 
     /// Writes the source draft of a file without adding an undo step.
     @discardableResult
     private func applySourceContents(_ contents: String, for fileID: ConfigFile.ID) -> Bool {
-        guard var session = sessions[fileID] else { return false }
+        guard var session = sessions[fileID] else {
+            // The file is gone, so there is nothing to restore.
+            statusMessage = "The file is gone, so the source edit was skipped."
+            return true
+        }
         guard !session.file.hasUnsavedChanges else {
             statusMessage = "Save or discard control edits before changing this file's source."
             return false
         }
         session.updateSourceContents(contents)
-        sessions[fileID] = session
+        store(session: rescanValues(in: session))
         sourceDraftRevision &+= 1
         return true
     }
@@ -685,14 +814,17 @@ final class SketchyBarStore: ObservableObject {
         guard var session = sessions[file.id] else { return }
         let previous = session.sourceContents
         session.discardSourceChanges()
-        sessions[file.id] = session
+        store(session: rescanValues(in: session))
         sourceDraftRevision &+= 1
         if session.loadError == nil { statusMessage = "Reverted source edits for \(file.displayName)." }
         registerUndo(UndoAction(
             title: "Revert source of \(file.displayName)",
             coalescingKey: nil,
             undo: { [weak self] in self?.applySourceContents(previous, for: file.id) ?? false },
-            redo: { [weak self] in self?.applyDiscardSourceChanges(for: file.id) ?? false }
+            redo: { [weak self] in self?.applyDiscardSourceChanges(for: file.id) ?? false },
+            // A step whose file is gone is dropped, so it cannot block the
+            // history for good.
+            isDead: { [weak self] in self?.sourceIsGone(file.id) ?? true }
         ))
     }
 
@@ -700,9 +832,13 @@ final class SketchyBarStore: ObservableObject {
     /// step.
     @discardableResult
     private func applyDiscardSourceChanges(for fileID: ConfigFile.ID) -> Bool {
-        guard var session = sessions[fileID] else { return false }
+        guard var session = sessions[fileID] else {
+            // The file is gone, so there is nothing to discard.
+            statusMessage = "The file is gone, so the source edit was skipped."
+            return true
+        }
         session.discardSourceChanges()
-        sessions[fileID] = session
+        store(session: rescanValues(in: session))
         sourceDraftRevision &+= 1
         return true
     }
@@ -1047,9 +1183,17 @@ final class SketchyBarStore: ObservableObject {
             return false
         }
 
-        var previousContents: String?
+        var previousBytes: Data?
         if existed {
-            previousContents = try? String(contentsOf: url, encoding: .utf8)
+            // The bytes of the file that is replaced are kept, so the undo
+            // can put the file back exactly as it was. A file whose bytes
+            // cannot be read is never replaced, because such a change
+            // could never be undone.
+            guard let bytes = try? Data(contentsOf: url) else {
+                statusMessage = "Could not read \(url.lastPathComponent), so it is not replaced."
+                return false
+            }
+            previousBytes = bytes
             do {
                 // A file that is replaced is kept in the backup mirror first.
                 _ = try backupService.backup(fileURL: url, rootURL: configRoot)
@@ -1082,7 +1226,7 @@ final class SketchyBarStore: ObservableObject {
             // never merged.
             coalescingKey: nil,
             undo: { [weak self] in
-                self?.removeCreatedItemFile(at: url, contents: contents, previousContents: previousContents) ?? false
+                self?.removeCreatedItemFile(at: url, contents: contents, previousBytes: previousBytes) ?? false
             },
             redo: { [weak self] in self?.writeItemFile(contents: contents, at: url) ?? false }
         ))
@@ -1091,9 +1235,22 @@ final class SketchyBarStore: ObservableObject {
 
     /// Removes a file the app created, when it still holds the text the app
     /// wrote. A file that existed before the creation is put back with its
-    /// old text.
+    /// old bytes.
+    ///
+    /// The content of the file is read and compared first, so a file that
+    /// changed on disk is refused before anything is changed.
     @discardableResult
-    func removeCreatedItemFile(at url: URL, contents: String, previousContents: String? = nil) -> Bool {
+    func removeCreatedItemFile(at url: URL, contents: String, previousBytes: Data? = nil) -> Bool {
+        let current = try? Data(contentsOf: url)
+        if let current {
+            // The file is there, so it must still hold the text the app
+            // wrote.
+            guard let text = String(data: current, encoding: .utf8), text == contents else {
+                statusMessage = "Undo failed: \(url.lastPathComponent) changed on disk and was not removed."
+                return false
+            }
+        }
+
         // The loader line of the item goes with the file.
         let key = url.standardizedFileURL.path
         if let record = loaderLineRecords[key] {
@@ -1101,19 +1258,17 @@ final class SketchyBarStore: ObservableObject {
             loaderLineRecords.removeValue(forKey: key)
         }
 
-        guard let current = try? String(contentsOf: url, encoding: .utf8) else {
+        guard current != nil else {
             // The file is gone already.
             reload(preservingDraftsExcept: [])
             return true
         }
-        guard current == contents else {
-            statusMessage = "Undo failed: \(url.lastPathComponent) changed on disk and was not removed."
-            return false
-        }
 
         do {
-            if let previousContents {
-                try SafeFileReplacer().writeAtomicallyPreservingSymlinks(previousContents, to: url)
+            if let previousBytes {
+                // The bytes of the file that was replaced are put back.
+                let target = SafeFileReplacer().resolvedFileURL(for: url)
+                try previousBytes.write(to: target, options: .atomic)
             } else {
                 try FileManager.default.removeItem(at: url)
             }
@@ -1133,8 +1288,12 @@ final class SketchyBarStore: ObservableObject {
     /// the file is read again before the write, a backup is made, and a
     /// symlinked file keeps its link. The change is undoable, and the undo
     /// puts the loader file back byte for byte.
+    ///
+    /// A loader file with an unsaved source draft is refused, because the
+    /// draft could never be saved after the loader changed.
     @discardableResult
     func insertLoaderLine(_ line: String, into entrypointURL: URL, forItemFile itemFileURL: URL? = nil) -> Bool {
+        guard canMutateLoader(at: entrypointURL) else { return false }
         do {
             let change = try activationService.insertLoaderLine(line, into: entrypointURL, rootURL: configRoot)
             let record = LoaderLineRecord(change: change, line: line)
@@ -1237,20 +1396,35 @@ final class SketchyBarStore: ObservableObject {
     }
 
     /// True when the url is inside the config root of the store.
+    ///
+    /// Both the url and the root are resolved first, so a symlinked folder
+    /// inside the root cannot be used to write outside of it. A symlinked
+    /// root is fine: the resolved root is the real folder.
     private func isInsideConfigRoot(_ url: URL) -> Bool {
-        let roots = [
-            configRoot.standardizedFileURL.path,
-            configRoot.resolvingSymlinksInPath().standardizedFileURL.path
-        ]
-        let paths = [
-            url.standardizedFileURL.path,
-            url.resolvingSymlinksInPath().standardizedFileURL.path
-        ]
-        for root in roots {
-            let prefix = root.hasSuffix("/") ? root : root + "/"
-            if paths.contains(where: { $0.hasPrefix(prefix) }) { return true }
+        let root = resolvedPath(of: configRoot)
+        let path = resolvedPath(of: url)
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        return path.hasPrefix(prefix)
+    }
+
+    /// The path of a url with every symlink in it resolved.
+    ///
+    /// A path that does not exist yet is resolved as far as it exists, so
+    /// the folders that lead to it are resolved too. Without that, a
+    /// symlinked folder inside the config root would look like a folder of
+    /// the root.
+    private func resolvedPath(of url: URL) -> String {
+        var path = url.standardizedFileURL.path
+        var rest: [String] = []
+        while path != "/", !path.isEmpty {
+            if FileManager.default.fileExists(atPath: path) {
+                let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+                return ([resolved] + rest).joined(separator: "/")
+            }
+            rest.insert((path as NSString).lastPathComponent, at: 0)
+            path = (path as NSString).deletingLastPathComponent
         }
-        return false
+        return url.standardizedFileURL.path
     }
 
     func saveProfile() {
@@ -1422,6 +1596,41 @@ final class SketchyBarStore: ObservableObject {
             : "sketchybar --reload exited with code \(process.terminationStatus)."
     }
 
+    /// Reads the values of a file again, so their offsets belong to the
+    /// text the app writes with.
+    ///
+    /// A draft that cannot be matched to a value of the new text is kept,
+    /// so no work is lost.
+    private func rescanValues(in session: DocumentSession) -> DocumentSession {
+        var session = session
+        let values: [LuaEditableValue]
+        switch session.file.kind {
+        case .lua:
+            values = luaScanner.scan(fileURL: session.file.url, contents: session.savedContents)
+        case .shell, .sketchybarRC:
+            values = shellScanner.scan(fileURL: session.file.url, contents: session.savedContents)
+        }
+        let scanned = ConfigFile(
+            url: session.file.url,
+            rootURL: session.file.rootURL,
+            kind: session.file.kind,
+            values: values,
+            activationReference: session.file.activationReference
+        )
+        let wasMissing = session.file.isMissingFromDisk
+        _ = session.merge(from: scanned)
+        session.file.isMissingFromDisk = wasMissing
+        return session
+    }
+
+    /// Puts a session back into the store and keeps the files and the value
+    /// index in step with it.
+    private func store(session: DocumentSession) {
+        sessions[session.file.id] = session
+        syncFiles()
+        rebuildValueIndex()
+    }
+
     private func syncFiles() {
         let orderedIDs = files.map(\.id)
         let orderedIDSet = Set(orderedIDs)
@@ -1574,12 +1783,26 @@ final class SketchyBarStore: ObservableObject {
     }
 
     private func canMutateLoader(for file: ConfigFile) -> Bool {
-        guard let entrypointID = file.activationReference?.entrypointURL.path else { return true }
-        guard sessions[entrypointID]?.hasRawDraft != true else {
-            statusMessage = "Save or discard the source draft for \(URL(fileURLWithPath: entrypointID).lastPathComponent) before changing loader activation."
+        guard let entrypointURL = file.activationReference?.entrypointURL else { return true }
+        return canMutateLoader(at: entrypointURL)
+    }
+
+    /// True when the loader file can be changed.
+    ///
+    /// A loader file with an unsaved source draft is refused, because the
+    /// draft could never be saved after the loader changed.
+    private func canMutateLoader(at entrypointURL: URL) -> Bool {
+        guard session(forFileAt: entrypointURL)?.hasRawDraft != true else {
+            statusMessage = "Save or discard the source draft for \(entrypointURL.lastPathComponent) before changing the loader."
             return false
         }
         return true
+    }
+
+    /// The session of a file, found by its path.
+    private func session(forFileAt url: URL) -> DocumentSession? {
+        if let session = sessions[url.path] { return session }
+        return sessions[url.standardizedFileURL.path]
     }
 
     private func saveConfigLibrary() {

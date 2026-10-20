@@ -49,7 +49,7 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 - Presents a path-first sidebar: `items`, `widgets`, `bar`, `themes`, and `scripts`, including nested folders. Item folders named `left`, `center`, or `right` are recognized directly; otherwise items are grouped from their simple `position` values, including compact Lua item tables.
 - Finds files and editable values with search, and can show only unsaved changes.
 - Keeps a read-only, hideable code preview close to the editor. The preview shows the pending draft, so it matches what will be written to disk.
-- Shows the diff of a save before the file is written. The sheet shows the file on disk and the text that would be written, line by line, and the file is only written after the change is accepted.
+- Shows the diff of a save before the file is written. The sheet shows the text that would be written against the text the app holds, line by line, and the file is only written after the change is accepted. A file that changed on disk in the meantime gets a notice instead of a misleading diff.
 - Shows a reachability map of the config: the files the loaders reach, the files no loader loads, the loader lines that point at files that are gone, and the require cycles. The map only reads the config.
 - Checks the config for the problems SketchyBar silently ignores: unknown options, values SketchyBar cannot use, duplicate item aliases, missing require targets, orphan files, unbalanced brackets, and item files that declare nothing. The diagnostics sheet names the file and the line of every finding, and clicking a finding reveals the file in Finder. The check only reads the config.
 - Finds the item files of the config that are nearly the same. The duplication finder shows the pairs of files that match, how much they match, and the keys that drifted apart with both values side by side. It only reads the config.
@@ -68,7 +68,7 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 - Normalizes boolean-style values to `true` and `false`, while preserving SketchyBar-specific choices such as `updates = on/off/when_shown`.
 - Creates new bar items from a template: the "Add Item" toolbar button opens a wizard with ready made items such as clock, battery, volume, Wi-Fi, media, space and front app. The wizard shows the file it is about to write, writes it in the folder you choose, and adds the matching `require(...)` line to the loader file. Both steps can be undone.
 - Copies an existing item: the context menu of a file in the sidebar opens "Clone Item…", which copies the file with a new name and a new alias. Only the alias of the item changes, the copy lands in the folder of the source, and the matching `require(...)` line is added to the loader file.
-- Undoes and redoes value edits, source edits, discards, loader reorders and activation toggles with Cmd-Z and Cmd-Shift-Z. The Edit menu names the change that will be undone.
+- Undoes and redoes value edits, source edits, discards, loader reorders and activation toggles with Cmd-Z and Cmd-Shift-Z. The Edit menu names the change that will be undone. A step whose value is gone is dropped instead of blocking every later undo.
 
 ### Activation and ordering
 
@@ -146,11 +146,13 @@ SketchyBar Studio is deliberately conservative about config changes.
 | Restores profiles without losing the `backups/` folder | The backup mirror of your config root is still there after a restore. |
 | Edits simple scalar assignments | Complex Lua tables and computed values are not silently rewritten. |
 | Follows folders and symlinks | A config stored in a dotfiles repository remains in place. |
+| Refuses a folder that points outside the config | A file is never written through a symlinked folder that leads out of the config folder. |
 | Changes loader order only when references are clear | Unusual or complex loader logic is not inferred or rewritten. |
 | Keeps unsaved edits in memory and asks before quitting | Quitting with unsaved edits offers Save All, Discard, or Cancel instead of dropping them. |
 | Keeps drafts when a file changes on disk | A draft follows its value even when lines move, and it is reported when the value is gone. |
 | Never moves a draft to another value | An edit stays on the value it was made on. When that cannot be proven, the draft is reported instead of written to another item. |
 | Says what it could not save | A file that is missing from disk is named in the status message, and its draft stays in memory until the file is back. |
+| Puts the original bytes back when an edit is undone | Undoing the replacement of a file restores the file exactly as it was, even when it is not plain UTF-8 text. |
 
 You can use the GUI for routine changes and keep the code preview open whenever you want to verify the underlying configuration.
 
