@@ -72,6 +72,20 @@ private struct LoaderLineRecord {
     let line: String
 }
 
+/// The result of a clone.
+struct CloneItemResult {
+    /// The file that was written.
+    let fileURL: URL
+    /// The text that was written.
+    let contents: String
+    /// The loader file that was changed.
+    let loaderURL: URL?
+    /// True when the loader line was added.
+    let didAddLoaderLine: Bool
+    /// Why the loader line was not added.
+    let loaderFailureMessage: String?
+}
+
 /// Where a value lives inside its file.
 private struct ValueLocation {
     let fileID: ConfigFile.ID
@@ -891,6 +905,120 @@ final class SketchyBarStore: ObservableObject {
         return true
     }
 
+    // MARK: - Clone item
+
+    /// Copies an item file with a new name and a new alias.
+    ///
+    /// The copy is written through the guarded write of the app, so a file
+    /// that already exists is never replaced. The loader line goes into
+    /// the loader file of the source, so the copy is loaded next to the
+    /// source. A file without an SbarLua item has no alias and gets no
+    /// loader line.
+    ///
+    /// Creating the copy and adding the loader line are two undo steps, so
+    /// Cmd-Z takes them back one by one.
+    @discardableResult
+    func cloneItem(file: ConfigFile, newName: String, newAlias: String) -> CloneItemResult? {
+        let cloner = ItemCloner()
+        guard isInsideConfigRoot(file.url) else {
+            statusMessage = "Refusing to clone a file outside the config folder: \(file.url.path)"
+            return nil
+        }
+        guard let contents = try? String(contentsOf: file.url, encoding: .utf8) else {
+            statusMessage = "Could not read \(file.displayName)."
+            return nil
+        }
+
+        let targetPath = cloner.copyPath(for: relativePath(of: file), newName: newName)
+        guard !targetPath.isEmpty else {
+            statusMessage = "\(newName) is not a safe file name."
+            return nil
+        }
+        let targetURL = configRoot.appendingPathComponent(targetPath)
+        guard isInsideConfigRoot(targetURL) else {
+            statusMessage = "Refusing to write outside the config folder: \(targetURL.path)"
+            return nil
+        }
+        guard !FileManager.default.fileExists(atPath: targetURL.path) else {
+            statusMessage = "\(targetURL.lastPathComponent) already exists. Choose another name."
+            return nil
+        }
+
+        let newContents = cloner.clonedContents(of: contents, newAlias: newAlias)
+        guard createItemFile(
+            contents: newContents,
+            at: targetURL,
+            overwrite: false,
+            undoTitle: "Clone \(targetURL.lastPathComponent)"
+        ) else { return nil }
+
+        guard cloner.sourceAlias(in: contents) != nil else {
+            statusMessage = "Cloned \(file.displayName) to \(targetPath). The file has no sbar.add(\"item\", ...) call, so no loader line was added."
+            return CloneItemResult(
+                fileURL: targetURL,
+                contents: newContents,
+                loaderURL: nil,
+                didAddLoaderLine: false,
+                loaderFailureMessage: nil
+            )
+        }
+        guard let loaderURL = cloneLoaderURL(for: file) else {
+            statusMessage = "Cloned \(file.displayName) to \(targetPath). No loader file was found, so no loader line was added."
+            return CloneItemResult(
+                fileURL: targetURL,
+                contents: newContents,
+                loaderURL: nil,
+                didAddLoaderLine: false,
+                loaderFailureMessage: nil
+            )
+        }
+
+        let line = ItemScaffolder().loaderLine(for: newAlias, relativePath: targetPath, style: .sbarLua)
+        guard insertLoaderLine(line, into: loaderURL, forItemFile: targetURL) else {
+            return CloneItemResult(
+                fileURL: targetURL,
+                contents: newContents,
+                loaderURL: loaderURL,
+                didAddLoaderLine: false,
+                loaderFailureMessage: statusMessage
+            )
+        }
+
+        statusMessage = "Cloned \(file.displayName) to \(targetPath) and added the loader line to \(loaderURL.lastPathComponent)."
+        return CloneItemResult(
+            fileURL: targetURL,
+            contents: newContents,
+            loaderURL: loaderURL,
+            didAddLoaderLine: true,
+            loaderFailureMessage: nil
+        )
+    }
+
+    /// The loader file that gets the loader line of a clone.
+    ///
+    /// The loader of the source comes first. Without one, the loader of the
+    /// closest folder that holds the source is used, so the copy is loaded
+    /// next to its siblings.
+    private func cloneLoaderURL(for file: ConfigFile) -> URL? {
+        if let entrypoint = file.activationReference?.entrypointURL { return entrypoint }
+
+        let folder = file.url.deletingLastPathComponent().standardizedFileURL.path
+        let candidates = LoaderCandidates.candidates(in: configRoot)
+        let ancestors = candidates
+            .filter { folder.hasPrefix($0.deletingLastPathComponent().standardizedFileURL.path + "/") }
+            .sorted { $0.path.count > $1.path.count }
+        return ancestors.first ?? candidates.first
+    }
+
+    /// The path of a file inside the config root.
+    private func relativePath(of file: ConfigFile) -> String {
+        let rootPath = configRoot.standardizedFileURL.path
+        let filePath = file.url.standardizedFileURL.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard filePath.hasPrefix(prefix) else { return file.url.lastPathComponent }
+        return String(filePath.dropFirst(prefix.count))
+    }
+
     // MARK: - New item files
 
     /// Creates a new config file with the given contents.
@@ -906,7 +1034,7 @@ final class SketchyBarStore: ObservableObject {
     /// it removes the new file, or puts the old text back when the file
     /// existed before.
     @discardableResult
-    func createItemFile(contents: String, at url: URL, overwrite: Bool = false) -> Bool {
+    func createItemFile(contents: String, at url: URL, overwrite: Bool = false, undoTitle: String? = nil) -> Bool {
         guard isInsideConfigRoot(url) else {
             statusMessage = "Refusing to write outside the config folder: \(url.path)"
             return false
@@ -949,7 +1077,7 @@ final class SketchyBarStore: ObservableObject {
         statusMessage = "Created \(url.lastPathComponent)."
 
         registerUndo(UndoAction(
-            title: "Create \(url.lastPathComponent)",
+            title: undoTitle ?? "Create \(url.lastPathComponent)",
             // The creation and the loader line are two steps, so they are
             // never merged.
             coalescingKey: nil,

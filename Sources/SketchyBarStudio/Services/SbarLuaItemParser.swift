@@ -21,30 +21,13 @@ enum SbarLuaItemParser {
                 return nil
             }).first else { continue }
 
-            var kind: String?
-            var name: String?
-            for argument in call.arguments {
-                guard case .literal(.string(let text)) = argument else { continue }
-                if text == "item", kind == nil {
-                    kind = text
-                    continue
-                }
-                if name == nil {
-                    name = text
-                }
-            }
-
-            guard kind == "item" else { continue }
-
-            // SbarLua also accepts an item without a name, such as
-            // `sbar.add("item", { position = "right" })`.
-            let alias = name ?? ""
+            guard let alias = Self.alias(of: call) else { continue }
 
             let values = table.entries.compactMap { entry -> StructuredItemValue? in
                 guard !entry.path.isEmpty else { return nil }
                 guard Self.isEditable(kind: entry.kind) else { return nil }
                 return StructuredItemValue(
-                    alias: alias,
+                    alias: alias.alias,
                     keyPath: entry.path.joined(separator: "."),
                     rawValue: entry.text,
                     valueStartOffset: entry.valueRange.start,
@@ -60,10 +43,66 @@ enum SbarLuaItemParser {
                 .filter { !Self.isEditable(kind: $0.kind) }
                 .map(\.valueRange)
 
-            items.append(StructuredItem(alias: alias, values: values, excludedRanges: excludedRanges))
+            items.append(StructuredItem(alias: alias.alias, values: values, excludedRanges: excludedRanges))
         }
 
         return items
+    }
+
+    /// The range of the alias of the first item of the file.
+    ///
+    /// The range covers the quoted alias, such as `"clock"`. It is nil
+    /// when the file has no item, or when the item has no name.
+    static func aliasRange(in source: String) -> LuaSourceRange? {
+        let result = LuaTableParser.parse(source: source)
+
+        for call in result.calls where call.path == ["sbar", "add"] {
+            guard Self.hasTable(call) else { continue }
+            guard let alias = Self.alias(of: call), !alias.alias.isEmpty, alias.argumentIndex >= 0 else { continue }
+            guard call.argumentRanges.indices.contains(alias.argumentIndex) else { continue }
+            return call.argumentRanges[alias.argumentIndex]
+        }
+
+        return nil
+    }
+
+    /// True when the call holds a table, which every item call does.
+    private static func hasTable(_ call: LuaCall) -> Bool {
+        call.arguments.contains { argument in
+            if case .table = argument { return true }
+            return false
+        }
+    }
+
+    /// The name of an item call and the argument that holds it.
+    private struct ItemAlias {
+        /// The alias of the item. It is empty when the item has no name.
+        let alias: String
+        /// The index of the argument that holds the alias. It is -1 when
+        /// the item has no name.
+        let argumentIndex: Int
+    }
+
+    /// The alias of an item call, when the call declares an item.
+    private static func alias(of call: LuaCall) -> ItemAlias? {
+        var kind: String?
+        var alias: ItemAlias?
+
+        for (index, argument) in call.arguments.enumerated() {
+            guard case .literal(.string(let text)) = argument else { continue }
+            if text == "item", kind == nil {
+                kind = text
+                continue
+            }
+            if alias == nil {
+                alias = ItemAlias(alias: text, argumentIndex: index)
+            }
+        }
+
+        guard kind == "item" else { return nil }
+        // SbarLua also accepts an item without a name, such as
+        // `sbar.add("item", { position = "right" })`.
+        return alias ?? ItemAlias(alias: "", argumentIndex: -1)
     }
 
     /// True when the kind of a value is a single literal that the user can
