@@ -59,6 +59,7 @@ struct ShellConfigScanner {
             let nsLine = NSRange(line.startIndex..<line.endIndex, in: line)
             let matches = regex.matches(in: line, range: nsLine)
             let lineStart = contents.distance(from: contents.startIndex, to: lineRange.lowerBound)
+            let barFlag = Self.barFlagRange(in: line)
             var lineValues: [LuaEditableValue] = []
 
             for match in matches {
@@ -78,7 +79,12 @@ struct ShellConfigScanner {
                     break
                 }
 
-                let keyPath = String(line[keyRange])
+                // The properties after the `--bar` flag belong to the bar,
+                // so they get the key paths of the bar level.
+                let isBarProperty = barFlag.map { keyRange.lowerBound > $0.upperBound } ?? false
+                let keyPath = isBarProperty
+                    ? SketchyBarOptionCatalog.barKeyPath(for: String(line[keyRange]))
+                    : String(line[keyRange])
                 // The word in front of the key says what the assignment is:
                 // `local result=5` is a variable of a function, `export FOO=1`
                 // exports a variable, and everything else sets an option.
@@ -278,6 +284,25 @@ struct ShellConfigScanner {
         let trimmed = prefix.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
         return trimmed.split(whereSeparator: { $0 == " " || $0 == "\t" }).last.map(String.init)
+    }
+
+    /// The range of the `--bar` flag of the line, when the line has one.
+    ///
+    /// The flag sets the properties of the bar that follow it, such as
+    /// `sketchybar --bar position=top margin=4`.
+    private static func barFlagRange(in line: String) -> Range<String.Index>? {
+        var search = line.startIndex..<line.endIndex
+
+        while let range = line.range(of: "--bar", range: search) {
+            let before = line[line.startIndex..<range.lowerBound]
+            let after = line[range.upperBound...]
+            let startsWord = before.isEmpty || before.last == " " || before.last == "\t"
+            let endsWord = after.isEmpty || after.first == " " || after.first == "\t"
+            if startsWord, endsWord { return range }
+            search = range.upperBound..<line.endIndex
+        }
+
+        return nil
     }
 
     /// True when the key is a SketchyBar option.

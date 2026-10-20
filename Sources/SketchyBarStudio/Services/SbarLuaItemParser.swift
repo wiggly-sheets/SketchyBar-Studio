@@ -49,6 +49,45 @@ enum SbarLuaItemParser {
         return items
     }
 
+    /// The bar declaration of a Lua file.
+    ///
+    /// The bar has properties of its own, so the key path of a value
+    /// starts with `bar.`, such as `bar.position`. The declaration is nil
+    /// when the file has no bar.
+    static func bar(in source: String) -> StructuredItem? {
+        let result = LuaTableParser.parse(source: source)
+
+        for call in result.calls where call.path == ["sbar", "bar"] {
+            guard let table = call.arguments.compactMap({ argument -> LuaTable? in
+                if case .table(let table) = argument { return table }
+                return nil
+            }).first else { continue }
+
+            let values = table.entries.compactMap { entry -> StructuredItemValue? in
+                guard !entry.path.isEmpty else { return nil }
+                guard Self.isEditable(kind: entry.kind) else { return nil }
+                return StructuredItemValue(
+                    alias: "bar",
+                    keyPath: SketchyBarOptionCatalog.barKeyPath(for: entry.path.joined(separator: ".")),
+                    rawValue: entry.text,
+                    valueStartOffset: entry.valueRange.start,
+                    valueEndOffset: entry.valueRange.end
+                )
+            }
+
+            // Every value of the table is claimed, also the ones that are
+            // not a single literal, so the plain scan does not match a
+            // literal inside an expression.
+            let excludedRanges = table.entries
+                .filter { !Self.isEditable(kind: $0.kind) }
+                .map(\.valueRange)
+
+            return StructuredItem(alias: "bar", values: values, excludedRanges: excludedRanges)
+        }
+
+        return nil
+    }
+
     /// The range of the alias of the first item of the file.
     ///
     /// The range covers the quoted alias, such as `"clock"`. It is nil

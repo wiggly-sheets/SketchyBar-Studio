@@ -156,16 +156,32 @@ struct ConfigValidator: Sendable {
                 continue
             }
 
-            // The bar and the default items take the same options as an
-            // item.
-            guard call.path == ["sbar", "bar"] || call.path == ["sbar", "default"] else { continue }
+            // The bar has properties of its own, so its values are checked
+            // against the `bar.` entries of the option reference.
+            if call.path == ["sbar", "bar"] {
+                guard let table = Self.lastTable(in: call) else { continue }
+                diagnostics.append(
+                    contentsOf: optionDiagnostics(
+                        table: table,
+                        file: file,
+                        lines: lines,
+                        isItemTable: false,
+                        isBarTable: true
+                    )
+                )
+                continue
+            }
+
+            // The default items take the same options as an item.
+            guard call.path == ["sbar", "default"] else { continue }
             guard let table = Self.lastTable(in: call) else { continue }
             diagnostics.append(
                 contentsOf: optionDiagnostics(
                     table: table,
                     file: file,
                     lines: lines,
-                    isItemTable: false
+                    isItemTable: false,
+                    isBarTable: false
                 )
             )
         }
@@ -184,19 +200,22 @@ struct ConfigValidator: Sendable {
     /// The problems of the options of one table of a SketchyBar call.
     ///
     /// The names of the options are only checked for an item, because a
-    /// table of the user can hold any name.
+    /// table of the user can hold any name. The values of the bar are
+    /// checked against the properties of the bar.
     private func optionDiagnostics(
         table: LuaTable,
         file: URL,
         lines: LineMap,
-        isItemTable: Bool
+        isItemTable: Bool,
+        isBarTable: Bool = false
     ) -> [ConfigDiagnostic] {
         var diagnostics: [ConfigDiagnostic] = []
         var seenKeys: [String: Int] = [:]
 
         for entry in table.entries {
             guard !entry.path.isEmpty else { continue }
-            let keyPath = entry.path.joined(separator: ".")
+            let path = entry.path.joined(separator: ".")
+            let keyPath = isBarTable ? SketchyBarOptionCatalog.barKeyPath(for: path) : path
             let line = lines.line(for: entry.keyRange.start)
 
             // The same option twice in one table. The last value wins and

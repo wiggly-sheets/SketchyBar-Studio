@@ -38,6 +38,7 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ### Fixed
 
+- The properties of the bar are no longer read as the properties of an item. A `sbar.bar({ … })` table and a `sketchybar --bar position=top` line now use the bar level of the option reference, so `position = "top"` in a `bar.lua` is no longer reported as an invalid value, and the dropdown of a bar property offers the values of the bar, such as `top` and `bottom` for `position`.
 - Values that are built by an expression, such as `position = "popup." .. name` or `color = colors.red`, are no longer offered as editable values. Only the leading literal of such a value was found before, so editing it wrote back a part of the expression and broke the item.
 - Toggling or reordering a loader reference no longer deletes the byte-order mark of the file.
 - Restoring a profile keeps the `backups/` folder of the config root, so the backup mirror of a dotfiles repository survives the restore.
