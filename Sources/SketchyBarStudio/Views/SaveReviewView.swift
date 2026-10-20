@@ -8,7 +8,11 @@ import SwiftUI
 struct SaveReviewView: View {
     let fileName: String
     let theme: AppTheme
-    let hunks: [DiffEngine.Hunk]
+    /// What the save would change, with the note about a change that holds
+    /// no changed line.
+    let difference: DiffEngine.Difference
+    /// The message shown when the file changed on disk.
+    let notice: String?
     let readError: String?
     let onSave: () -> Void
     let onCancel: () -> Void
@@ -16,6 +20,9 @@ struct SaveReviewView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            if let notice {
+                noticeRow(notice)
+            }
             Divider()
             content
             Divider()
@@ -44,7 +51,23 @@ struct SaveReviewView: View {
                 .accessibilityLabel(summaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
+        .padding(.horizontal)
+        .padding(.top)
+        .padding(.bottom, notice == nil ? 16 : 6)
+    }
+
+    // MARK: - Notice
+
+    /// The warning about a file that changed on disk.
+    private func noticeRow(_ notice: String) -> some View {
+        Label(notice, systemImage: "exclamationmark.triangle.fill")
+            .font(.callout)
+            .foregroundStyle(.orange)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal)
+            .padding(.bottom, 12)
     }
 
     // MARK: - Content
@@ -58,21 +81,31 @@ struct SaveReviewView: View {
                 description: Text(readError)
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if hunks.isEmpty {
-            ContentUnavailableView(
-                "No Changes",
-                systemImage: "equal.circle",
-                description: Text("The file on disk already holds the text that would be written.")
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(hunks) { hunk in
-                        DiffHunkView(hunk: hunk, theme: theme)
+            switch SaveReviewView.content(for: difference) {
+            case .changes:
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(difference.hunks) { hunk in
+                            DiffHunkView(hunk: hunk, theme: theme)
+                        }
                     }
+                    .padding(.vertical, 8)
                 }
-                .padding(.vertical, 8)
+            case .note(let note):
+                ContentUnavailableView(
+                    note,
+                    systemImage: "info.circle",
+                    description: Text("The lines of the file are the same, but the bytes are not.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .noChanges:
+                ContentUnavailableView(
+                    "No Changes",
+                    systemImage: "equal.circle",
+                    description: Text("The file on disk already holds the text that would be written.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
@@ -101,8 +134,28 @@ struct SaveReviewView: View {
         if readError != nil {
             return "The file could not be read, so the changes cannot be shown."
         }
-        return DiffEngine.summary(for: hunks)
+        return DiffEngine.summary(for: difference)
     }
+
+    /// The content the sheet shows for a difference.
+    ///
+    /// A difference that holds no changed line still changed the file, so
+    /// the note of the difference is shown and not the empty state.
+    static func content(for difference: DiffEngine.Difference) -> SaveReviewContent {
+        if !difference.hunks.isEmpty { return .changes }
+        if let note = difference.note { return .note(note) }
+        return .noChanges
+    }
+}
+
+/// What the body of the save review shows.
+enum SaveReviewContent: Equatable {
+    /// The file holds changed lines.
+    case changes
+    /// The lines are the same, but the bytes are not.
+    case note(String)
+    /// The file holds the text that would be written.
+    case noChanges
 }
 
 /// One hunk of the diff, with the line numbers of the old and the new text.
