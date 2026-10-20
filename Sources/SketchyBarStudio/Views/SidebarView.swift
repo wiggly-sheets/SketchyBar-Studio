@@ -7,6 +7,8 @@ struct SidebarView: View {
     /// The grouped files. They are rebuilt only when the files, the search
     /// text or the filters change, not on every body pass.
     @State private var groups: [SidebarFileGroup] = []
+    /// The file the clone sheet copies.
+    @State private var cloneFile: ConfigFile?
 
     static let missingFilesGroupID = "group.missing-files"
 
@@ -18,7 +20,8 @@ struct SidebarView: View {
                         group: group,
                         store: store,
                         expansionBinding: expansionBinding,
-                        erroredFileIDs: erroredFileIDs
+                        erroredFileIDs: erroredFileIDs,
+                        onClone: { cloneFile = $0 }
                     )
                 }
 
@@ -32,6 +35,9 @@ struct SidebarView: View {
                 .padding()
         }
         .navigationTitle("SketchyBar")
+        .sheet(item: $cloneFile) { file in
+            CloneItemView(store: store, file: file)
+        }
         .onAppear {
             rebuildGroups()
             if !expandedGroupStorage.isEmpty {
@@ -80,6 +86,7 @@ private struct SidebarGroupSection: View {
     @ObservedObject var store: SketchyBarStore
     let expansionBinding: (String) -> Binding<Bool>
     let erroredFileIDs: Set<ConfigFile.ID>
+    let onClone: (ConfigFile) -> Void
 
     var body: some View {
         DisclosureGroup(
@@ -94,7 +101,8 @@ private struct SidebarGroupSection: View {
                         onMoveUp: { store.moveItem(fileID: file.id, direction: .up) },
                         onMoveDown: { store.moveItem(fileID: file.id, direction: .down) },
                         onActiveChange: { store.setActive($0, fileID: file.id) },
-                        onDropFileID: { droppedID in store.moveItem(fileID: droppedID, before: file.id) }
+                        onDropFileID: { droppedID in store.moveItem(fileID: droppedID, before: file.id) },
+                        onClone: { onClone(file) }
                     )
                     .tag(file.id)
                 }
@@ -104,7 +112,8 @@ private struct SidebarGroupSection: View {
                         folder: folder,
                         store: store,
                         expansionBinding: expansionBinding,
-                        erroredFileIDs: erroredFileIDs
+                        erroredFileIDs: erroredFileIDs,
+                        onClone: onClone
                     )
                 }
             },
@@ -143,6 +152,7 @@ private struct SidebarFolderNodeView: View {
     @ObservedObject var store: SketchyBarStore
     let expansionBinding: (String) -> Binding<Bool>
     let erroredFileIDs: Set<ConfigFile.ID>
+    let onClone: (ConfigFile) -> Void
 
     var body: some View {
         DisclosureGroup(
@@ -157,7 +167,8 @@ private struct SidebarFolderNodeView: View {
                         onMoveUp: { store.moveItem(fileID: file.id, direction: .up) },
                         onMoveDown: { store.moveItem(fileID: file.id, direction: .down) },
                         onActiveChange: { store.setActive($0, fileID: file.id) },
-                        onDropFileID: { droppedID in store.moveItem(fileID: droppedID, before: file.id) }
+                        onDropFileID: { droppedID in store.moveItem(fileID: droppedID, before: file.id) },
+                        onClone: { onClone(file) }
                     )
                     .tag(file.id)
                 }
@@ -167,7 +178,8 @@ private struct SidebarFolderNodeView: View {
                         folder: child,
                         store: store,
                         expansionBinding: expansionBinding,
-                        erroredFileIDs: erroredFileIDs
+                        erroredFileIDs: erroredFileIDs,
+                        onClone: onClone
                     )
                 }
             },
@@ -219,6 +231,7 @@ private struct ConfigFileRow: View {
     let onMoveDown: () -> Void
     let onActiveChange: (Bool) -> Void
     let onDropFileID: (ConfigFile.ID) -> Bool
+    let onClone: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -285,6 +298,10 @@ private struct ConfigFileRow: View {
         .dropDestination(for: String.self) { droppedIDs, _ in
             guard let droppedID = droppedIDs.first else { return false }
             return onDropFileID(droppedID)
+        }
+        .contextMenu {
+            Button("Clone Item…") { onClone() }
+                .accessibilityLabel("Clone \(file.sidebarTitle)")
         }
     }
 

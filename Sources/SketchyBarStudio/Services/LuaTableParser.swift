@@ -79,6 +79,10 @@ struct LuaCall {
     let range: LuaSourceRange
     /// The arguments of the call.
     let arguments: [LuaCallArgument]
+    /// The range of every argument in the file, in the same order as the
+    /// arguments. A range covers the raw text of the argument, so a string
+    /// argument covers its quotes too.
+    let argumentRanges: [LuaSourceRange]
 }
 
 /// Everything the parser found in a Lua file.
@@ -588,18 +592,20 @@ private struct LuaParser {
         guard !path.isEmpty, let closeIndex = parenPairs[openIndex] else { return nil }
 
         var arguments: [LuaCallArgument] = []
+        var argumentRanges: [LuaSourceRange] = []
         var index = openIndex + 1
         while index < closeIndex {
             let argument = parseArgument(at: index, limit: closeIndex)
             arguments.append(argument.argument)
+            argumentRanges.append(argument.range)
             index = argument.endIndex
         }
 
         let range = LuaSourceRange(start: tokens[openIndex].start, end: tokens[closeIndex].end)
-        return LuaCall(path: path, range: range, arguments: arguments)
+        return LuaCall(path: path, range: range, arguments: arguments, argumentRanges: argumentRanges)
     }
 
-    private mutating func parseArgument(at start: Int, limit: Int) -> (argument: LuaCallArgument, endIndex: Int) {
+    private mutating func parseArgument(at start: Int, limit: Int) -> (argument: LuaCallArgument, endIndex: Int, range: LuaSourceRange) {
         var index = start
         var depth = 0
 
@@ -612,7 +618,7 @@ private struct LuaParser {
                 case ")", "]", "}":
                     depth -= 1
                 case ",":
-                    if depth == 0 { return (makeArgument(start, index), index + 1) }
+                    if depth == 0 { return (makeArgument(start, index), index + 1, tokenRange(from: start, to: index)) }
                 default:
                     break
                 }
@@ -620,7 +626,13 @@ private struct LuaParser {
             index += 1
         }
 
-        return (makeArgument(start, limit), limit)
+        return (makeArgument(start, limit), limit, tokenRange(from: start, to: limit))
+    }
+
+    /// The range of the tokens from `start` up to, but not including, `end`.
+    private func tokenRange(from start: Int, to end: Int) -> LuaSourceRange {
+        guard start < end, end <= tokens.count else { return LuaSourceRange(start: 0, end: 0) }
+        return LuaSourceRange(start: tokens[start].start, end: tokens[end - 1].end)
     }
 
     private func makeArgument(_ start: Int, _ end: Int) -> LuaCallArgument {
