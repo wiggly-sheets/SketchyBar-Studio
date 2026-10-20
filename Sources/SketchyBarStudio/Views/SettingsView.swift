@@ -15,6 +15,7 @@ struct SettingsView: View {
     @State private var configRootText = ""
     @State private var confirmLiveSwitch = false
     @State private var folderPicker: FolderPicker?
+    @State private var showsNewConfig = false
 
     var body: some View {
         TabView {
@@ -25,7 +26,8 @@ struct SettingsView: View {
                 store: store,
                 configRootText: $configRootText,
                 confirmLiveSwitch: $confirmLiveSwitch,
-                onChooseFolder: { folderPicker = $0 }
+                onChooseFolder: { folderPicker = $0 },
+                onNewConfig: { showsNewConfig = true }
             )
             .tabItem { Label("Configs", systemImage: "folder.badge.gearshape") }
 
@@ -38,6 +40,9 @@ struct SettingsView: View {
         }
         .padding()
         .frame(width: 760, height: 560)
+        .sheet(isPresented: $showsNewConfig) {
+            NewConfigView(store: store)
+        }
         .confirmationDialog(
             "Make selected config live?",
             isPresented: $confirmLiveSwitch,
@@ -114,6 +119,7 @@ private struct ConfigLibrarySettingsTab: View {
     @Binding var configRootText: String
     @Binding var confirmLiveSwitch: Bool
     let onChooseFolder: (FolderPicker) -> Void
+    let onNewConfig: () -> Void
 
     var body: some View {
         Form {
@@ -168,6 +174,11 @@ private struct ConfigLibrarySettingsTab: View {
             }
 
             Section("Add Config") {
+                Button("New Config…") {
+                    onNewConfig()
+                }
+                .accessibilityLabel("Create a new config from a template")
+
                 TextField("Name", text: $store.newConfigName)
 
                 LabeledContent("Folder") {
