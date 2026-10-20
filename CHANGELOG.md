@@ -8,7 +8,7 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ### Added
 
-- A NOTICE file names the upstream projects whose code the app will vendor, the changes this project makes to that code, and where the complete source of a release can be found.
+- A NOTICE file names the upstream projects whose code the app will vendor, states that the vendored code is modified, and points at where the complete source of a release can be found.
 
 ### Changed
 

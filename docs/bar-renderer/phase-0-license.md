@@ -1,5 +1,8 @@
 # Stage 0 — Switch the project to GPL-3.0
 
+**Status: done (2026-10-20).** The licence switch, the NOTICE and the README
+changes are merged with this stage. The next stage is Stage 1.
+
 ## Goal
 
 The repository carries GPL-3.0 before any GPL code lands in it. The vendored SketchyBar subset is GPL-3.0, so the app that links it must be GPL-3.0 as well. This stage changes only the licence, the notices and the documentation that states the licence.
@@ -42,7 +45,7 @@ None. This is the first stage.
 
 The GPL analysis is correct. GPLv3 §7(e) carves trademarks out of the licence (`LICENSE.md:379-380`), so using the name descriptively — to name the file format, the config directory, the CLI and the daemon the app talks to — is fine.
 
-The app already carries "SketchyBar" in its own product name: it is called "SketchyBar Studio" (`README.md:5`), the repository is `wiggly-sheets/SketchyBar-Studio` (`README.md:15-16`), and the copyright line reads "Copyright (c) 2026 Wiggly-Sheets" (`LICENSE:3`). Whether that is a trademark question is a question for the owner, not a GPL question, and this plan does not change the product name. It is flagged here so the owner decides it explicitly rather than by accident.
+The app already carries "SketchyBar" in its own product name: it is called "SketchyBar Studio" (`README.md:5`), the repository is `wiggly-sheets/SketchyBar-Studio` (`README.md:15-16`), and the copyright line reads "Copyright (C) 2026 Wiggly-Sheets" (`LICENSE:2`). Whether that is a trademark question is a question for the owner, not a GPL question, and this plan does not change the product name. It is flagged here so the owner decides it explicitly rather than by accident.
 
 **Decision (TAKEN 2026-10-20, by the owner).**
 
