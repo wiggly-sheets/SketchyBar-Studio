@@ -1,6 +1,6 @@
 # Bar Renderer — stage documents
 
-Status: **Approved design. Stages 0-5 merged; Stage 6 in flight; Stage 3b (the Lua config resolver) in review.**
+Status: **Approved design. Stages 0-5 merged; Stage 3b (the Lua config resolver) merged; Stage 6 (live values) in flight.**
 Date: 2026-10-20
 Owner: repository owner (sole contributor)
 Audience: orchestrating agents and coding agents picking this work up.
@@ -240,4 +240,4 @@ The `icon` prefix semantics are a separate question to confirm, written up in [r
 
 Read this file, then read the stage file you were given, then execute that stage. Nothing else needs to be read first.
 
-Status: Stages 0-5 are merged. Stage 6 (live values) is in flight, and Stage 3b (the Lua config resolver, the decision D7) is in review — see `docs/bar-renderer/phase-3-config-bridge.md` and `docs/bar-renderer/phase-6-live-values.md`.
+Status: Stages 0-5 are merged, and Stage 3b (the Lua config resolver, the decision D7) is done — this document lands with its merge. Stage 6 (live values) is in flight — see `docs/bar-renderer/phase-3-config-bridge.md` and `docs/bar-renderer/phase-6-live-values.md`.
