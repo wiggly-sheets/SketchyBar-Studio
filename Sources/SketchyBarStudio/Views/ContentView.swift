@@ -77,6 +77,14 @@ struct ContentView: View {
                 .disabled(store.unsavedFileCount == 0)
 
                 Button {
+                    store.restoreLiveBar()
+                } label: {
+                    Label("Restore Bar", systemImage: "arrow.uturn.backward")
+                }
+                .disabled(!store.liveBarHasSnapshot)
+                .help("Put the live SketchyBar back to the state it had before the first push of this app.")
+
+                Button {
                     showsReachability = true
                 } label: {
                     Label("Reachability", systemImage: "checklist")
@@ -112,6 +120,23 @@ struct ContentView: View {
         }
         .sheet(isPresented: $quickOpen.isPresented) {
             QuickOpenView(store: store)
+        }
+        .confirmationDialog(
+            "Push the previewed bar to the live SketchyBar?",
+            isPresented: Binding(
+                get: { store.pendingLiveBarPush != nil },
+                set: { if !$0 { store.cancelLiveBarPush() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Push to Live Bar", role: .destructive) {
+                store.confirmLiveBarPush()
+            }
+            Button("Cancel", role: .cancel) {
+                store.cancelLiveBarPush()
+            }
+        } message: {
+            Text(store.pendingLiveBarPush?.preview.summary ?? "")
         }
     }
 
