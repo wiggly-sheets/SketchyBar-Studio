@@ -33,7 +33,12 @@ char* sb_preview_test_item_serialize(sb_preview_t* preview, const char* alias) {
   if (!item) return NULL;
 
   /* The same text the daemon answers with for `sketchybar --query <item>`
-     (src/bar_item.c:965). */
+     (src/bar_item.c:965).
+
+     The text is NOT always valid JSON: bar_item_serialize writes the text
+     of a label without escaping it (src/text.c:1027), so a label that
+     holds a quote or a newline breaks a JSON parser. The daemon has the
+     same defect, so the text is read as text and not as JSON. */
   char* buffer = NULL;
   size_t length = 0;
   FILE* rsp = open_memstream(&buffer, &length);

@@ -39,6 +39,7 @@ The stages below are the scope. Each stage file states its own in scope and out 
 * Re-implementing SketchyBar behaviour in Swift. The C code is the renderer.
 * Vendoring SbarLua or any Lua interpreter.
 * Popups as interactive windows. SketchyBar draws popups in separate windows (`src/popup.c:375-383`); the preview renders the bar only. A popup may be drawn into a second offscreen bitmap later.
+* A value that is built by an expression, such as `colors.red`, cannot be read without a Lua interpreter, so the preview keeps the value SketchyBar has by default and names the value in its warnings.
 * Window-server-backed content in the preview: `alias` items (a captured window image), `space` items, the front-app icon and `media.artwork` cannot be produced without the window server. These render as a placeholder with the same geometry, and the preview says so.
 * Mouse interaction with the preview.
 * Any change to the user's config files. The renderer reads the config and the drafts in memory; it never writes.

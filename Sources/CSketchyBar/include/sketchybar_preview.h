@@ -124,7 +124,12 @@ SB_API int sb_preview_test_item_padding_left(sb_preview_t* preview, const char* 
 
 /* The serialized form of an item, the same text `sketchybar --query <item>`
    answers with. The caller owns the string and releases it with free().
-   It is NULL when no item has that alias. */
+   It is NULL when no item has that alias.
+
+   The text is NOT always valid JSON: the vendored code writes the text of
+   a label without escaping it (src/text.c:1027), so a label that holds a
+   quote or a newline breaks a JSON parser. The daemon has the same
+   defect. */
 SB_API char* sb_preview_test_item_serialize(sb_preview_t* preview, const char* alias);
 
 /* The environment the child of the script runner receives, one "KEY=VALUE"

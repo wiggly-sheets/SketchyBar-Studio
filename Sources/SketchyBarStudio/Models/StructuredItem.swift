@@ -39,4 +39,23 @@ struct StructuredItem: Hashable {
     /// `"popup." .. name`. They are not editable, and the plain scan must
     /// not match a literal inside them.
     let excludedRanges: [LuaSourceRange]
+    /// The position that the add command carries, when it has one.
+    ///
+    /// The shell style carries the position in the add command and not in
+    /// the properties of the item. The daemon takes the position of the
+    /// first add of an alias (`src/message.c:190-193`), so the position of
+    /// a later add is ignored.
+    let addPosition: String?
+
+    init(kind: StructuredItemKind,
+         alias: String,
+         values: [StructuredItemValue],
+         excludedRanges: [LuaSourceRange],
+         addPosition: String? = nil) {
+        self.kind = kind
+        self.alias = alias
+        self.values = values
+        self.excludedRanges = excludedRanges
+        self.addPosition = addPosition
+    }
 }

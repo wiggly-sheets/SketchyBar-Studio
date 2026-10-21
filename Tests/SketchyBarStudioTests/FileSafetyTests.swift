@@ -350,6 +350,57 @@ final class FileSafetyTests: XCTestCase {
         )
     }
 
+    // MARK: - The preview bridge
+
+    func testTheBridgeOverAConfigRootChangesNothingOnDisk() throws {
+        let testRoot = try makeTestRoot()
+        let configRoot = testRoot.appendingPathComponent("config")
+        try write("""
+        #!/bin/sh
+        sketchybar --bar height=30
+        sketchybar --default icon.padding_left=2
+        sketchybar --add item clock right
+        sketchybar --set clock label="10:00"
+        """, to: configRoot.appendingPathComponent("sketchybarrc"))
+        try write("""
+        sbar.default({ icon = { padding_left = 2 } })
+        sbar.add("item", "clock", { position = "right" })
+        """, to: configRoot.appendingPathComponent("default.lua"))
+        try write("user scratch\n", to: configRoot.appendingPathComponent("backups/sketchybarrc"))
+
+        let before = try snapshot(of: configRoot)
+
+        let plan = PreviewConfigBridge.plan(forConfigRoot: configRoot)
+        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
+        defer { SketchyBarPreviewC.destroy(handle) }
+        PreviewConfigBridge.apply(plan, to: handle)
+
+        XCTAssertEqual(before, try snapshot(of: configRoot))
+        XCTAssertEqual(
+            try String(contentsOf: configRoot.appendingPathComponent("backups/sketchybarrc"), encoding: .utf8),
+            "user scratch\n"
+        )
+    }
+
+    /// The bytes and the modification date of every file under a folder.
+    private func snapshot(of root: URL) throws -> [String: FileState] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: nil
+        ) else { return [:] }
+
+        var states: [String: FileState] = [:]
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey])
+            guard values.isRegularFile == true else { continue }
+            states[url.path] = FileState(
+                bytes: try Data(contentsOf: url),
+                modified: values.contentModificationDate
+            )
+        }
+        return states
+    }
+
     private func makeTestRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("SketchyBarStudioFileSafetyTests", isDirectory: true)
@@ -368,6 +419,12 @@ final class FileSafetyTests: XCTestCase {
         )
         try contents.write(to: url, atomically: true, encoding: .utf8)
     }
+}
+
+/// The state of a file on disk: its bytes and its modification date.
+private struct FileState: Equatable {
+    let bytes: Data
+    let modified: Date?
 }
 
 private final class BackupCopyFailingFileManager: FileManager, @unchecked Sendable {

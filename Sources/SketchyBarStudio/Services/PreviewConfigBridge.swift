@@ -7,54 +7,91 @@ import Foundation
 /// becomes the value of a SketchyBar property. It reads the config and
 /// calls the C API of the preview, so it never writes to disk.
 enum PreviewConfigBridge {
+    /// The style a config is written in.
+    enum Style {
+        /// The SbarLua style, such as `sbar.add("item", "clock", {…})`.
+        case lua
+        /// The shell style, such as `sketchybar --add item clock right`.
+        case shell
+    }
+
     /// The tree of a Lua config.
     static func plan(forLua source: String) -> BarRenderPlan {
-        plan(items: SbarLuaItemParser.items(in: source),
-             bar: SbarLuaItemParser.bar(in: source),
-             defaults: SbarLuaItemParser.defaults(in: source))
+        let file = SbarLuaItemParser.declarations(in: source)
+        return plan(style: .lua,
+                    items: file.items,
+                    bar: file.bars,
+                    defaults: file.defaults,
+                    warnings: file.warnings)
     }
 
     /// The tree of a shell config.
     static func plan(forShell source: String) -> BarRenderPlan {
         let parsed = ShellConfigCommandParser.parse(in: source)
-        return plan(items: parsed.items,
+        return plan(style: .shell,
+                    items: parsed.items,
                     bar: parsed.bar,
                     defaults: parsed.defaults,
                     warnings: parsed.warnings)
     }
 
+    /// The tree of a config root.
+    ///
+    /// The bridge reads every file of the root and combines the plans, so
+    /// the defaults of one file reach the items of another. It never
+    /// writes: it only reads the files.
+    static func plan(forConfigRoot root: URL) -> BarRenderPlan {
+        var combined = BarRenderPlan(defaults: [], bar: [], items: [], warnings: [])
+
+        for file in SketchyBarConfigLocator().configFiles(in: root) {
+            guard let contents = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            // A `.lua` file is Lua. A file without an extension, such as
+            // the `sketchybarrc` of the sketchybar-package, is decided by
+            // its text.
+            let isLua = file.pathExtension.lowercased() == "lua" || LuaSourceDetection.isLua(contents)
+            let filePlan = isLua ? plan(forLua: contents) : plan(forShell: contents)
+            combined = combined.combined(with: filePlan)
+        }
+
+        return combined
+    }
+
     /// The tree of a parsed config.
     ///
     /// The declarations of an alias are merged into one item, so an alias
-    /// is unique in the tree. The properties of the later declarations
-    /// follow the properties of the first one, so the last value of a
-    /// property wins.
-    private static func plan(items: [StructuredItem],
-                             bar: StructuredItem?,
-                             defaults: StructuredItem?,
-                             warnings: [String] = []) -> BarRenderPlan {
+    /// is unique in the tree. The daemon refuses the second add of an
+    /// alias (`src/message.c:190-193`), so the item is the one of the
+    /// first declaration. The properties of the later declarations follow
+    /// the properties of the first one, so the last value of a property
+    /// wins.
+    private static func plan(style: Style,
+                              items: [StructuredItem],
+                              bar: [StructuredItem],
+                              defaults: [StructuredItem],
+                              warnings: [String]) -> BarRenderPlan {
         var aliases: [String] = []
         var properties: [String: [BarRenderProperty]] = [:]
+        var positions: [String: String] = [:]
         var allWarnings = warnings
 
         for item in items {
-            guard !item.alias.isEmpty else {
-                allWarnings.append("An item of the config has no name, so the preview cannot show it.")
-                continue
-            }
-            if properties[item.alias] != nil {
-                allWarnings.append("The alias '\(item.alias)' is used more than once. The declarations are merged into one item.")
-            } else {
+            guard !item.alias.isEmpty else { continue }
+            if properties[item.alias] == nil {
                 aliases.append(item.alias)
+                positions[item.alias] = item.addPosition
+            } else {
+                allWarnings.append(PreviewWarning.duplicateAlias(item.alias, ignoresSecondPosition: style == .shell))
             }
             properties[item.alias, default: []] += item.values.map { property(of: $0) }
         }
 
         return BarRenderPlan(
-            defaults: (defaults?.values ?? []).map { property(of: $0) },
-            bar: (bar?.values ?? []).map { property(of: $0, key: Self.barKey) },
+            defaults: defaults.flatMap { $0.values.map { property(of: $0) } },
+            bar: bar.flatMap { $0.values.map { property(of: $0, key: Self.barKey) } },
             items: aliases.map { alias in
-                BarRenderItemModel(alias: alias, properties: properties[alias] ?? [])
+                BarRenderItemModel(alias: alias,
+                                   properties: properties[alias] ?? [],
+                                   addPosition: positions[alias])
             },
             warnings: allWarnings
         )
@@ -66,7 +103,8 @@ enum PreviewConfigBridge {
     /// item inherits when it is created (`src/bar_manager.c:463`,
     /// `src/bar_item.c:68`). A default that comes after an item never
     /// reaches that item, so the defaults are set before the first item is
-    /// added.
+    /// added. The defaults of a plan that holds several files all come
+    /// before the first item of every file.
     ///
     /// The answer of the vendored code is not swallowed: a property that
     /// the vendored parser refuses answers with a message, and the app has
@@ -87,13 +125,22 @@ enum PreviewConfigBridge {
 
         for item in plan.items {
             let code = SketchyBarPreviewC.addItem(preview, alias: item.alias)
-            guard code == SketchyBarPreviewC.Code.ok else {
-                let reason = code == SketchyBarPreviewC.Code.itemExists
-                    ? "The preview already has an item with that alias."
-                    : "The preview refused the item."
-                warnings.append("The item '\(item.alias)' was not added. \(reason)")
+            if code == SketchyBarPreviewC.Code.itemExists {
+                // The daemon refuses the second add of an alias
+                // (`src/message.c:190-193`). The properties that follow
+                // still apply to the item, so they are sent.
+                warnings.append(PreviewWarning.duplicateAlias(item.alias))
+            } else if code != SketchyBarPreviewC.Code.ok {
+                warnings.append("The item '\(item.alias)' was not added. The preview refused the item.")
                 continue
             }
+
+            if code == SketchyBarPreviewC.Code.ok, let position = item.addPosition {
+                let property = BarRenderProperty(key: "position", value: position)
+                let code = SketchyBarPreviewC.setItem(preview, alias: item.alias, key: property.key, value: property.value)
+                warnings.append(contentsOf: messages(of: preview, code: code, property: property, owner: "the item '\(item.alias)'"))
+            }
+
             for property in item.properties {
                 let code = SketchyBarPreviewC.setItem(preview, alias: item.alias, key: property.key, value: property.value)
                 warnings.append(contentsOf: messages(of: preview, code: code, property: property, owner: "the item '\(item.alias)'"))
@@ -138,21 +185,111 @@ enum PreviewConfigBridge {
     }
 }
 
+/// The wording of the warnings the bridge produces.
+///
+/// The wording lives here, so the Lua path and the shell path say the
+/// same thing about the same problem.
+enum PreviewWarning {
+    /// An item type the preview cannot show.
+    static func unsupportedType(_ type: String, alias: String) -> String {
+        "The preview cannot show the '\(type)' item '\(alias)'."
+    }
+
+    /// A value the preview cannot read.
+    ///
+    /// A value that is built by an expression, such as `colors.red`, needs
+    /// a Lua interpreter, so the preview keeps the value SketchyBar has by
+    /// default and names the value in its warnings.
+    static func skippedValue(_ keyPath: String, kind: LuaLiteralKind) -> String {
+        let reason: String
+        switch kind {
+        case .expression:
+            reason = "is built by an expression"
+        case .longString:
+            reason = "is a long string"
+        case .nilLiteral:
+            reason = "is nil"
+        case .string, .number, .boolean:
+            return ""
+        }
+        return "The value of '\(keyPath)' \(reason), so the preview shows the value SketchyBar has by default, not the value of the config."
+    }
+
+    /// The alias of an item that is built by an expression.
+    static func expressionAlias() -> String {
+        "The alias of an item is built by an expression, so the preview cannot show the item. SketchyBar shows it under the name of the expression."
+    }
+
+    /// An item without a name.
+    ///
+    /// SbarLua names an item without a name `item_<N>`, with a counter of
+    /// the process (`src/sketchybar.c:405-407`).
+    static func unnamedItem(generated: Bool) -> String {
+        if generated {
+            return "The item has no name. SketchyBar gives it a generated name (item_1, item_2, ...), so the preview cannot show it."
+        }
+        return "The item has no name, so SketchyBar does not keep it and the preview cannot show it."
+    }
+
+    /// An alias that is added twice.
+    ///
+    /// The daemon refuses the second add of an alias
+    /// (`src/message.c:190-193`), so the item is the one of the first
+    /// declaration. The properties of the later declarations are applied
+    /// to it, and the last value of a property wins.
+    ///
+    /// The shell style carries the position in the add command, and the
+    /// daemon refuses the whole second add, so the position of the second
+    /// add is ignored.
+    static func duplicateAlias(_ alias: String, ignoresSecondPosition: Bool = false) -> String {
+        var warning = "The alias '\(alias)' is added twice. SketchyBar keeps the first item; the properties of the second declaration are applied, and the last value of a property wins."
+        if ignoresSecondPosition {
+            warning += " The position of the second add is ignored."
+        }
+        return warning
+    }
+
+    /// A property that the shell builds.
+    static func dynamicValue(_ keyPath: String) -> String {
+        "The value of '\(keyPath)' is built by the shell, so the preview shows the value SketchyBar has by default, not the value of the config."
+    }
+
+    /// An item that is set but never added.
+    static func setWithoutAdd(_ alias: String) -> String {
+        "The item '\(alias)' is set but never added, so the preview cannot show it."
+    }
+
+    /// An item that is added without a position.
+    ///
+    /// The daemon creates the item and removes it again
+    /// (`src/message.c:202-208`).
+    static func addWithoutPosition(_ alias: String) -> String {
+        "The item '\(alias)' is added without a position, so SketchyBar removes it and the preview cannot show it."
+    }
+
+    /// A file that holds no call of the SketchyBar binary.
+    static func noSketchyBarCommand() -> String {
+        "The file holds no SketchyBar command, so it adds nothing to the preview."
+    }
+}
+
 /// The value that is sent to the vendored core.
 ///
 /// The vendored parsers read the value as a token and compare it
 /// literally, so the value must not keep the spelling of the file: a
 /// string that keeps its quotes is not the value the user wrote, and
 /// `label = "10:00"` would show the quotes. The parser of the config hands
-/// the value of the literal, so the quotes are already gone. What is left
-/// is the spelling of SketchyBar: a boolean is `true` or `false`, and the
+/// the value of the literal, so the quotes are already gone and they are
+/// not removed a second time: `label = { string = "\"10:00\"" }` holds the
+/// text `"10:00"`, and that is the text the bar shows. What is left is the
+/// spelling of SketchyBar: a boolean is `true` or `false`, and the
 /// `updates` property is `on`, `off` or `when_shown`.
 enum PreviewValue {
     /// The value of a parsed value.
     static func value(for text: String, keyPath: String) -> String {
-        SketchyBarValueRules.normalizedDisplayValue(
-            SketchyBarValueRules.displayValue(for: text, keyPath: keyPath),
-            keyPath: keyPath
-        )
+        let normalized = SketchyBarBoolean.isBooleanKey(keyPath)
+            ? (SketchyBarBoolean.normalized(text) ?? text)
+            : text
+        return SketchyBarValueRules.normalizedDisplayValue(normalized, keyPath: keyPath)
     }
 }

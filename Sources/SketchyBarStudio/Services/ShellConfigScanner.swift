@@ -331,12 +331,12 @@ struct ShellConfigScanner {
 struct ShellConfigCommandParser {
     /// The result of the parse.
     struct Result {
-        /// The items of the bar, one per alias.
+        /// The items of the bar, one per declaration.
         let items: [StructuredItem]
-        /// The properties of the bar.
-        let bar: StructuredItem?
-        /// The properties of the default item.
-        let defaults: StructuredItem?
+        /// The declarations of the bar.
+        let bar: [StructuredItem]
+        /// The declarations of the default item.
+        let defaults: [StructuredItem]
         /// The problems of the config that the parser found.
         let warnings: [String]
     }
@@ -353,6 +353,17 @@ struct ShellConfigCommandParser {
         case bar(properties: [Property])
     }
 
+    /// One declaration of an item: the add that creates it and the values
+    /// that are set on it.
+    private struct Declaration {
+        /// The alias of the item.
+        let alias: String
+        /// The position of the add command.
+        var addPosition: String?
+        /// The values that are set on the item.
+        var properties: [StructuredItemValue]
+    }
+
     /// One property of a command.
     private struct Property {
         /// The name of the property, such as `label.string`.
@@ -361,74 +372,88 @@ struct ShellConfigCommandParser {
         let value: String
         /// The range of the value in the file.
         let range: Range<Int>
+        /// True when the shell builds the value, so it is not a literal.
+        let dynamic: Bool
     }
 
     /// One word of a shell config.
     private struct Word {
         /// The text of the word, with the quotes removed.
         let text: String
+        /// The text of the word as the file holds it, with the quotes.
+        let raw: String
+        /// The line of the word in the file. A command ends at the newline.
+        let line: Int
         /// The range of the word in the file.
         let range: Range<Int>
     }
 
-    /// The commands of a shell config, read into the model of the app.
+    /// The commands of a config, read into the model of the app.
     static func parse(in source: String) -> Result {
-        var aliases: [String] = []
-        var values: [String: [StructuredItemValue]] = [:]
+        var declarations: [Declaration] = []
         var barValues: [StructuredItemValue] = []
         var defaultValues: [StructuredItemValue] = []
         var warnings: [String] = []
+        let commands = Self.commands(in: source)
 
-        for command in commands(in: source) {
+        for command in commands.commands {
             switch command {
             case .add(let type, let alias, let position):
                 guard type == "item" else {
                     // The preview only knows plain items. The other types
                     // need the window server or their own setup.
-                    warnings.append("The preview cannot show the '\(type)' item '\(alias)'.")
+                    warnings.append(PreviewWarning.unsupportedType(type, alias: alias))
                     continue
                 }
-                guard values[alias] == nil else {
-                    // The daemon refuses the second add of an alias
-                    // (src/message.c:191).
-                    warnings.append("The alias '\(alias)' is added twice. The daemon refuses the second one.")
+                guard !alias.isEmpty else {
+                    warnings.append(PreviewWarning.unnamedItem(generated: false))
                     continue
                 }
-                aliases.append(alias)
-                var properties: [StructuredItemValue] = []
-                if let position {
-                    properties.append(value(alias: alias,
-                                             key: "position",
-                                             text: position.text,
-                                             range: position.range))
+                guard let position else {
+                    // The daemon creates the item and removes it again
+                    // (src/message.c:202-208).
+                    warnings.append(PreviewWarning.addWithoutPosition(alias))
+                    continue
                 }
-                values[alias] = properties
+                declarations.append(Declaration(alias: alias, addPosition: position.text, properties: []))
             case .set(let alias, let properties):
-                let parsed = properties.map { value(alias: alias, key: $0.key, text: $0.value, range: $0.range) }
-                if values[alias] != nil {
-                    values[alias]?.append(contentsOf: parsed)
-                } else {
-                    aliases.append(alias)
-                    values[alias] = parsed
+                let literal = properties.filter { !$0.dynamic }
+                let dynamic = properties.filter(\.dynamic)
+                guard let index = declarations.lastIndex(where: { $0.alias == alias }) else {
+                    // The daemon sets nothing when the item does not exist
+                    // (src/message.c:635).
+                    warnings.append(PreviewWarning.setWithoutAdd(alias))
+                    continue
                 }
+                warnings.append(contentsOf: dynamic.map { PreviewWarning.dynamicValue($0.key) })
+                declarations[index].properties.append(contentsOf: literal.map {
+                    value(alias: alias, key: $0.key, text: $0.value, range: $0.range)
+                })
             case .defaultItem(let properties):
-                defaultValues.append(contentsOf: properties.map { value(alias: "default", key: $0.key, text: $0.value, range: $0.range) })
+                warnings.append(contentsOf: properties.filter(\.dynamic).map { PreviewWarning.dynamicValue($0.key) })
+                defaultValues.append(contentsOf: properties.filter { !$0.dynamic }.map { value(alias: "default", key: $0.key, text: $0.value, range: $0.range) })
             case .bar(let properties):
-                barValues.append(contentsOf: properties.map { value(alias: "bar", key: $0.key, text: $0.value, range: $0.range) })
+                warnings.append(contentsOf: properties.filter(\.dynamic).map { PreviewWarning.dynamicValue($0.key) })
+                barValues.append(contentsOf: properties.filter { !$0.dynamic }.map { value(alias: "bar", key: $0.key, text: $0.value, range: $0.range) })
             }
         }
 
-        let items = aliases.map { alias in
+        if commands.calls == 0 {
+            warnings.append(PreviewWarning.noSketchyBarCommand())
+        }
+
+        let items = declarations.map {
             StructuredItem(kind: .item,
-                           alias: alias,
-                           values: values[alias] ?? [],
-                           excludedRanges: [])
+                           alias: $0.alias,
+                           values: $0.properties,
+                           excludedRanges: [],
+                           addPosition: $0.addPosition)
         }
 
         return Result(
             items: items,
-            bar: barValues.isEmpty ? nil : StructuredItem(kind: .bar, alias: "bar", values: barValues, excludedRanges: []),
-            defaults: defaultValues.isEmpty ? nil : StructuredItem(kind: .defaultItem, alias: "default", values: defaultValues, excludedRanges: []),
+            bar: barValues.isEmpty ? [] : [StructuredItem(kind: .bar, alias: "bar", values: barValues, excludedRanges: [])],
+            defaults: defaultValues.isEmpty ? [] : [StructuredItem(kind: .defaultItem, alias: "default", values: defaultValues, excludedRanges: [])],
             warnings: warnings
         )
     }
@@ -447,13 +472,17 @@ struct ShellConfigCommandParser {
 
     // MARK: - The commands
 
-    /// The commands of the config, in the order of the file.
+    /// The commands of the config, in the order of the file, and the
+    /// number of calls of the binary.
     ///
-    /// A command ends at the next call of the binary, so the commands of a
-    /// config are read one after the other.
-    private static func commands(in source: String) -> [Command] {
+    /// A command ends at the newline, so the words of the next line are
+    /// not read as the properties of the command before it. A call of the
+    /// binary ends the command as well, so the commands of a config are
+    /// read one after the other.
+    private static func commands(in source: String) -> (commands: [Command], calls: Int) {
         let words = Self.words(in: source)
         var commands: [Command] = []
+        var calls = 0
         var index = 0
 
         while index < words.count {
@@ -462,9 +491,13 @@ struct ShellConfigCommandParser {
                 continue
             }
 
+            calls += 1
+            let line = words[index].line
             var arguments: [Word] = []
             var cursor = index + 1
-            while cursor < words.count, !Self.isBinary(words[cursor].text) {
+            while cursor < words.count,
+                  words[cursor].line == line,
+                  !Self.isBinary(words[cursor].text) {
                 arguments.append(words[cursor])
                 cursor += 1
             }
@@ -475,7 +508,7 @@ struct ShellConfigCommandParser {
             }
         }
 
-        return commands
+        return (commands, calls)
     }
 
     /// One command, read from the words that follow the call of the binary.
@@ -503,7 +536,8 @@ struct ShellConfigCommandParser {
     ///
     /// The pair is split at the first `=`, the way the daemon splits it
     /// (src/misc/helpers.h:126). A value that the shell builds, such as
-    /// `$(date)`, is not a literal, so it is left out.
+    /// `$(date)` or `$HOME`, is not a literal, so it is marked as one the
+    /// preview cannot read.
     private static func properties(in words: [Word]) -> [Property] {
         var properties: [Property] = []
 
@@ -512,11 +546,14 @@ struct ShellConfigCommandParser {
             let key = String(word.text[..<separator])
             guard !key.isEmpty else { continue }
             let value = String(word.text[word.text.index(after: separator)...])
-            guard !Self.isDynamic(value) else { continue }
-            let offset = word.text.distance(from: word.text.startIndex, to: separator) + 1
+            // The range is measured on the raw text of the word, so it
+            // covers the quotes of a quoted value.
+            guard let rawSeparator = word.raw.firstIndex(of: "=") else { continue }
+            let offset = word.raw.distance(from: word.raw.startIndex, to: rawSeparator) + 1
             properties.append(Property(key: key,
                                        value: value,
-                                       range: word.range.lowerBound + offset..<word.range.upperBound))
+                                       range: word.range.lowerBound + offset..<word.range.upperBound,
+                                       dynamic: Self.isDynamic(value)))
         }
 
         return properties
@@ -524,7 +561,7 @@ struct ShellConfigCommandParser {
 
     /// True when the shell builds the value, so the value is not a literal.
     private static func isDynamic(_ value: String) -> Bool {
-        value.contains("$(") || value.contains("`")
+        value.contains("$") || value.contains("`")
     }
 
     /// True when the word calls the binary of SketchyBar.
@@ -542,11 +579,13 @@ struct ShellConfigCommandParser {
         let characters = Array(source)
         var words: [Word] = []
         var index = 0
+        var line = 1
 
         while index < characters.count {
             // The whitespace and the line continuations separate the words.
             while index < characters.count {
                 if characters[index].isWhitespace {
+                    if characters[index] == "\n" { line += 1 }
                     index += 1
                     continue
                 }
@@ -563,6 +602,7 @@ struct ShellConfigCommandParser {
             }
 
             let start = index
+            let startLine = line
             var text = ""
 
             while index < characters.count {
@@ -586,6 +626,7 @@ struct ShellConfigCommandParser {
                 if character == "'" {
                     index += 1
                     while index < characters.count, characters[index] != "'" {
+                        if characters[index] == "\n" { line += 1 }
                         text.append(characters[index])
                         index += 1
                     }
@@ -613,6 +654,7 @@ struct ShellConfigCommandParser {
                             index += 1
                             break
                         }
+                        if inner == "\n" { line += 1 }
                         text.append(inner)
                         index += 1
                     }
@@ -623,7 +665,8 @@ struct ShellConfigCommandParser {
                 index += 1
             }
 
-            words.append(Word(text: text, range: start..<index))
+            let range = start..<index
+            words.append(Word(text: text, raw: String(characters[range]), line: startLine, range: range))
         }
 
         return words

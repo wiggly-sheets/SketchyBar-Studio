@@ -50,11 +50,37 @@ The bridge therefore has to do two things in this order:
 
 A default that the item does not override is then inherited by the item, and the acceptance criterion "defaults reach every item that does not override them" holds.
 
+### The defaults of every file, not of one file
+
+A config splits its defaults and its items over several files: the entrypoint requires the bar, the defaults and the items, the defaults live in their own file and the items live in a folder. `plan(forLua:)` reads one file, so the defaults of one file never reach the items of another.
+
+The bridge therefore combines the plans of the files: `BarRenderPlan.combined(with:)` concatenates the defaults, merges the bar values, concatenates the items and concatenates the warnings. **The bridge collects the defaults of every file of the config and applies them before the first item of every file, so an item inherits the defaults of the whole config, not only the defaults of its own file.** The default item is a snapshot, so the order is the whole point: a default that comes after an item never reaches that item.
+
+### The duplicate alias follows the daemon
+
+The daemon answers "[?] Add: Item '%s' already exists" and returns when the name is taken (`src/message.c:190-193`). The item is therefore the one of the **first** declaration, and everything that only the add carries comes from that first add. Every `--set` after it still applies to the item, so the properties of a later declaration are applied and the last value of a property wins.
+
+The two styles differ, and the difference is the daemon's own:
+
+* In the SbarLua style the position is a **property** of the table (`sbar.add("item", "x", { position = "right" })`), so the position of the later declaration wins.
+* In the shell style the position travels in the **add command** (`sketchybar --add item x right`), and the daemon refuses the whole second add, so the position of the first add wins.
+
+The bridge reproduces that difference and reports it: "The alias 'clock' is added twice. SketchyBar keeps the first item; the properties of the second declaration are applied, and the last value of a property wins." The shell style adds: "The position of the second add is ignored."
+
+### What the preview cannot show
+
+The bridge names every value it cannot read, so the user learns what the preview does not show:
+
+* A value that is built by an expression, such as `colors.red`, needs a Lua interpreter. The preview keeps the value SketchyBar has by default and names the value: "The value of 'icon.color' is built by an expression, so the preview shows the value SketchyBar has by default, not the value of the config."
+* An alias that is built by an expression, such as `"menu." .. i`, cannot be shown: "The alias of an item is built by an expression, so the preview cannot show the item. SketchyBar shows it under the name of the expression."
+* An item without a name is named by SbarLua: "The item has no name. SketchyBar gives it a generated name (item_1, item_2, ...), so the preview cannot show it."
+* An item type the preview cannot show, such as a graph or a bracket: "The preview cannot show the 'graph' item 'cpu'."
+
 ## Files
 
 **Create.** `Sources/SketchyBarStudio/Services/PreviewConfigBridge.swift`, `Sources/SketchyBarStudio/Models/BarRenderModels.swift`, `Sources/SketchyBarStudio/Models/BarRenderItemModel.swift`.
 
-**Modify.** `Sources/SketchyBarStudio/Services/SbarLuaItemParser.swift` (or a new defaults parser next to it), `Sources/SketchyBarStudio/Services/ShellConfigScanner.swift`, `Sources/SketchyBarStudio/Models/StructuredItem.swift`. The app parses neither `sbar.default` nor `--default` today: `SbarLuaItemParser.swift:18` reads only `sbar.add` and `SbarLuaItemParser.swift:60` reads only `sbar.bar`, `ConfigScaffolder.swift:116` writes `sbar.bar({…})`, and `ShellConfigScanner.swift:82` and `ShellConfigScanner.swift:289-296` handle the `--bar` flag. The defaults need their own parse path, and it has to reach the default-item domain.
+**Modify.** `Sources/SketchyBarStudio/Services/SbarLuaItemParser.swift` (or a new defaults parser next to it), `Sources/SketchyBarStudio/Services/ShellConfigScanner.swift`, `Sources/SketchyBarStudio/Models/StructuredItem.swift`, `Sources/CSketchyBar/include/sketchybar_preview.h` and `Sources/CSketchyBar/preview/sketchybar_preview_test.c` (the test-only accessor that serializes an item, so the tests can read the tree of the core). The app parses neither `sbar.default` nor `--default` today: `SbarLuaItemParser.swift:18` reads only `sbar.add` and `SbarLuaItemParser.swift:60` reads only `sbar.bar`, `ConfigScaffolder.swift:116` writes `sbar.bar({…})`, and `ShellConfigScanner.swift:82` and `ShellConfigScanner.swift:289-296` handle the `--bar` flag. The defaults need their own parse path, and it has to reach the default-item domain.
 
 **Do not touch.** `Sources/SketchyBarStudio/Views/**`, `Sources/SketchyBarStudio/Stores/**`, `Sources/SketchyBarStudio/Services/LuaTableParser.swift`, and any file under a user config root.
 
@@ -64,10 +90,18 @@ A default that the item does not override is then inherited by the item, and the
 * `sbar.default({...})` values reach every item that does not override them.
 * `sketchybar --default k=v` in a shell config reaches every item that does not override them, the same way the SbarLua form does.
 * The defaults are applied before the items are added, so the inheritance happens at item creation the way it does upstream.
+* The defaults of one file reach the items of another file, because the bridge collects the defaults of every file of the config.
 * A file with two `sbar.add("item", ...)` calls produces two items with distinct aliases.
 * The bridge never writes to disk.
 * A value of `icon.font.size` and a value of `label.font.size` on the same item stay in separate properties, and neither is read as the other.
-* A shell config (`sketchybarrc` or a shell file) produces the same item tree as the equivalent SbarLua config.
+* A shell config (`sketchybarrc` or a shell file) produces the same item tree as the equivalent SbarLua config. This holds for a config **without a duplicate alias**: a duplicate alias is not "the same thing said twice", and the daemon's own rule decides which of the two declarations wins (see above).
+* Every value the bridge cannot read is named in its warnings, so the user learns what the preview does not show.
+
+## Known limits
+
+* The items of the plan follow the order of the files of the config, not the order in which the config loads them. The load order needs the load graph of the config, which [Stage 5](phase-5-preview-pane.md) owns.
+* A value that is built by an expression cannot be read without a Lua interpreter, so the preview keeps the value SketchyBar has by default.
+* The Lua escapes are resolved in `SbarLuaItemParser`, and `Services/LuaTableParser.swift` resolves them a second time with other rules. The two resolvers have to become one, but `LuaTableParser.swift` is out of scope for this stage.
 
 ## Tests
 

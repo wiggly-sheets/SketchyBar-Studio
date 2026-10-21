@@ -28,4 +28,20 @@ struct BarRenderPlan: Hashable {
     let items: [BarRenderItemModel]
     /// The problems of the config that the bridge found while it read it.
     let warnings: [String]
+
+    /// The plan of several files of one config.
+    ///
+    /// The defaults of every file are concatenated, so they all come
+    /// before the first item of every file and an item inherits the
+    /// defaults of the whole config, not only the defaults of its own
+    /// file. The bar values are merged, the items are concatenated and
+    /// the warnings are concatenated.
+    func combined(with other: BarRenderPlan) -> BarRenderPlan {
+        BarRenderPlan(
+            defaults: defaults + other.defaults,
+            bar: bar + other.bar,
+            items: items + other.items,
+            warnings: warnings + other.warnings
+        )
+    }
 }
