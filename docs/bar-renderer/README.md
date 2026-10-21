@@ -1,6 +1,6 @@
 # Bar Renderer — stage documents
 
-Status: **Approved design. Stages 0-5 merged (including the added stages 3b and 3c); Stage 6 (live values) is in flight.**
+Status: **Approved design. Stages 0-6 merged (including the added stages 3b and 3c); Stage 7 (live update mode) is next.**
 Date: 2026-10-20
 Owner: repository owner (sole contributor)
 Audience: orchestrating agents and coding agents picking this work up.
@@ -58,7 +58,7 @@ The stages below are the scope. Each stage file states its own in scope and out 
 | 3c | [phase-3-config-bridge.md](phase-3-config-bridge.md) | Every item type of a config reaches the preview, not only the plain items | 3b | M |
 | 4 | [phase-4-layout-and-render.md](phase-4-layout-and-render.md) | Layout and offscreen render to a `CGImage` | 3 | L |
 | 5 | [phase-5-preview-pane.md](phase-5-preview-pane.md) | The in-app preview pane, profile picker and scaling | 4 | M |
-| 6 | [phase-6-live-values.md](phase-6-live-values.md) | Item scripts run inside the preview through the `PATH` shim | 5 | M |
+| 6 | [phase-6-live-values.md](phase-6-live-values.md) | The item scripts run inside the preview, isolated from the real bar | 5 | M |
 | 7 | [phase-7-live-update-mode.md](phase-7-live-update-mode.md) | The user-configurable live-update mode and Restore | 5 | M |
 | 8 | [phase-8-exactness-and-diff.md](phase-8-exactness-and-diff.md) | Golden images and the differential test against `sketchybar --query` | 6 | L |
 | 9 | [phase-9-docs-and-release.md](phase-9-docs-and-release.md) | README claims, CHANGELOG, release checklist | 8 | S |
@@ -244,4 +244,4 @@ The `icon` prefix semantics are a separate question to confirm, written up in [r
 
 Read this file, then read the stage file you were given, then execute that stage. Nothing else needs to be read first.
 
-Status: Stages 0-5 are merged, together with the two stages that were added to the plan: Stage 3b (the Lua config resolver, the decision D7) and Stage 3c (the item types). Stage 6 (live values) is being worked on, and the stage after it is Stage 7 (the live-update mode) — see `docs/bar-renderer/phase-3-config-bridge.md`, `docs/bar-renderer/phase-6-live-values.md` and `docs/bar-renderer/phase-7-live-update-mode.md`.
+Status: Stage 6 (live values) is done — this document lands with its merge. The next stage to run is Stage 7 (the live update mode) — see docs/bar-renderer/phase-7-live-update-mode.md.
