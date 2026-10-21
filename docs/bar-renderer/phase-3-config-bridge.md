@@ -2,7 +2,7 @@
 
 ## Goal
 
-A parsed config becomes a live item tree in the vendored SketchyBar. The app's existing SbarLua parser is the bridge: it reads the Lua of a config into item aliases and qualified key paths, and the app hands the equivalent property assignments to the vendored SketchyBar, so no Lua interpreter and no SbarLua are needed in the app.
+A parsed config becomes a live item tree in the vendored SketchyBar. The app's existing SbarLua parser is the bridge: it reads the Lua of a config into item aliases and qualified key paths, and the app hands the equivalent property assignments to the vendored SketchyBar. A value that a config builds with an expression needs a Lua interpreter, so Stage 3b runs the config in the vendored Lua interpreter of the app and reads the values from there; SbarLua itself is still not vendored.
 
 ## Depends on
 
@@ -73,9 +73,9 @@ The bridge reproduces that difference and reports it: "The alias 'clock' is adde
 
 The bridge names every value it cannot read, so the user learns what the preview does not show:
 
-* A value that is built by an expression, such as `colors.red`, needs a Lua interpreter. The preview keeps the value SketchyBar has by default and names the value: "The value of 'icon.color' is built by an expression, so the preview shows the value SketchyBar has by default, not the value of the config."
+* A value that is built by an expression, such as `colors.red`, needs a Lua interpreter. The parser path keeps the value SketchyBar has by default and names the value: "The value of 'icon.color' is built by an expression, so the preview shows the value SketchyBar has by default, not the value of the config." The Lua path of Stage 3b reads the value instead.
 * An alias that is built by an expression, such as `"menu." .. i`, cannot be shown: "The alias of an item is built by an expression, so the preview cannot show the item. SketchyBar shows it under the name of the expression."
-* An item without a name is named by SbarLua: "The item has no name. SketchyBar gives it a generated name (item_1, item_2, ...), so the preview cannot show it."
+* An item without a name is named by SbarLua: "The item has no name. SketchyBar gives it a generated name (item_0, item_1, ...), so the preview cannot show it."
 * An item type the preview cannot show, such as a graph or a bracket: "The preview cannot show the 'graph' item 'cpu'."
 
 ## Files
@@ -102,12 +102,15 @@ The bridge names every value it cannot read, so the user learns what the preview
 ## Known limits
 
 * The items of the plan follow the order of the files of the config, not the order in which the config loads them. The load order needs the load graph of the config, which [Stage 5](phase-5-preview-pane.md) owns.
-* A value that is built by an expression cannot be read without a Lua interpreter, so the preview keeps the value SketchyBar has by default.
+* A value that is built by an expression cannot be read by the parser path, so that path keeps the value SketchyBar has by default. The Lua path of Stage 3b reads it.
+* **The Lua path knows the load order and throws it away.** The defaults of a config are emitted before every item, so a default that the config declares after an item reaches an item the daemon would not give it to. Emitting the defaults at the place of the load needs an ordered list of the operations in `BarRenderPlan`, which is a bigger change than the fix pass of Stage 3b. The limit is known and not fixed yet.
 * The Lua escapes are resolved in `SbarLuaItemParser`, and `Services/LuaTableParser.swift` resolves them a second time with other rules. The two resolvers have to become one, but `LuaTableParser.swift` is out of scope for this stage.
 
 ## Tests
 
 Unit tests in `Tests/SketchyBarStudioTests/PreviewConfigBridgeTests.swift`: one test per acceptance criterion, using the existing parser fixtures. The shared strategy is in [testing.md](testing.md).
+
+Unit tests in `Tests/SketchyBarStudioTests/LuaConfigRunnerTests.swift` cover the Lua path of Stage 3b: the values of a config, the sandbox (the globals that are gone, the debug library, the read-only `io.open` and `io.output`, a file outside of the config root), the deadline of an endless loop, the generated names of the items without a name, an item type the daemon does not support, and the text of a number. The shared strategy is in [testing.md](testing.md).
 
 ## Risks and unknowns
 

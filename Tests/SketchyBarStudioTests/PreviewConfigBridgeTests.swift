@@ -519,7 +519,7 @@ final class PreviewConfigBridgeTests: XCTestCase {
         XCTAssertTrue(plan.items.isEmpty)
         XCTAssertEqual(plan.warnings.count, 1)
         XCTAssertTrue(plan.warnings[0].contains("The item has no name."))
-        XCTAssertTrue(plan.warnings[0].contains("item_1, item_2"))
+        XCTAssertTrue(plan.warnings[0].contains("item_0, item_1"))
     }
 
     func testTheComponentTypesThePreviewCannotShowAreReported() {

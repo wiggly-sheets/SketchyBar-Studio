@@ -115,7 +115,8 @@ enum PreviewConfigBridge {
     private static func plan(fromResolved resolved: LuaConfigRunner.ResolvedConfig) -> BarRenderPlan {
         var aliases: [String] = []
         var properties: [String: [BarRenderProperty]] = [:]
-        var warnings = resolved.warnings
+        var warnings = [PreviewWarning.luaEntrypoint(resolved.entrypoint)]
+        warnings += resolved.warnings
 
         for item in resolved.items {
             guard item.type == "item" else {
@@ -344,7 +345,7 @@ enum PreviewWarning {
     /// the process (`src/sketchybar.c:405-407`).
     static func unnamedItem(generated: Bool) -> String {
         if generated {
-            return "The item has no name. SketchyBar gives it a generated name (item_1, item_2, ...), so the preview cannot show it."
+            return "The item has no name. SketchyBar gives it a generated name (item_0, item_1, ...), so the preview cannot show it."
         }
         return "The item has no name, so SketchyBar does not keep it and the preview cannot show it."
     }
@@ -393,6 +394,20 @@ enum PreviewWarning {
     /// The config was not resolved with Lua, so the parser path was used.
     static func luaFallback(_ reason: String) -> String {
         "The config was not resolved with Lua, so the preview shows the values the parser can read. \(reason)"
+    }
+
+    /// The file the Lua path ran.
+    ///
+    /// The daemon runs the config file through the shell (`exec_config_file`,
+    /// `src/hotload.c`), so the file the preview runs is a guess: the
+    /// preview runs the `sketchybarrc` when that file is Lua, and the
+    /// `init.lua` of the config otherwise. The user has to know which file
+    /// the preview ran.
+    static func luaEntrypoint(_ name: String) -> String {
+        if name == "sketchybarrc" {
+            return "The preview ran the 'sketchybarrc' of the config as its entrypoint, because that file is Lua."
+        }
+        return "The preview ran '\(name)' as the entrypoint of the config, because the 'sketchybarrc' of the config is not a Lua file. The daemon runs the 'sketchybarrc' through the shell, so the preview may have resolved a different config."
     }
 }
 

@@ -28,8 +28,9 @@ typedef struct CLuaState CLuaState;
 ** would grow the state past the cap fails, so Lua raises a memory error
 ** instead of taking the machine with it.
 **
-** timeoutSeconds is the deadline of one run: the count hook of the state
-** aborts the run when the deadline passes.
+** timeoutSeconds is the deadline of the state: the count hook of the state
+** aborts the run when the deadline passes. The deadline starts with the
+** state, so every call the state makes shares the same window.
 **
 ** Returns NULL when the state cannot be created.
 */

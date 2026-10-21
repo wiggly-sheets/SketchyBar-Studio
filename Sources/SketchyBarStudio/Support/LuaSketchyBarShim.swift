@@ -12,16 +12,21 @@ import Foundation
 ///
 /// * The name of an item without a name is `item_<N>`, with N counting the
 ///   items without a name in load order (`generate_uid`, `src/sketchybar.c`
-///   of SbarLua). The counter of the upstream starts at zero, so the first
-///   name of the upstream is `item_0`; the preview counts from one, which
-///   is the wording the app already uses ("item_1, item_2, ...").
+///   of SbarLua). The counter of the upstream is the counter of the
+///   process, so it starts at zero and every module of the config shares
+///   it: the first name of the upstream is `item_0`.
+/// * The daemon supports the types `item`, `alias`, `space`, `event`,
+///   `slider`, `graph` and `bracket` (`add`, `src/sketchybar.c` of
+///   SbarLua). An add of another type, and an add the daemon refuses,
+///   create no item at all.
 /// * The properties of a table become the property pairs of SbarLua: a
 ///   nested table becomes `prefix.key`, a boolean becomes `on` or `off`,
 ///   and a number under `color` or `border_color` becomes `0x%x`
 ///   (`parse_kv_table`, `src/parsing.c` of SbarLua).
-/// * The properties of an item come from the last table of the call, so
-///   the four argument form of a bracket keeps its members out of the
-///   properties (`add`, `src/sketchybar.c` of SbarLua).
+/// * The properties of an item come from the last argument of the call,
+///   and only when that argument is a table (`add`, `src/sketchybar.c` of
+///   SbarLua), so the four argument form of a bracket keeps its members
+///   out of the properties.
 ///
 /// The result is a JSON document, written by hand. Every property keeps
 /// the Lua type of its value in the `type` field, and the text of the
@@ -43,6 +48,7 @@ enum LuaSketchyBarShim {
     local barProperties = {}
     local warnings = {}
     local commands = {}
+    local reads = {}
     local generatedNames = 0
 
     --- Adds a warning of the run.
@@ -51,12 +57,13 @@ enum LuaSketchyBarShim {
     end
 
     --- The text of a number, the way Lua writes it.
+    ---
+    --- The daemon sends the value with `lua_tostring`, and the shim runs
+    --- inside the interpreter, so `tostring` is that function: a float
+    --- that looks like an integer keeps its ".0", and a float that needs
+    --- more digits gets them.
     local function numberText(value)
-      if type(value) ~= "number" then return tostring(value) end
-      if math.type(value) == "integer" then
-        return string.format("%d", value)
-      end
-      return string.format("%.14g", value)
+      return tostring(value)
     end
 
     --- The colour of a number, the way SbarLua writes it: "0x%x" of the
@@ -206,50 +213,94 @@ enum LuaSketchyBarShim {
       return tostring(value)
     end
 
+    --- The item types the daemon supports (`add`, `src/sketchybar.c` of
+    --- SbarLua). An add of another type creates no item.
+    local supportedTypes = {
+      item = true,
+      alias = true,
+      space = true,
+      event = true,
+      slider = true,
+      graph = true,
+      bracket = true,
+    }
+
     --- Adds an item.
     ---
     --- The forms are the forms of SbarLua: `add(type, name, table)`,
     --- `add(type, table)` without a name, `add(type, name, width, table)`
-    --- for a graph, a slider and a ring, and `add(type, name, members,
-    --- table)` for a bracket.
+    --- for a graph and a slider, and `add(type, name, members, table)` for
+    --- a bracket.
+    ---
+    --- The daemon refuses an add it cannot use and creates no item for it,
+    --- so the shim refuses it too.
     local function add(itemType, ...)
       local count = select("#", ...)
       local arguments = { ... }
-      local alias
-      local first = 1
 
+      if count < 1 then
+        warn("An item was added without a name, so SketchyBar creates no item for it.")
+        return nil
+      end
+
+      -- The name of the item. The daemon names an item without a name
+      -- `item_<N>`, and the counter is the counter of the process, so it
+      -- starts at zero and every module of the config shares it.
+      local alias
+      local rest
       if type(arguments[1]) == "string" then
         alias = arguments[1]
-        first = 2
+        rest = {}
+        for index = 2, count do rest[#rest + 1] = arguments[index] end
       else
-        generatedNames = generatedNames + 1
         alias = "item_" .. generatedNames
+        generatedNames = generatedNames + 1
+        rest = arguments
       end
 
-      local properties = {}
-      for index = count, first, -1 do
-        if type(arguments[index]) == "table" then
-          properties = flatten(arguments[index], nil, {})
-          break
-        end
+      if not supportedTypes[itemType] then
+        warn("The item type '" .. tostring(itemType) .. "' is not supported by SketchyBar, so the preview cannot show it.")
+        return nil
       end
 
+      -- The type decides what the daemon wants after the name.
       local argument = nil
-      if itemType == "graph" or itemType == "slider" or itemType == "ring" then
-        local width = arguments[first]
-        if width ~= nil then argument = numberText(width) end
-      elseif itemType == "bracket" then
-        local members = arguments[first]
-        if type(members) == "table" then
-          local names = {}
-          for _, member in ipairs(members) do
-            names[#names + 1] = tostring(member)
-          end
-          argument = table.concat(names, " ")
+      if itemType == "graph" or itemType == "slider" then
+        if type(rest[1]) ~= "number" then
+          warn("A '" .. itemType .. "' item needs a width, so SketchyBar creates no item for it.")
+          return nil
         end
+        argument = numberText(rest[1])
+        if itemType == "graph" and type(rest[2]) ~= "table" then
+          warn("A 'graph' item needs a table of properties, so SketchyBar creates no item for it.")
+          return nil
+        end
+      elseif itemType == "bracket" then
+        if type(rest[1]) ~= "table" then
+          warn("A 'bracket' item needs a table of members, so SketchyBar creates no item for it.")
+          return nil
+        end
+        local names = {}
+        for _, member in ipairs(rest[1]) do
+          names[#names + 1] = tostring(member)
+        end
+        argument = table.concat(names, " ")
       elseif itemType == "event" then
-        local notification = arguments[first]
-        if notification ~= nil then argument = tostring(notification) end
+        -- The daemon wants the name of the notification as a string, and
+        -- it creates no event item without a name.
+        if #rest == 1 and type(rest[1]) ~= "string" then
+          warn("An 'event' item needs a name, so SketchyBar creates no item for it.")
+          return nil
+        end
+        if rest[1] ~= nil then argument = tostring(rest[1]) end
+      end
+
+      -- The properties come from the last argument of the call, and only
+      -- when that argument is a table.
+      local properties = {}
+      local last = arguments[count]
+      if type(last) == "table" then
+        properties = flatten(last, nil, {})
       end
 
       local item = {
@@ -387,6 +438,10 @@ enum LuaSketchyBarShim {
     --- The warnings of the run.
     sbar.warnings = warnings
 
+    --- The files the config opened for reading. The sandbox fills the
+    --- list, and the app names the files that lie outside the config root.
+    sbar.reads = reads
+
     --- The JSON document of the run.
     sbar.result = function()
       local parts = {}
@@ -405,6 +460,11 @@ enum LuaSketchyBarShim {
         warningTexts[#warningTexts + 1] = jsonString(warning)
       end
       parts[#parts + 1] = '"warnings":[' .. table.concat(warningTexts, ",") .. "]"
+      local readTexts = {}
+      for _, path in ipairs(reads) do
+        readTexts[#readTexts + 1] = jsonString(path)
+      end
+      parts[#parts + 1] = '"reads":[' .. table.concat(readTexts, ",") .. "]"
       return "{" .. table.concat(parts, ",") .. "}"
     end
 

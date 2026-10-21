@@ -118,6 +118,8 @@ final class LuaConfigRunnerTests: XCTestCase {
         XCTAssertEqual(value(plan, "sandbox", "no_load"), "true")
         XCTAssertEqual(value(plan, "sandbox", "no_package_loadlib"), "true")
         XCTAssertEqual(value(plan, "sandbox", "no_debug"), "true")
+        XCTAssertEqual(value(plan, "sandbox", "no_io_tmpfile"), "true")
+        XCTAssertEqual(value(plan, "sandbox", "no_os_tmpname"), "true")
         XCTAssertEqual(value(plan, "sandbox", "empty_cpath"), "")
         XCTAssertEqual(value(plan, "sandbox", "no_c_searcher"), "true")
 
@@ -125,6 +127,18 @@ final class LuaConfigRunnerTests: XCTestCase {
         XCTAssertTrue(path.hasPrefix(fixture("lua-sandbox").path),
                       "the path of the modules must be the root of the config")
         XCTAssertTrue(path.contains("/?.lua;"))
+    }
+
+    /// The debug library is out of reach, so the config cannot switch off
+    /// the deadline of the run.
+    ///
+    /// The library is in the loaded modules of the interpreter as well, so
+    /// `require("debug")` must not find it either.
+    func testTheDebugLibraryIsOutOfReach() throws {
+        let plan = self.plan(of: "lua-sandbox")
+
+        XCTAssertEqual(value(plan, "sandbox", "no_debug_module"), "true")
+        XCTAssertEqual(value(plan, "sandbox", "no_debug_reachable"), "true")
     }
 
     /// `io.open` only reads: a file in a write mode is not created.
@@ -140,10 +154,43 @@ final class LuaConfigRunnerTests: XCTestCase {
                        "the sandbox must not write a file")
     }
 
+    /// `io.output` with a file name would create the file, so it is
+    /// refused.
+    func testIoOutputDoesNotCreateAFile() throws {
+        let marker = try markerPath()
+        defer { try? FileManager.default.removeItem(at: marker) }
+        setenv("SKETCHYBAR_STUDIO_MARKER", marker.path, 1)
+        defer { unsetenv("SKETCHYBAR_STUDIO_MARKER") }
+
+        let plan = self.plan(of: "lua-sandbox")
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path),
+                       "the sandbox must not create a file with io.output")
+        XCTAssertEqual(value(plan, "sandbox", "no_io_output"), "true")
+    }
+
+    /// A file outside of the config root is read, and the run warns about
+    /// it. The file is not refused: the daemon reads it as well.
+    func testAFileOutsideTheConfigRootIsReported() throws {
+        let outside = try markerPath()
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try "outside".write(to: outside, atomically: true, encoding: .utf8)
+        setenv("SKETCHYBAR_STUDIO_OUTSIDE", outside.path, 1)
+        defer { unsetenv("SKETCHYBAR_STUDIO_OUTSIDE") }
+
+        let plan = self.plan(of: "lua-sandbox")
+
+        XCTAssertTrue(plan.warnings.contains { $0.contains(outside.path) },
+                      "the file outside of the config root must be reported")
+    }
+
     // MARK: - The failures
 
     /// An endless loop aborts with the deadline of the sandbox instead of
     /// hanging the app.
+    ///
+    /// The fixture tries to switch the deadline off with the debug library
+    /// before the loop, and the deadline still holds.
     func testAnEndlessLoopAbortsWithTheDeadline() throws {
         let root = fixture("lua-infinite")
         let entrypoint = try XCTUnwrap(LuaConfigRunner.entrypoint(in: root))
@@ -203,12 +250,57 @@ final class LuaConfigRunnerTests: XCTestCase {
 
     /// An item without a name gets the generated name of SbarLua, and the
     /// counter follows the order of the load.
+    ///
+    /// The counter of the daemon starts at zero, so the first name is
+    /// `item_0`.
     func testAnItemWithoutANameGetsAGeneratedName() throws {
         let plan = self.plan(of: "lua-aliasless")
 
-        XCTAssertEqual(aliases(plan), ["item_1", "item_2"])
-        XCTAssertEqual(value(plan, "item_1", "label.string"), "first")
-        XCTAssertEqual(value(plan, "item_2", "label.string"), "second")
+        XCTAssertEqual(aliases(plan), ["item_0", "item_1"])
+        XCTAssertEqual(value(plan, "item_0", "label.string"), "first")
+        XCTAssertEqual(value(plan, "item_1", "label.string"), "second")
+    }
+
+    /// The counter of the generated names is the counter of the process,
+    /// so the modules of the config share it.
+    func testTheCounterOfTheNamesIsSharedByTheModules() throws {
+        let plan = self.plan(of: "lua-shared-counter")
+
+        XCTAssertEqual(aliases(plan), ["item_0", "item_1"])
+        XCTAssertEqual(value(plan, "item_0", "label.string"), "first")
+        XCTAssertEqual(value(plan, "item_1", "label.string"), "second")
+    }
+
+    /// A type the daemon does not support creates no item, and the run
+    /// says so.
+    func testAnUnsupportedTypeCreatesNoItem() throws {
+        let plan = self.plan(of: "lua-unsupported-type")
+
+        XCTAssertEqual(aliases(plan), ["kept"])
+        XCTAssertTrue(plan.warnings.contains { $0.contains("'ring'") },
+                      "the type the daemon does not support must be reported")
+    }
+
+    /// The text of a number is the text the daemon receives, which is the
+    /// text Lua writes for it.
+    func testTheTextOfANumberIsTheTextOfLua() throws {
+        let plan = self.plan(of: "lua-numbers")
+
+        XCTAssertEqual(value(plan, "numbers", "integer"), "12")
+        XCTAssertEqual(value(plan, "numbers", "float"), "12.0")
+        // Lua writes the shortest text that reads back to the same number,
+        // so a third needs 17 digits.
+        XCTAssertEqual(value(plan, "numbers", "third"), "0.33333333333333331")
+    }
+
+    /// The properties of an item come from the last argument of the call,
+    /// and a call that ends with something else has no properties.
+    func testThePropertiesComeFromTheLastArgument() throws {
+        let plan = self.plan(of: "lua-last-argument")
+
+        XCTAssertEqual(aliases(plan), ["last"])
+        XCTAssertEqual(plan.items.first?.properties.count, 0,
+                       "the last argument is not a table, so there are no properties")
     }
 
     /// The order of the items is the order of the load, not the order of
@@ -230,14 +322,30 @@ final class LuaConfigRunnerTests: XCTestCase {
     /// The test is skipped when the config is not on this machine, so the
     /// suite does not depend on it. It prints what the resolver reads, so
     /// the numbers of the report can be seen.
+    ///
+    /// The run of the config is bounded by the deadline of the sandbox, and
+    /// the test gives up after 30 seconds all the same, so a broken
+    /// deadline cannot hang the suite.
     func testTheRealConfigOfTheUserIsResolved() throws {
         let root = URL(fileURLWithPath: "/Users/Zeb/dotfiles/sketchybar")
         guard FileManager.default.fileExists(atPath: root.path) else {
             throw XCTSkip("the real config of the user is not on this machine")
         }
 
-        let parsed = PreviewConfigBridge.plan(forConfigRoot: root)
-        let resolved = PreviewConfigBridge.plan(forLuaConfigRoot: root)
+        let finished = expectation(description: "the config of the user is resolved")
+        var parsed = BarRenderPlan(defaults: [], bar: [], items: [], warnings: [])
+        var resolved = BarRenderPlan(defaults: [], bar: [], items: [], warnings: [])
+        var run: LuaConfigRunner.ResolvedConfig?
+        DispatchQueue.global().async {
+            parsed = PreviewConfigBridge.plan(forConfigRoot: root)
+            resolved = PreviewConfigBridge.plan(forLuaConfigRoot: root)
+            let entrypoint = LuaConfigRunner.entrypoint(in: root)
+            if let entrypoint {
+                run = try? LuaConfigRunner.resolve(configRoot: root, entrypoint: entrypoint)
+            }
+            finished.fulfill()
+        }
+        wait(for: [finished], timeout: 30)
 
         let expressions = parsed.warnings.filter { $0.contains("is built by an expression") }.count
 
@@ -256,11 +364,10 @@ final class LuaConfigRunnerTests: XCTestCase {
         print("lua-resolve: the parser has \(parsed.items.count) items, the resolver has \(resolved.items.count)")
 
         // The items of a type the preview cannot show.
-        let entrypoint = try XCTUnwrap(LuaConfigRunner.entrypoint(in: root))
-        let run = try LuaConfigRunner.resolve(configRoot: root, entrypoint: entrypoint)
+        let items = try XCTUnwrap(run?.items)
         var byType: [String: Int] = [:]
         var dropped: [String: Int] = [:]
-        for item in run.items {
+        for item in items {
             byType[item.type, default: 0] += 1
             if item.type != "item" {
                 dropped[item.type, default: 0] += item.properties.count
@@ -268,7 +375,7 @@ final class LuaConfigRunnerTests: XCTestCase {
         }
         print("lua-resolve: the items of the config by type: \(byType.sorted { $0.key < $1.key })")
         print("lua-resolve: the values of the items the preview cannot show: \(dropped.sorted { $0.key < $1.key })")
-        print("lua-resolve: the warnings of the run: \(run.warnings)")
+        print("lua-resolve: the warnings of the run: \(run?.warnings ?? [])")
 
         XCTAssertFalse(resolved.items.isEmpty, "the resolver must read the items of the config")
         XCTAssertGreaterThan(newlyResolved.count, 0, "the resolver must read the values the parser cannot")

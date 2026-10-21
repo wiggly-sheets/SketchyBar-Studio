@@ -27,9 +27,10 @@ upstream code and they do not change the upstream sources.
    allocation that would grow the state past the cap of the caller. The
    refusal is a `NULL` return, so Lua raises a memory error.
 2. **A deadline.** `clua_hook` is the count hook of the state. It checks
-   the deadline of the run every 10000 VM instructions and raises a Lua
+   the deadline of the state every 10000 VM instructions and raises a Lua
    error when the deadline has passed, so an endless loop aborts with a
-   message.
+   message. The deadline starts with the state, so every call the state
+   makes shares the same window.
 3. **Run helpers.** `clua_run_file`, `clua_run_string`,
    `clua_set_global_string`, `clua_global_string`, `clua_memory_used` and
    `clua_timed_out` wrap the C API of Lua for the Swift side.

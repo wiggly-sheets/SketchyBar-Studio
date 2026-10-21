@@ -100,7 +100,13 @@ static void clua_hook(lua_State *lua, lua_Debug *debug) {
     }
 }
 
-/* Starts the deadline of a run. */
+/*
+** Starts the deadline of the state.
+**
+** The deadline is the budget of the WHOLE state and not of a call: a run
+** that needs several files cannot buy more time with another call, and a
+** future multi-file API gives every file the same window.
+*/
 static void clua_start_deadline(struct CLuaState *state) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -129,6 +135,10 @@ CLuaState *clua_create(size_t memoryLimitBytes, double timeoutSeconds) {
     luaL_openlibs(state->lua);
     lua_sethook(state->lua, clua_hook, LUA_MASKCOUNT, CLUA_HOOK_COUNT);
 
+    /* The deadline starts with the state, so it covers every call the
+       state makes. */
+    clua_start_deadline(state);
+
     return state;
 }
 
@@ -155,8 +165,6 @@ int clua_run_file(CLuaState *state,
                   size_t errorBufferSize) {
     if (state == NULL || path == NULL) return 1;
 
-    clua_start_deadline(state);
-
     if (luaL_loadfile(state->lua, path) != LUA_OK) {
         clua_copy_error(state->lua, errorBuffer, errorBufferSize);
         return 1;
@@ -176,8 +184,6 @@ int clua_run_string(CLuaState *state,
                     char *errorBuffer,
                     size_t errorBufferSize) {
     if (state == NULL || source == NULL) return 1;
-
-    clua_start_deadline(state);
 
     if (luaL_loadbuffer(state->lua, source, strlen(source),
                         chunkName ? chunkName : "=(load)") != LUA_OK) {

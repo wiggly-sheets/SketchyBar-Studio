@@ -57,6 +57,11 @@ enum LuaConfigRunner {
         let bar: [ResolvedProperty]
         /// The problems of the run.
         let warnings: [String]
+        /// The name of the file that was run, such as `init.lua`. The
+        /// daemon runs the config file through the shell, so the file the
+        /// preview runs is a guess, and the user has to know which file it
+        /// was.
+        let entrypoint: String
     }
 
     /// Why a run failed.
@@ -114,6 +119,14 @@ enum LuaConfigRunner {
     /// The run never writes: it reads the files of the config and it
     /// reads the files the config reads.
     static func resolve(configRoot root: URL, entrypoint: URL) throws -> ResolvedConfig {
+        // The daemon runs the config with the directory of the config as
+        // the working directory (`exec_config_file`, `src/hotload.c`), so
+        // a relative path of the config means the same thing in the
+        // preview as in the daemon.
+        let workingDirectory = FileManager.default.currentDirectoryPath
+        FileManager.default.changeCurrentDirectoryPath(root.path)
+        defer { FileManager.default.changeCurrentDirectoryPath(workingDirectory) }
+
         guard let state = clua_create(memoryLimitBytes, timeoutSeconds) else {
             throw Failure.cannotStart
         }
@@ -168,7 +181,7 @@ enum LuaConfigRunner {
             throw Failure.unreadable("the Lua config produced no result")
         }
 
-        return try decode(String(cString: json))
+        return try decode(String(cString: json), configRoot: root, entrypoint: entrypoint)
     }
 
     /// The message of a failed run.
@@ -178,7 +191,7 @@ enum LuaConfigRunner {
     }
 
     /// Reads the JSON document of the shim.
-    private static func decode(_ json: String) throws -> ResolvedConfig {
+    private static func decode(_ json: String, configRoot: URL, entrypoint: URL) throws -> ResolvedConfig {
         guard let data = json.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data),
               let document = root as? [String: Any] else {
@@ -194,12 +207,56 @@ enum LuaConfigRunner {
             )
         }
 
+        var warnings = document["warnings"] as? [String] ?? []
+        warnings += readWarnings(for: document["reads"] as? [String] ?? [], in: configRoot)
+
         return ResolvedConfig(
             items: items,
             defaults: properties(of: document["defaults"]),
             bar: properties(of: document["bar"]),
-            warnings: document["warnings"] as? [String] ?? []
+            warnings: warnings,
+            entrypoint: entrypoint.lastPathComponent
         )
+    }
+
+    /// The warning of every file the config opened outside of the config
+    /// root.
+    ///
+    /// The file is not refused: the daemon reads the same files with the
+    /// same rights, and the config is the file of the user. The warning
+    /// tells the user what the config read.
+    private static func readWarnings(for paths: [String], in root: URL) -> [String] {
+        var seen: Set<String> = []
+        return paths.compactMap { path in
+            guard !isInsideRoot(path, root: root) else { return nil }
+            let absolute = absolutePath(of: path, in: root)
+            guard seen.insert(absolute).inserted else { return nil }
+            return "The config opened the file '\(absolute)' for reading, and the file is outside the config root."
+        }
+    }
+
+    /// True when a path is inside the config root.
+    ///
+    /// The root can be a symlink into a dotfiles repository, and the config
+    /// can use the other name of the same directory, so the real path of
+    /// the file and the real path of the root count as well.
+    private static func isInsideRoot(_ path: String, root: URL) -> Bool {
+        let full = path.hasPrefix("/") ? path : root.path + "/" + path
+        let file = URL(fileURLWithPath: full)
+        let roots = [root.standardizedFileURL.path, root.resolvingSymlinksInPath().path]
+        let files = [file.standardizedFileURL.path, file.resolvingSymlinksInPath().path]
+        return roots.contains { base in
+            files.contains { $0 == base || $0.hasPrefix(base + "/") }
+        }
+    }
+
+    /// The absolute path of a path of the config.
+    ///
+    /// The run works in the config root, so a relative path of the config
+    /// starts there.
+    private static func absolutePath(of path: String, in root: URL) -> String {
+        let full = path.hasPrefix("/") ? path : root.path + "/" + path
+        return URL(fileURLWithPath: full).standardizedFileURL.path
     }
 
     /// The properties of a JSON list.
@@ -229,13 +286,14 @@ enum LuaConfigRunner {
 ///   `os.remove`, `os.rename`, `io.popen`, `dofile`, `loadfile`, `load`
 ///   and `package.loadlib`;
 /// * the `debug` library is gone, so the config cannot switch off the
-///   deadline of the run;
+///   deadline of the run, and `require("debug")` finds it neither;
 /// * `package.cpath` is empty and the C searchers of `package` are gone,
 ///   so no C module can load — in particular the installed
 ///   `sketchybar.so` of SbarLua is never loaded;
 /// * `package.path` holds the root of the config, so
 ///   `require("items.left.apple")` resolves inside the config;
-/// * `io.open` only reads: every mode but `r` and `rb` is refused;
+/// * `io.open` only reads: every mode but `r` and `rb` is refused, and
+///   `io.output`, `io.tmpfile` and `os.tmpname` cannot create a file;
 /// * the `sketchybar` module is the shim of the app, never the real one;
 /// * `require` fails softly: a module that errors is a warning and an
 ///   empty table, so the rest of the config still loads.
@@ -265,7 +323,12 @@ enum LuaConfigSandbox {
     package.loadlib = nil
 
     -- The debug library is gone: it could switch off the deadline hook.
+    -- The library is in the loaded modules as well, so `require("debug")`
+    -- must not find it either: the loader of Lua finds a module in
+    -- `package.loaded` first.
     debug = nil
+    package.loaded["debug"] = false
+    package.preload["debug"] = nil
 
     -- No C module can load. The path is empty and the C searchers of the
     -- package are gone, so a module that appends to the path cannot load
@@ -284,8 +347,24 @@ enum LuaConfigSandbox {
       if mode ~= "r" and mode ~= "rb" then
         return nil, "the preview only reads files"
       end
+      shim.reads[#shim.reads + 1] = tostring(path)
       return raw_open(path, mode)
     end
+
+    -- io.output with a file name would create the file, so only the file
+    -- handle form works.
+    local raw_output = io.output
+    io.output = function(target)
+      if target == nil then return raw_output() end
+      if type(target) == "string" then
+        return nil, "the preview only reads files"
+      end
+      return raw_output(target)
+    end
+
+    -- io.tmpfile creates a file, and os.tmpname may create one.
+    io.tmpfile = nil
+    os.tmpname = nil
 
     -- The sketchybar module is the shim.
     package.preload["sketchybar"] = function() return shim end
