@@ -43,14 +43,30 @@ let package = Package(
                 .linkedFramework("CoreVideo")
             ]
         ),
+        .target(
+            name: "CLua",
+            path: "Sources/CLua",
+            exclude: [
+                "LICENSE",
+                "MODIFICATIONS.md",
+                "UPSTREAM.md"
+            ],
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("lua"),
+                // The vendored sources of Lua are not changed, so the
+                // warning of the upstream about tmpnam stays quiet here.
+                .unsafeFlags(["-Wno-deprecated-declarations"])
+            ]
+        ),
         .executableTarget(
             name: "SketchyBarStudio",
-            dependencies: ["CSketchyBar"],
+            dependencies: ["CSketchyBar", "CLua"],
             path: "Sources/SketchyBarStudio"
         ),
         .testTarget(
             name: "SketchyBarStudioTests",
-            dependencies: ["SketchyBarStudio", "CSketchyBar"],
+            dependencies: ["SketchyBarStudio", "CSketchyBar", "CLua"],
             path: "Tests/SketchyBarStudioTests",
             // The golden image of the render is a file of the sources: the
             // test reads it from the tree, so it is not a resource of the

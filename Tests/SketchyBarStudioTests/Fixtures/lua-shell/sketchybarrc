@@ -1,0 +1,4 @@
+#!/bin/bash
+# A shell config. It cannot be resolved with Lua, so the parser reads it.
+sketchybar --add item shell right
+sketchybar --set shell label="shell"

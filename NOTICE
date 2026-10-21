@@ -16,6 +16,20 @@ Sources/CSketchyBar/LICENSE.md, the upstream commit that was vendored is
 recorded in Sources/CSketchyBar/UPSTREAM.md, and every change made to the
 vendored code is listed in Sources/CSketchyBar/MODIFICATIONS.md.
 
+This project also includes the Lua 5.5.0 interpreter, which is vendored
+unmodified under the MIT licence:
+
+  Lua
+  Lua.org, PUC-Rio — https://www.lua.org/
+
+  Copyright (C) 1994-2025 Lua.org, PUC-Rio.
+
+The Lua licence is in Sources/CLua/LICENSE, the upstream release that was
+vendored is recorded in Sources/CLua/UPSTREAM.md, and every change made to
+the vendored code is listed in Sources/CLua/MODIFICATIONS.md. The wrapper of
+the interpreter, Sources/CLua/clua.c, is new code of this project and it
+does not change the upstream sources.
+
 SketchyBar Studio is free software under the GNU General Public License,
 version 3. See LICENSE for the full text.
 

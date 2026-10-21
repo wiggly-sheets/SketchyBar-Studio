@@ -1,0 +1,4 @@
+#!/usr/bin/env lua
+-- The entrypoint of the fixture. The config fails, so the preview falls
+-- back to the parser.
+error("the config is broken")

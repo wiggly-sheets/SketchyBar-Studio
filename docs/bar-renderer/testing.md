@@ -7,10 +7,11 @@ Run the suite with `swift test` from the repository root. A stage is done when i
 ## Unit tests
 
 * `PreviewConfigBridgeTests.swift`: the bridge maps key paths to properties, applies the defaults to the default item before the items are added, handles several items per file, and never writes.
+* `LuaConfigRunnerTests.swift`: the Lua path resolves the values of a config in the vendored Lua interpreter, names the items without a name like the daemon does, and keeps the sandbox in place: the globals a config must not use are gone, the debug library is out of reach, `io.open` only reads, `io.output` cannot create a file, a file outside of the config root is reported, and an endless loop aborts with the deadline.
 * `PreviewScriptShimTests.swift`: the shim parses `--set <alias> <prop>=<value>` with several pairs, with a value that contains a space, with a value that contains an `=`, it parses the `-m --set` form the same way, and it rejects a command it does not handle.
 * `SketchyBarQueryParserTests.swift`: the tolerant parser reads the query reply, survives a value that holds a backslash, and detects the `"[!] …"` error prefix.
 
-The fixtures are the existing parser fixtures. The bridge and shim tests need no SketchyBar and no daemon.
+The fixtures are the existing parser fixtures. The bridge and shim tests need no SketchyBar and no daemon. The Lua tests use their own fixtures under `Tests/SketchyBarStudioTests/Fixtures/`, one directory per case, and they need no SketchyBar and no daemon either. The test of the real config of the user is skipped when the config is not on the machine.
 
 ## Golden-image tests
 
@@ -59,6 +60,7 @@ The live-bar test needs a running daemon. It is skipped when `sketchybar --query
 ## Fakes and fixtures
 
 * A fixture config directory that holds a Lua config, a shell config and an `sbar.default({...})` block, used by the bridge tests and by the golden tests.
+* One fixture directory per case of the Lua path, under `Tests/SketchyBarStudioTests/Fixtures/`, each with its own `sketchybarrc` and `init.lua`: the sandbox, the endless loop, the generated names, the shared counter of the names, an unsupported type, the text of a number and the last argument of an add.
 * The differential fixture config `Tests/SketchyBarStudioTests/Fixtures/differential.sketchybarrc`, used by the differential test.
 * A fake `sketchybar` on `PATH` for the shim tests: a script that records what it was called with, so the tests can assert that the real binary was never invoked.
 * A stub daemon for the query parser tests: a saved `--query` reply with a value that holds a backslash, and a saved `"[!] …"` error reply, so the parser is tested without a running daemon.

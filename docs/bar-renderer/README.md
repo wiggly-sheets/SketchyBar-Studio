@@ -1,11 +1,11 @@
 # Bar Renderer — stage documents
 
-Status: **Approved design. Stages 0-5 merged; Stage 6 is next.**
+Status: **Approved design. Stages 0-5 merged; Stage 6 in flight; Stage 3b (the Lua config resolver) in review.**
 Date: 2026-10-20
 Owner: repository owner (sole contributor)
 Audience: orchestrating agents and coding agents picking this work up.
 
-SketchyBar Studio will render a SketchyBar bar inside the app, exactly as SketchyBar itself would draw it, for any config or profile in the library, not only the live one. The renderer is a vendored subset of SketchyBar's own C code, compiled into the app as a SwiftPM C target and driven headlessly: it lays items out and paints them into a `CGBitmapContext`, so no window server, no screen recording permission and no running SketchyBar daemon are required. The app's existing SbarLua parser is the config bridge: it reads the Lua of a config into item aliases and qualified key paths, and the app hands the equivalent property assignments to the vendored SketchyBar, so no Lua interpreter and no SbarLua are needed in the app. Item scripts can be executed inside the preview so the bar shows live values; a `sketchybar` shim placed first on `PATH` captures the `--set` calls those scripts make, so a preview can never touch the user's live bar. Pushing a draft into the running SketchyBar becomes an opt-in live-update mode (`Never`, `On Apply`, `While Editing`) with an explicit Restore. Vendoring SketchyBar's GPL-3.0 code forces the whole app to GPL-3.0; the owner accepted that.
+SketchyBar Studio will render a SketchyBar bar inside the app, exactly as SketchyBar itself would draw it, for any config or profile in the library, not only the live one. The renderer is a vendored subset of SketchyBar's own C code, compiled into the app as a SwiftPM C target and driven headlessly: it lays items out and paints them into a `CGBitmapContext`, so no window server, no screen recording permission and no running SketchyBar daemon are required. The app's existing SbarLua parser is the config bridge: it reads the Lua of a config into item aliases and qualified key paths, and the app hands the equivalent property assignments to the vendored SketchyBar. SbarLua itself is not vendored; a vendored Lua interpreter ([Stage 3b](phase-3-config-bridge.md)) resolves the expressions of a config, so a colour, a font or a padding that a config builds with an expression reaches the preview as the value of the config and not as the default of SketchyBar. Item scripts can be executed inside the preview so the bar shows live values; a `sketchybar` shim placed first on `PATH` captures the `--set` calls those scripts make, so a preview can never touch the user's live bar. Pushing a draft into the running SketchyBar becomes an opt-in live-update mode (`Never`, `On Apply`, `While Editing`) with an explicit Restore. Vendoring SketchyBar's GPL-3.0 code forces the whole app to GPL-3.0; the owner accepted that.
 
 Reference implementation: `/Users/Zeb/Developer/SketchyBar`, checkout `v2.24.0-50-gf23f4f4`. The installed `sketchybar` 2.24.1 is the same wiggly-sheets fork. Every claim about SketchyBar behaviour in these documents cites `file:line` in that checkout unless it is marked UNVERIFIED. The full citation list lives in [reference.md](reference.md).
 
@@ -19,6 +19,7 @@ Reference implementation: `/Users/Zeb/Developer/SketchyBar`, checkout `v2.24.0-5
 | D4 | "Show on the real bar" becomes a user-configurable live-update mode with three settings (`Never`, `On Apply`, `While Editing`) plus an explicit Restore. | Pushing to the real bar is a side effect on the user's running system. It must be opt-in, granular, and reversible. |
 | D5 | The project switched to GPL-3.0 (decided by the owner, executed in Stage 0). The owner is the only contributor and wants fully FOSS. | Vendoring SketchyBar's GPL-3.0 code is only possible if the app carries the same licence. The owner accepted this. |
 | D6 | No renderer code exists yet. Stage 0 (the licence switch) is done; the stages are the contract for the first agent that starts. | The renderer is not implemented. Stage 1 vendors the SketchyBar subset. |
+| D7 | The project vendors a Lua interpreter to resolve the expressions of a config (Stage 3b). SbarLua itself is still not vendored. | **Taken by the owner on 2026-10-21**, after the preview of a config that builds its colours, its fonts and its paddings with expressions showed the defaults of SketchyBar instead of the values of the config. The owner asked for an exact rendering and accepted the interpreter route when it was presented. An expression cannot be read without an interpreter, and the interpreter is in-tree source under the same licence. |
 
 ## Why the plan vendors SketchyBar's C
 
@@ -37,9 +38,9 @@ The stages below are the scope. Each stage file states its own in scope and out 
 ### Out of scope
 
 * Re-implementing SketchyBar behaviour in Swift. The C code is the renderer.
-* Vendoring SbarLua or any Lua interpreter.
+* Vendoring SbarLua. The Lua interpreter of [Stage 3b](phase-3-config-bridge.md) is vendored (see D7), SbarLua itself is not, because its licence could not be determined.
 * Popups as interactive windows. SketchyBar draws popups in separate windows (`src/popup.c:375-383`); the preview renders the bar only. A popup may be drawn into a second offscreen bitmap later.
-* A value that is built by an expression, such as `colors.red`, cannot be read without a Lua interpreter, so the preview keeps the value SketchyBar has by default and names the value in its warnings.
+* A value that is built by an expression, such as `colors.red`, needs a Lua interpreter. The parser path cannot read it, so it keeps the value SketchyBar has by default and names the value in its warnings; the Lua path of Stage 3b reads it.
 * Window-server-backed content in the preview: `alias` items (a captured window image), `space` items, the front-app icon and `media.artwork` cannot be produced without the window server. These render as a placeholder with the same geometry, and the preview says so.
 * Mouse interaction with the preview.
 * Any change to the user's config files. The renderer reads the config and the drafts in memory; it never writes.
@@ -87,6 +88,14 @@ Sources/CSketchyBar/                          C target: vendored SketchyBar subs
   LICENSE.md                                   the upstream licence, kept with the files
   MODIFICATIONS.md                             every patch this project makes
   UPSTREAM.md                                  the upstream commit that was vendored
+Sources/CLua/                                  C target: vendored Lua 5.5.0 interpreter
+  include/clua.h                               the only public C API (Stage 3b)
+  lua/                                         vendored sources of Lua 5.5.0, unmodified
+  clua.c                                       the wrapper: the bounded allocator and the
+                                               deadline of the run (Stage 3b)
+  LICENSE                                      the upstream licence, kept with the files
+  MODIFICATIONS.md                             every change this project makes
+  UPSTREAM.md                                  the upstream release that was vendored
 ```
 
 The `preview/` directory holds the code of the preview itself. It is not
@@ -94,7 +103,7 @@ upstream code and not a replacement of a dropped upstream file, so it never
 lives in `src/`: the vendor script empties `src/` on every run and would
 delete it there.
 
-Every file on the Swift side, with the stage that owns it, is in the **Files** section of that stage file. The new files are `Models/BarRenderModels.swift` and `Models/BarRenderItemModel.swift` (Stage 3), `Services/PreviewConfigBridge.swift` (Stage 3), `Support/SketchyBarPreviewC.swift` (Stage 1), `Services/BarRendererService.swift` and `Views/BarRenderView.swift` and `Views/BarRenderProfilePicker.swift` (Stage 5), `Services/PreviewScriptShim.swift` and `Services/PreviewScriptRunner.swift` (Stage 6), `Services/LiveBarService.swift` (Stage 7), and `Services/SketchyBarQueryParser.swift` (Stage 8). The test files are in the stage that adds them, and the test files that already exist in the repository are listed in [reference.md](reference.md#the-repository-files-this-plan-touches).
+Every file on the Swift side, with the stage that owns it, is in the **Files** section of that stage file. The new files are `Models/BarRenderModels.swift` and `Models/BarRenderItemModel.swift` (Stage 3), `Services/PreviewConfigBridge.swift` (Stage 3), `Support/SketchyBarPreviewC.swift` (Stage 1), `Services/BarRendererService.swift` and `Views/BarRenderView.swift` and `Views/BarRenderProfilePicker.swift` (Stage 5), `Services/PreviewScriptShim.swift` and `Services/PreviewScriptRunner.swift` (Stage 6), `Services/LiveBarService.swift` (Stage 7), `Services/SketchyBarQueryParser.swift` (Stage 8), and `Support/LuaConfigRunner.swift` and `Support/LuaSketchyBarShim.swift` (Stage 3b). The test files are in the stage that adds them, and the test files that already exist in the repository are listed in [reference.md](reference.md#the-repository-files-this-plan-touches).
 
 Public API sketch of the Swift side. The C API and its contract are in [Stage 2](phase-2-headless-core.md).
 
@@ -125,6 +134,7 @@ Data flow:
 ```
 config files (+ in-memory drafts)
   -> app parsers -> config bridge -> vendored SketchyBar subset -> CGImage -> preview pane
+  -> vendored Lua interpreter (Stage 3b) -> config bridge -> vendored SketchyBar subset -> CGImage -> preview pane
 item scripts --(fork_exec, PATH shim)--> sink file --> property assignments --> re-render
 ```
 
@@ -230,4 +240,4 @@ The `icon` prefix semantics are a separate question to confirm, written up in [r
 
 Read this file, then read the stage file you were given, then execute that stage. Nothing else needs to be read first.
 
-Status: Stage 5 (the preview pane) is done — this document lands with its merge. The next stage to run is Stage 6 (live values) — see `docs/bar-renderer/phase-6-live-values.md`.
+Status: Stages 0-5 are merged. Stage 6 (live values) is in flight, and Stage 3b (the Lua config resolver, the decision D7) is in review — see `docs/bar-renderer/phase-3-config-bridge.md` and `docs/bar-renderer/phase-6-live-values.md`.

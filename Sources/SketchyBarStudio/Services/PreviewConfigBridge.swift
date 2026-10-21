@@ -56,6 +56,94 @@ enum PreviewConfigBridge {
         return combined
     }
 
+    /// The tree of a config root that a real Lua interpreter resolved.
+    ///
+    /// The parser reads the text of a config. It cannot read a value that
+    /// an expression builds, such as `colors.white`, and it cannot know
+    /// the order the config loads its files in. This path runs the config
+    /// in a real Lua interpreter (`LuaConfigRunner`), so the values are
+    /// the values of the config and the order is the order of the load.
+    ///
+    /// The path is additive: the existing `plan(forConfigRoot:)` stays
+    /// the same, and it is the fallback. When the Lua run fails, the plan
+    /// of the parser is used and a warning says so.
+    static func plan(forLuaConfigRoot root: URL) -> BarRenderPlan {
+        guard let entrypoint = LuaConfigRunner.entrypoint(in: root) else {
+            return fallback(
+                for: root,
+                reason: "The config has no Lua entrypoint."
+            )
+        }
+
+        do {
+            let resolved = try LuaConfigRunner.resolve(configRoot: root, entrypoint: entrypoint)
+            return plan(fromResolved: resolved)
+        } catch {
+            return fallback(
+                for: root,
+                reason: "The config could not be resolved with Lua: \(Self.reason(of: error))"
+            )
+        }
+    }
+
+    /// The plan of the parser, with a warning that says why it is used.
+    private static func fallback(for root: URL, reason: String) -> BarRenderPlan {
+        let parsed = plan(forConfigRoot: root)
+        return BarRenderPlan(
+            defaults: parsed.defaults,
+            bar: parsed.bar,
+            items: parsed.items,
+            warnings: parsed.warnings + [PreviewWarning.luaFallback(reason)]
+        )
+    }
+
+    /// The reason of a failed run.
+    private static func reason(of error: Error) -> String {
+        if let failure = error as? LuaConfigRunner.Failure {
+            return failure.description
+        }
+        return error.localizedDescription
+    }
+
+    /// The tree of a config a Lua interpreter resolved.
+    ///
+    /// The items follow the order of the load, and the properties of an
+    /// item follow the table of the item. The daemon refuses the second
+    /// add of an alias (`src/message.c:190-193`), so the item is the one
+    /// of the first declaration and the properties of the later
+    /// declarations follow it.
+    private static func plan(fromResolved resolved: LuaConfigRunner.ResolvedConfig) -> BarRenderPlan {
+        var aliases: [String] = []
+        var properties: [String: [BarRenderProperty]] = [:]
+        var warnings = [PreviewWarning.luaEntrypoint(resolved.entrypoint)]
+        warnings += resolved.warnings
+
+        for item in resolved.items {
+            guard item.type == "item" else {
+                // The preview only knows plain items. The other types need
+                // the window server or their own setup.
+                warnings.append(PreviewWarning.unsupportedType(item.type, alias: item.alias))
+                continue
+            }
+
+            if properties[item.alias] == nil {
+                aliases.append(item.alias)
+            } else {
+                warnings.append(PreviewWarning.duplicateAlias(item.alias))
+            }
+            properties[item.alias, default: []] += item.properties.map { property(of: $0) }
+        }
+
+        return BarRenderPlan(
+            defaults: resolved.defaults.map { property(of: $0) },
+            bar: resolved.bar.map { property(of: $0) },
+            items: aliases.map { alias in
+                BarRenderItemModel(alias: alias, properties: properties[alias] ?? [])
+            },
+            warnings: warnings
+        )
+    }
+
     /// The tree of a parsed config.
     ///
     /// The declarations of an alias are merged into one item, so an alias
@@ -181,6 +269,14 @@ enum PreviewConfigBridge {
         )
     }
 
+    /// One property of a value a Lua interpreter resolved.
+    private static func property(of value: LuaConfigRunner.ResolvedProperty) -> BarRenderProperty {
+        BarRenderProperty(
+            key: value.key,
+            value: PreviewValue.value(for: value.text, keyPath: value.key)
+        )
+    }
+
     /// The key of a bar property.
     ///
     /// The app prefixes the key path of a bar value with `bar.`, so the
@@ -249,7 +345,7 @@ enum PreviewWarning {
     /// the process (`src/sketchybar.c:405-407`).
     static func unnamedItem(generated: Bool) -> String {
         if generated {
-            return "The item has no name. SketchyBar gives it a generated name (item_1, item_2, ...), so the preview cannot show it."
+            return "The item has no name. SketchyBar gives it a generated name (item_0, item_1, ...), so the preview cannot show it."
         }
         return "The item has no name, so SketchyBar does not keep it and the preview cannot show it."
     }
@@ -293,6 +389,25 @@ enum PreviewWarning {
     /// A file that holds no call of the SketchyBar binary.
     static func noSketchyBarCommand() -> String {
         "The file holds no SketchyBar command, so it adds nothing to the preview."
+    }
+
+    /// The config was not resolved with Lua, so the parser path was used.
+    static func luaFallback(_ reason: String) -> String {
+        "The config was not resolved with Lua, so the preview shows the values the parser can read. \(reason)"
+    }
+
+    /// The file the Lua path ran.
+    ///
+    /// The daemon runs the config file through the shell (`exec_config_file`,
+    /// `src/hotload.c`), so the file the preview runs is a guess: the
+    /// preview runs the `sketchybarrc` when that file is Lua, and the
+    /// `init.lua` of the config otherwise. The user has to know which file
+    /// the preview ran.
+    static func luaEntrypoint(_ name: String) -> String {
+        if name == "sketchybarrc" {
+            return "The preview ran the 'sketchybarrc' of the config as its entrypoint, because that file is Lua."
+        }
+        return "The preview ran '\(name)' as the entrypoint of the config, because the 'sketchybarrc' of the config is not a Lua file. The daemon runs the 'sketchybarrc' through the shell, so the preview may have resolved a different config."
     }
 }
 
