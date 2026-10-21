@@ -1077,12 +1077,18 @@ void bar_manager_destroy(struct bar_manager* bar_manager) {
   background_destroy(&bar_manager->background);
 
   if (bar_manager->bars) free(bar_manager->bars);
-  CFRunLoopRemoveTimer(CFRunLoopGetMain(),
-                       bar_manager->clock,
-                       kCFRunLoopCommonModes);
 
-  CFRunLoopTimerInvalidate(bar_manager->clock);
-  CFRelease(bar_manager->clock);
+  /* The preview never creates the clock of the daemon: it is a 1 Hz timer
+     on the main run loop of the app (src/bar_manager.c:67-78). */
+  if (bar_manager->clock) {
+    CFRunLoopRemoveTimer(CFRunLoopGetMain(),
+                         bar_manager->clock,
+                         kCFRunLoopCommonModes);
+
+    CFRunLoopTimerInvalidate(bar_manager->clock);
+    CFRelease(bar_manager->clock);
+    bar_manager->clock = NULL;
+  }
   image_destroy(&bar_manager->current_artwork);
 }
 

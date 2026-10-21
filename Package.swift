@@ -33,7 +33,8 @@ let package = Package(
                     "-fno-modules"
                 ]),
                 .headerSearchPath("shim"),
-                .headerSearchPath("src")
+                .headerSearchPath("src"),
+                .headerSearchPath("preview")
             ],
             linkerSettings: [
                 .linkedFramework("AppKit"),

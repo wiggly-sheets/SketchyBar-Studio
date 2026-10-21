@@ -70,84 +70,16 @@ void menu_item_list_clear(struct menu_item_list* menu_item_list) {
 }
 
 struct menu_item_list get_menu_item_list() {
-  CFArrayRef window_list = CGWindowListCopyWindowInfo(kCGWindowListOptionAll,
-                                                      kCGNullWindowID        );
-  int window_count = CFArrayGetCount(window_list);
-
+  /* The preview has no window server. The enumeration of the menu bar items
+     would need the Screen Recording permission, and the app must never ask
+     for it because a config holds an alias item. The preview has no menu
+     bar item to find. */
   struct menu_item_list menu_item_list;
-  menu_item_list_init(&menu_item_list, window_count);
-
-  int item_count = 0;
-  for (int i = 0; i < window_count; ++i) {
-    CFDictionaryRef dictionary = CFArrayGetValueAtIndex(window_list, i);
-    if (!dictionary) continue;
-
-    CFStringRef owner_ref = CFDictionaryGetValue(dictionary,
-                                                 kCGWindowOwnerName);
-
-    CFNumberRef owner_pid_ref = CFDictionaryGetValue(dictionary,
-                                                     kCGWindowOwnerPID);
-
-    CFStringRef name_ref = CFDictionaryGetValue(dictionary, kCGWindowName);
-    CFNumberRef layer_ref = CFDictionaryGetValue(dictionary, kCGWindowLayer);
-    CFDictionaryRef bounds_ref = CFDictionaryGetValue(dictionary,
-                                                      kCGWindowBounds);
-    CFNumberRef window_id_ref = CFDictionaryGetValue(dictionary,
-                                                     kCGWindowNumber);
-
-
-    if (!name_ref || !owner_ref || !owner_pid_ref || !layer_ref || !bounds_ref
-        || !window_id_ref)
-      continue;
-
-    long long int layer = 0;
-    CFNumberGetValue(layer_ref, CFNumberGetType(layer_ref), &layer);
-    uint64_t owner_pid = 0;
-    CFNumberGetValue(owner_pid_ref,
-                     CFNumberGetType(owner_pid_ref),
-                     &owner_pid                     );
-
-    if (layer != MENUBAR_LAYER) continue;
-    CGRect bounds = CGRectNull;
-    if (!CGRectMakeWithDictionaryRepresentation(bounds_ref, &bounds)) continue;
-    char* owner_copy = cfstring_copy(owner_ref);
-    if (string_equals(owner_copy, "Window Server")) {
-      free(owner_copy);
-      continue;
-    }
-
-    uint64_t wid;
-    CFNumberGetValue(window_id_ref,
-                     CFNumberGetType(window_id_ref),
-                     &wid                           );
-    
-    struct menu_item* menu_item = menu_item_list.menu_items + item_count++;
-    menu_item->owner = owner_copy;
-    menu_item->name = cfstring_copy(name_ref);
-    menu_item->x_pos = bounds.origin.x;
-    menu_item->wid = wid;
-    menu_item->layer = layer;
-    menu_item->bounds = bounds;
-  }
-
-  menu_item_list.menu_item_count = item_count;
-  menu_item_list_sort(&menu_item_list);
-  CFRelease(window_list);
+  memset(&menu_item_list, 0, sizeof(menu_item_list));
   return menu_item_list;
 }
 
 void print_all_menu_items(FILE* rsp) {
-#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 110000
-  if (__builtin_available(macOS 11.0, *)) {
-    if (!CGRequestScreenCaptureAccess()) {
-      respond(rsp, "[!] Query (default_menu_items): Screen Recording "
-                   "Permissions not given. Restart SketchyBar after granting "
-                   "permissions.\n");
-      return;
-    }
-  }
-
-#endif
   struct menu_item_list menu_item_list = get_menu_item_list();
   if (menu_item_list.menu_item_count > 0) {
     fprintf(rsp, "[\n");
@@ -166,21 +98,12 @@ void print_all_menu_items(FILE* rsp) {
   menu_item_list_clear(&menu_item_list);
 }
 
-void alias_get_permission(struct alias* alias) { 
-#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 110000 
-  if (__builtin_available(macOS 11.0, *)) {
-    alias->permission = CGRequestScreenCaptureAccess();
-  }
-#else
-  if(__builtin_available(macos 10.15, *)) {
-    CGImageRef img = CGWindowListCreateImage(CGRectMake(0, 0, 1, 1),
-                                             kCGWindowListOptionOnScreenOnly,
-                                             kCGNullWindowID,
-                                             kCGWindowImageDefault           );
-
-    CFRelease(img);
-  }
-#endif
+void alias_get_permission(struct alias* alias) {
+  /* The preview never asks for the Screen Recording permission: the app
+     must not show a permission prompt because a config holds an alias
+     item. The permission stays false, so the alias item draws its
+     placeholder. */
+  alias->permission = false;
 }
 
 void alias_init(struct alias* alias) {

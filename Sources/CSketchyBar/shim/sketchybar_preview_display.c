@@ -4,7 +4,34 @@
 
 /* The virtual display of the preview.
    The daemon asks the window server for the real displays; the preview has
-   none, so every display call answers for the single virtual display. */
+   none, so every display call answers for the single virtual display. The
+   frame of the display and its menu bar come from the configuration below,
+   which sb_preview_set_display fills. */
+
+static struct preview_display g_display = {
+  PREVIEW_DISPLAY_WIDTH,
+  PREVIEW_DISPLAY_HEIGHT,
+  PREVIEW_DISPLAY_SCALE,
+  false,
+  PREVIEW_MENU_BAR_HEIGHT
+};
+
+void preview_display_configure(double width, double height, double scale) {
+  g_display.width = width;
+  g_display.height = height;
+  g_display.scale = scale > 0 ? scale : PREVIEW_DISPLAY_SCALE;
+  g_display.menu_bar_visible = false;
+  g_display.menu_bar_height = PREVIEW_MENU_BAR_HEIGHT;
+}
+
+void preview_display_set_menu_bar(double height, bool visible) {
+  g_display.menu_bar_height = height;
+  g_display.menu_bar_visible = visible;
+}
+
+const struct preview_display* preview_display_config(void) {
+  return &g_display;
+}
 
 uint32_t display_main_display_id(void) {
   return PREVIEW_DISPLAY_ID;
@@ -23,11 +50,12 @@ uint32_t display_arrangement_display_id(int arrangement) {
 }
 
 bool display_menu_bar_visible(void) {
-  return false;
+  return g_display.menu_bar_visible;
 }
 
 CGRect display_menu_bar_rect(uint32_t did) {
-  return CGRectZero;
+  if (!g_display.menu_bar_visible) return CGRectZero;
+  return CGRectMake(0, 0, g_display.width, g_display.menu_bar_height);
 }
 
 uint32_t display_active_display_count(void) {
@@ -54,7 +82,7 @@ CFStringRef display_uuid(uint32_t did) {
 }
 
 CGRect display_bounds(uint32_t did) {
-  return CGRectMake(0, 0, PREVIEW_DISPLAY_WIDTH, PREVIEW_DISPLAY_HEIGHT);
+  return CGRectMake(0, 0, g_display.width, g_display.height);
 }
 
 uint64_t display_space_id(uint32_t did) {
@@ -90,7 +118,7 @@ int preview_space_index(uint64_t space_id) {
 }
 
 uint64_t preview_space_display_id(uint32_t space_index) {
-  return space_index == 1 ? PREVIEW_SPACE_ID : 0;
+  return space_index == 1 ? PREVIEW_DISPLAY_ID : 0;
 }
 
 uint32_t preview_display_id_for_space(uint32_t space_index) {
