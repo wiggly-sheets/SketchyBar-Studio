@@ -1,6 +1,6 @@
 # Bar Renderer — stage documents
 
-Status: **Approved design. Stages 0-5 merged; Stage 3b (the Lua config resolver) merged; Stage 6 (live values) in flight.**
+Status: **Approved design. Stages 0-5 merged (including the added stages 3b and 3c); Stage 6 (live values) is in flight.**
 Date: 2026-10-20
 Owner: repository owner (sole contributor)
 Audience: orchestrating agents and coding agents picking this work up.
@@ -54,6 +54,8 @@ The stages below are the scope. Each stage file states its own in scope and out 
 | 1 | [phase-1-vendor-core.md](phase-1-vendor-core.md) | Vendor the SketchyBar subset as a SwiftPM C target that compiles and links | 0 | L |
 | 2 | [phase-2-headless-core.md](phase-2-headless-core.md) | Headless item tree and the C API exposed to Swift | 1 | M |
 | 3 | [phase-3-config-bridge.md](phase-3-config-bridge.md) | The app's parse becomes SketchyBar property assignments | 2 | M |
+| 3b | [phase-3-config-bridge.md](phase-3-config-bridge.md) | The config is resolved with a real Lua interpreter, so the values built by an expression reach the preview | 3 | L |
+| 3c | [phase-3-config-bridge.md](phase-3-config-bridge.md) | Every item type of a config reaches the preview, not only the plain items | 3b | M |
 | 4 | [phase-4-layout-and-render.md](phase-4-layout-and-render.md) | Layout and offscreen render to a `CGImage` | 3 | L |
 | 5 | [phase-5-preview-pane.md](phase-5-preview-pane.md) | The in-app preview pane, profile picker and scaling | 4 | M |
 | 6 | [phase-6-live-values.md](phase-6-live-values.md) | Item scripts run inside the preview through the `PATH` shim | 5 | M |
@@ -62,6 +64,8 @@ The stages below are the scope. Each stage file states its own in scope and out 
 | 9 | [phase-9-docs-and-release.md](phase-9-docs-and-release.md) | README claims, CHANGELOG, release checklist | 8 | S |
 
 The original plan had nine phases, and its Phase 1 was an XL task. It is split here into Stage 1 (vendor the subset, get it to compile and link) and Stage 2 (the headless item tree and the C API). Every other phase is renumbered to match the file names above. Stage 7 does not depend on Stage 6: it only needs Stage 5. Stage 8 needs Stage 6, because the differential test checks the item rectangles that live values change.
+
+Stages 3b and 3c were added later, and both exist because of the config of the owner: 3b because 141 of the values of that config are built by Lua expressions that no parser can resolve (its fonts, its colours and its paddings among them), and 3c because the resolver of Stage 3b found 36 components that are not plain items and the bridge was dropping them.
 
 ## The preview scale (confirmed by the owner on 2026-10-20)
 
@@ -240,4 +244,4 @@ The `icon` prefix semantics are a separate question to confirm, written up in [r
 
 Read this file, then read the stage file you were given, then execute that stage. Nothing else needs to be read first.
 
-Status: Stages 0-5 are merged, and Stage 3b (the Lua config resolver, the decision D7) is done — this document lands with its merge. Stage 6 (live values) is in flight — see `docs/bar-renderer/phase-3-config-bridge.md` and `docs/bar-renderer/phase-6-live-values.md`.
+Status: Stages 0-5 are merged, together with the two stages that were added to the plan: Stage 3b (the Lua config resolver, the decision D7) and Stage 3c (the item types). Stage 6 (live values) is being worked on, and the stage after it is Stage 7 (the live-update mode) — see `docs/bar-renderer/phase-3-config-bridge.md`, `docs/bar-renderer/phase-6-live-values.md` and `docs/bar-renderer/phase-7-live-update-mode.md`.
