@@ -24,6 +24,7 @@ Core goals:
 - `Sources/SketchyBarStudio/Views` - SwiftUI UI.
 - `Sources/SketchyBarStudio/Support` - focused platform/value helpers.
 - `Sources/CSketchyBar` - vendored SketchyBar C subset, the preview shim, the preview API and the public preview header.
+- `Sources/CSketchyBar/preview` - the C API of the preview, the headless item tree and the bar domain. It is not upstream code.
 - `Assets` - app icon/logo assets.
 - `script/build_and_run.sh` - build, bundle, run, package, and universal package helper.
 - `dist` - generated app bundle output. Do not hand-edit generated bundles.

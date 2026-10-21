@@ -1,6 +1,6 @@
 # Bar Renderer — stage documents
 
-Status: **Approved design. Stage 0 (the GPL-3.0 switch) and Stage 1 (the vendored subset) merged; Stage 2 is next.**
+Status: **Approved design. Stage 0 (the GPL-3.0 switch), Stage 1 (the vendored subset) and Stage 2 (the headless core and the C API) merged; Stage 3 is next.**
 Date: 2026-10-20
 Owner: repository owner (sole contributor)
 Audience: orchestrating agents and coding agents picking this work up.
@@ -229,4 +229,4 @@ The `icon` prefix semantics are a separate question to confirm, written up in [r
 
 Read this file, then read the stage file you were given, then execute that stage. Nothing else needs to be read first.
 
-Status: Stage 1 (the vendored subset) is done — this document lands with its merge. The next stage to run is Stage 2 — see `docs/bar-renderer/phase-2-headless-core.md`.
+Status: Stage 2 (the headless core and the C API) is done — this document lands with its merge. The next stage to run is Stage 3 — see `docs/bar-renderer/phase-3-config-bridge.md`.
