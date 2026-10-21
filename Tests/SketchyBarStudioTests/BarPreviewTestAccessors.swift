@@ -40,4 +40,12 @@ enum BarPreviewTestAccessors {
         defer { free(pointer) }
         return String(cString: pointer)
     }
+
+    /// The bitmap of an item, at the scale of the backing bitmap.
+    static func itemImage(_ handle: OpaquePointer?, alias: String) -> CGImage? {
+        guard let handle else { return nil }
+        return alias.withCString { aliasPointer in
+            sb_preview_test_item_image(handle, aliasPointer)?.takeRetainedValue()
+        }
+    }
 }

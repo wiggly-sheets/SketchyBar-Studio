@@ -26,10 +26,12 @@ A parsed config becomes a live item tree in the vendored SketchyBar. The app's e
 
 ```
 sbar.add("item", "clock", { position = "right", label = { string = "10:00" } })
-  -> add_item("clock")
+  -> add_item("clock", position: "right")
   -> set_item("clock", "position", "right")
   -> set_item("clock", "label.string", "10:00")
 ```
+
+The position travels in the add command, because the daemon removes an item whose add position is missing or illegal (`src/message.c:202-208`). The position of the SbarLua style is a property of the table, so the bridge reads it from there and sends it with the add.
 
 SketchyBar's property parser accepts dotted property names, and the SbarLua README states that all dots are substituted by sub-tables. `icon.string` is therefore a first-class SketchyBar property.
 

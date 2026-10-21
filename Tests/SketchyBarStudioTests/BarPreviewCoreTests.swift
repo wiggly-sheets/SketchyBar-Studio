@@ -20,7 +20,7 @@ final class BarPreviewCoreTests: XCTestCase {
         defer { SketchyBarPreviewC.destroy(handle) }
 
         XCTAssertEqual(SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25), SketchyBarPreviewC.Code.ok)
-        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple"), SketchyBarPreviewC.Code.ok)
+        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple", position: "left"), SketchyBarPreviewC.Code.ok)
         XCTAssertEqual(SketchyBarPreviewC.setItem(handle, alias: "apple", key: "width", value: "120"), SketchyBarPreviewC.Code.ok)
 
         XCTAssertEqual(BarPreviewTestAccessors.itemWidth(handle, alias: "apple"), 120)
@@ -42,8 +42,8 @@ final class BarPreviewCoreTests: XCTestCase {
         XCTAssertNotNil(handle)
         defer { SketchyBarPreviewC.destroy(handle) }
 
-        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple"), SketchyBarPreviewC.Code.ok)
-        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple"), SketchyBarPreviewC.Code.itemExists)
+        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple", position: "left"), SketchyBarPreviewC.Code.ok)
+        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple", position: "left"), SketchyBarPreviewC.Code.itemExists)
     }
 
     /// A property the vendored parser does not know is reported as a
@@ -53,7 +53,7 @@ final class BarPreviewCoreTests: XCTestCase {
         XCTAssertNotNil(handle)
         defer { SketchyBarPreviewC.destroy(handle) }
 
-        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple"), SketchyBarPreviewC.Code.ok)
+        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple", position: "left"), SketchyBarPreviewC.Code.ok)
         XCTAssertEqual(SketchyBarPreviewC.setItem(handle, alias: "apple", key: "not_a_property", value: "1"),
                        SketchyBarPreviewC.Code.propertyRejected)
 
@@ -109,7 +109,7 @@ final class BarPreviewCoreTests: XCTestCase {
         defer { SketchyBarPreviewC.destroy(handle) }
 
         XCTAssertEqual(SketchyBarPreviewC.setDefault(handle, key: "padding_left", value: "7"), SketchyBarPreviewC.Code.ok)
-        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple"), SketchyBarPreviewC.Code.ok)
+        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple", position: "left"), SketchyBarPreviewC.Code.ok)
 
         XCTAssertEqual(BarPreviewTestAccessors.itemPaddingLeft(handle, alias: "apple"), 7)
     }
@@ -120,7 +120,7 @@ final class BarPreviewCoreTests: XCTestCase {
         XCTAssertNotNil(handle)
         defer { SketchyBarPreviewC.destroy(handle) }
 
-        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple"), SketchyBarPreviewC.Code.ok)
+        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple", position: "left"), SketchyBarPreviewC.Code.ok)
         XCTAssertEqual(SketchyBarPreviewC.setDefault(handle, key: "padding_left", value: "7"), SketchyBarPreviewC.Code.ok)
 
         XCTAssertEqual(BarPreviewTestAccessors.itemPaddingLeft(handle, alias: "apple"), 0)
@@ -134,7 +134,7 @@ final class BarPreviewCoreTests: XCTestCase {
 
         XCTAssertEqual(SketchyBarPreviewC.setDefault(handle, key: "padding_left", value: "7"), SketchyBarPreviewC.Code.ok)
         XCTAssertEqual(SketchyBarPreviewC.setDefault(handle, key: "reset", value: ""), SketchyBarPreviewC.Code.ok)
-        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple"), SketchyBarPreviewC.Code.ok)
+        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple", position: "left"), SketchyBarPreviewC.Code.ok)
 
         XCTAssertEqual(BarPreviewTestAccessors.itemPaddingLeft(handle, alias: "apple"), 0)
     }
@@ -211,7 +211,7 @@ final class BarPreviewCoreTests: XCTestCase {
         let handle = SketchyBarPreviewC.create()
         XCTAssertNotNil(handle)
         SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25)
-        SketchyBarPreviewC.addItem(handle, alias: "apple")
+        SketchyBarPreviewC.addItem(handle, alias: "apple", position: "left")
         SketchyBarPreviewC.setItem(handle, alias: "apple", key: "width", value: "120")
         SketchyBarPreviewC.setItem(handle, alias: "apple", key: "label", value: "hello")
         SketchyBarPreviewC.setDefault(handle, key: "padding_left", value: "4")

@@ -1,6 +1,5 @@
 import AppKit
 import CoreGraphics
-import CoreText
 import Foundation
 import XCTest
 @testable import SketchyBarStudio
@@ -16,16 +15,24 @@ final class BarRenderGoldenTests: XCTestCase {
     // MARK: - The item of a rendered bar
 
     /// One item of a rendered bar.
+    ///
+    /// The alias, the type, the position and the argument are the four
+    /// arguments of the add command of the daemon
+    /// (`src/message.c:180-256`).
     private struct Item {
         let alias: String
         let type: String
-        let properties: [String]
+        var position: String = "left"
+        var argument: String? = nil
+        var properties: [String] = []
     }
 
-    /// The image of a rendered bar and the rectangles of its items.
+    /// The image of a rendered bar, the rectangles of its items and the
+    /// frame of the bar.
     private struct RenderedBar {
         let image: CGImage
         let rects: [String: CGRect]
+        let frame: CGRect?
     }
 
     // MARK: - The smoke test
@@ -38,7 +45,7 @@ final class BarRenderGoldenTests: XCTestCase {
             Item(alias: "apple", type: "item", properties: ["width=120", "label=hello"])
         ])
 
-        XCTAssertEqual(rendered.image.width, 960, "the width of the image is the width of the display times 2")
+        XCTAssertEqual(rendered.image.width, 960, "the width of the image is the width of the bar times 2")
         XCTAssertEqual(rendered.image.height, 50, "the height of the image is the height of the bar times 2")
     }
 
@@ -101,6 +108,75 @@ final class BarRenderGoldenTests: XCTestCase {
         XCTAssertTrue(bytes.contains { $0 != 0 }, "the image must hold more than the empty background")
     }
 
+    // MARK: - The frame of the bar
+
+    /// The frame of the bar and the rectangles of the items are in the same
+    /// space: the rectangle of an item lies inside the frame of the bar.
+    func testTheBarFrameAndTheItemRectsAreInTheSameSpace() throws {
+        let rendered = try renderBar(menuBarPoints: 24, items: Self.threeItems)
+
+        let frame = try XCTUnwrap(rendered.frame, "the bar must have a frame")
+        XCTAssertEqual(frame.origin.y, 24, accuracy: 1, "the menu bar pushes the bar down")
+        XCTAssertEqual(frame.height, 25, accuracy: 1, "the frame of the bar is as tall as the bar")
+
+        for item in Self.threeItems {
+            let rect = try XCTUnwrap(rendered.rects[item.alias])
+            XCTAssertGreaterThanOrEqual(rect.origin.x - frame.origin.x, 0,
+                                        "the item '\(item.alias)' must be inside the bar")
+            XCTAssertLessThanOrEqual(rect.origin.x - frame.origin.x + rect.width, frame.width + 1,
+                                     "the item '\(item.alias)' must be inside the bar")
+            XCTAssertGreaterThanOrEqual(rect.origin.y - frame.origin.y, 0,
+                                        "the item '\(item.alias)' must be inside the bar")
+            XCTAssertLessThanOrEqual(rect.origin.y - frame.origin.y + rect.height, frame.height + 1,
+                                     "the item '\(item.alias)' must be inside the bar")
+        }
+    }
+
+    /// Without a menu bar the bar sits at the top of the display, and the
+    /// items of the bar sit at the top of the bar.
+    func testTheBarSitsAtTheTopWithoutAMenuBar() throws {
+        let rendered = try renderBar(items: Self.threeItems)
+
+        let frame = try XCTUnwrap(rendered.frame)
+        XCTAssertEqual(frame.origin.y, 0, accuracy: 1)
+
+        for item in Self.threeItems {
+            let rect = try XCTUnwrap(rendered.rects[item.alias])
+            XCTAssertEqual(rect.origin.y, frame.origin.y, accuracy: 1)
+        }
+    }
+
+    /// The image is the frame of the bar, so the pixel size is the frame
+    /// times the backing scale.
+    func testTheImageIsTheFrameOfTheBar() throws {
+        let rendered = try renderBar(items: Self.threeItems)
+
+        let frame = try XCTUnwrap(rendered.frame)
+        XCTAssertEqual(rendered.image.width, Int(frame.width * 2))
+        XCTAssertEqual(rendered.image.height, Int(frame.height * 2))
+    }
+
+    /// A bar on the left of the display is as wide as the background of the
+    /// bar and as tall as the display, and the image has that shape.
+    func testABarOnTheLeftHasTheShapeOfThatBar() throws {
+        let rendered = try renderBar(widthPoints: 480, heightPoints: 200,
+                                     bar: ["position=left"],
+                                     items: [Item(alias: "left", type: "item", properties: ["label=left"])])
+
+        let frame = try XCTUnwrap(rendered.frame)
+        XCTAssertEqual(frame.width, 25, accuracy: 1, "the bar on the left is as wide as its background")
+        XCTAssertEqual(frame.height, 200, accuracy: 1, "the bar on the left is as tall as the display")
+
+        XCTAssertEqual(rendered.image.width, 50)
+        XCTAssertEqual(rendered.image.height, 400)
+
+        let rect = try XCTUnwrap(rendered.rects["left"])
+        XCTAssertGreaterThanOrEqual(rect.origin.y - frame.origin.y, 0,
+                                    "the item must be inside the bar")
+        XCTAssertLessThanOrEqual(rect.origin.y - frame.origin.y + rect.height, frame.height + 1,
+                                 "the item must be inside the bar")
+    }
+
     // MARK: - The virtual display
 
     /// The width of the virtual display is the width of the target display,
@@ -150,6 +226,32 @@ final class BarRenderGoldenTests: XCTestCase {
             XCTAssertEqual(top.origin.y, 0, accuracy: 1)
             XCTAssertEqual(lower.origin.y, 24, accuracy: 1, "the menu bar moves the bar down")
         }
+    }
+
+    /// The notch of the virtual display is a parameter of the display, so
+    /// the preview can reproduce the notch of a notched Mac
+    /// (`src/bar.c:200-222`, `src/bar.c:437-440`).
+    func testTheNotchMovesTheBarAndTheItemsOfTheCentre() throws {
+        // The daemon reads the first letter of the position, so "e" is the
+        // centre right of the bar (`src/bar_item.c:471-486`).
+        let plain = try renderBar(items: [
+            Item(alias: "right", type: "item", position: "e", properties: ["label=x"])
+        ])
+        let notched = try renderBar(notch: true,
+                                    bar: ["notch_offset=10"],
+                                    items: [
+            Item(alias: "right", type: "item", position: "e", properties: ["label=x"])
+        ])
+
+        let plainFrame = try XCTUnwrap(plain.frame)
+        let notchedFrame = try XCTUnwrap(notched.frame)
+        XCTAssertEqual(plainFrame.origin.y, 0, accuracy: 1)
+        XCTAssertEqual(notchedFrame.origin.y, 10, accuracy: 1, "the notch offset moves the bar down")
+
+        let plainItem = try XCTUnwrap(plain.rects["right"])
+        let notchedItem = try XCTUnwrap(notched.rects["right"])
+        XCTAssertEqual(notchedItem.origin.x - plainItem.origin.x, 100, accuracy: 1,
+                       "the notch of 200 points moves the item of the centre right by half of it")
     }
 
     // MARK: - The visible parts of the bar
@@ -220,8 +322,8 @@ final class BarRenderGoldenTests: XCTestCase {
     /// box of 16 points.
     func testTheItemsOfTheWindowServerKeepAPlaceholder() throws {
         let rendered = try renderBar(items: [
-            Item(alias: "extra", type: "alias", properties: []),
-            Item(alias: "space", type: "space", properties: [])
+            Item(alias: "extra", type: "alias"),
+            Item(alias: "space", type: "space")
         ])
 
         for alias in ["extra", "space"] {
@@ -239,6 +341,83 @@ final class BarRenderGoldenTests: XCTestCase {
 
         let rect = try XCTUnwrap(rendered.rects["extra"])
         XCTAssertEqual(rect.width, 80, accuracy: 1)
+    }
+
+    /// The placeholder is drawn into the bitmap of the item itself, so an
+    /// export of the item alone shows it too.
+    func testThePlaceholderIsInTheBitmapOfTheItem() throws {
+        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
+        defer { SketchyBarPreviewC.destroy(handle) }
+        XCTAssertEqual(SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25),
+                       SketchyBarPreviewC.Code.ok)
+        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "extra", type: "alias", position: "left"),
+                       SketchyBarPreviewC.Code.ok)
+        XCTAssertNotNil(SketchyBarPreviewC.render(handle))
+
+        let image = try XCTUnwrap(BarPreviewTestAccessors.itemImage(handle, alias: "extra"),
+                                  "the item must have a bitmap")
+        XCTAssertTrue(pixels(of: image).contains { $0 > 0 },
+                      "the placeholder must be in the bitmap of the item")
+    }
+
+    // MARK: - The add command
+
+    /// A graph takes its width from the trailing argument of the add
+    /// command of the daemon (`src/message.c:218-224`).
+    func testAGraphTakesItsWidthFromTheAddCommand() throws {
+        let withWidth = try renderBar(items: [
+            Item(alias: "graph", type: "graph", position: "right", argument: "100")
+        ])
+        let plain = try renderBar(items: [
+            Item(alias: "plain", type: "item", position: "right")
+        ])
+
+        let graph = try XCTUnwrap(withWidth.rects["graph"])
+        let item = try XCTUnwrap(plain.rects["plain"])
+
+        XCTAssertEqual(graph.width - item.width, 100, accuracy: 1,
+                       "the graph is as wide as the argument of the add command")
+    }
+
+    /// The daemon crashes on a graph without a width: it divides by the
+    /// width of the graph (`src/graph.c:24`). The preview refuses the item
+    /// instead, so the process of the app survives.
+    func testAGraphWithoutAWidthIsRefused() throws {
+        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
+        defer { SketchyBarPreviewC.destroy(handle) }
+        XCTAssertEqual(SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25),
+                       SketchyBarPreviewC.Code.ok)
+
+        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "graph", type: "graph", position: "right"),
+                       SketchyBarPreviewC.Code.propertyRejected)
+        XCTAssertNotNil(SketchyBarPreviewC.render(handle))
+    }
+
+    /// The daemon removes an item whose add position is illegal
+    /// (`src/message.c:202-208`), and so does the preview.
+    func testAnItemWithAnIllegalPositionIsRemoved() throws {
+        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
+        defer { SketchyBarPreviewC.destroy(handle) }
+        XCTAssertEqual(SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25),
+                       SketchyBarPreviewC.Code.ok)
+
+        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple", position: "middle"),
+                       SketchyBarPreviewC.Code.propertyRejected)
+        XCTAssertNil(SketchyBarPreviewC.itemRect(handle, alias: "apple"),
+                     "the item must be gone, like the daemon removes it")
+        XCTAssertTrue(SketchyBarPreviewC.messages(handle).contains("Illegal position"),
+                      "the message of the daemon must be kept")
+    }
+
+    /// An item with a width of zero and no text has a frame of no size.
+    /// The render must not crash on it.
+    func testAZeroWidthEmptyItemRendersWithoutCrashing() throws {
+        let rendered = try renderBar(items: [
+            Item(alias: "empty", type: "item", properties: ["width=0", "label="])
+        ])
+
+        XCTAssertGreaterThan(rendered.image.width, 0)
+        XCTAssertGreaterThan(rendered.image.height, 0)
     }
 
     // MARK: - The window server
@@ -262,18 +441,13 @@ final class BarRenderGoldenTests: XCTestCase {
 
     /// The render of a fixed config has to match the golden image.
     ///
-    /// The plan skips the test when the Nerd Font is not installed
-    /// (`docs/bar-renderer/testing.md`): it is the default family of the
-    /// renderer. The config of the golden image sets its own font, so the
-    /// file is comparable on every machine of the same macOS version, and
-    /// the environment variable runs the test on a machine that has no Nerd
-    /// Font.
+    /// The config of the golden image sets the font of every text, so the
+    /// pixels do not depend on the font of the machine: the default family
+    /// of the renderer never reaches the pixels of this fixture, and the
+    /// test runs everywhere. The file is comparable on every machine of the
+    /// same macOS version.
     func testTheGoldenImage() throws {
         let mode = GoldenMode.current
-        if mode == .compare {
-            try XCTSkipUnless(Self.hackNerdFontIsInstalled,
-                              "Hack Nerd Font is not installed, so the pixels of the text are not comparable")
-        }
 
         let rendered = try renderBar(widthPoints: 480, heightPoints: 25,
                                      bar: ["color=0xff101010"],
@@ -281,19 +455,27 @@ final class BarRenderGoldenTests: XCTestCase {
         XCTAssertEqual(rendered.image.width, 960)
         XCTAssertEqual(rendered.image.height, 50)
 
-        let file = Self.goldenFileURL
+        /* The render is in the colour space of the device and the golden
+           file is in sRGB, so the render is converted once and both sides
+           of the comparison are in sRGB. */
+        let converted = try XCTUnwrap(sRGBImage(of: rendered.image),
+                                      "the render must be convertible to sRGB")
+
         if mode == .write {
-            let data = try pngData(of: rendered.image)
+            let data = try pngData(of: converted)
+            let file = try Self.goldenWriteURL()
             try data.write(to: file)
+            print("golden image written to \(file.path)")
             return
         }
 
+        let file = Self.goldenFileURL
         try XCTSkipUnless(FileManager.default.fileExists(atPath: file.path),
                           "the golden image of this macOS version has not been generated yet")
         let golden = try XCTUnwrap(CGImageSourceCreateWithData(try Data(contentsOf: file) as CFData, nil))
         let goldenImage = try XCTUnwrap(CGImageSourceCreateImageAtIndex(golden, 0, nil))
 
-        XCTAssertEqual(pixels(of: rendered.image), pixels(of: goldenImage),
+        XCTAssertEqual(pixels(of: converted), pixels(of: goldenImage),
                        "the render must match the golden image")
     }
 
@@ -301,9 +483,9 @@ final class BarRenderGoldenTests: XCTestCase {
 
     /// Three items with a label, one on each side of the bar.
     private static let threeItems = [
-        Item(alias: "left", type: "item", properties: ["position=left", "label=left"]),
-        Item(alias: "center", type: "item", properties: ["position=center", "label=center"]),
-        Item(alias: "right", type: "item", properties: ["position=right", "label=right"])
+        Item(alias: "left", type: "item", position: "left", properties: ["label=left"]),
+        Item(alias: "center", type: "item", position: "center", properties: ["label=center"]),
+        Item(alias: "right", type: "item", position: "right", properties: ["label=right"])
     ]
 
     /// The fixed config of the golden image.
@@ -312,8 +494,7 @@ final class BarRenderGoldenTests: XCTestCase {
     /// machine, and the background of the bar is opaque, so the file holds
     /// the pixels of the render without a loss.
     private static let goldenItems = [
-        Item(alias: "left", type: "item", properties: [
-            "position=left",
+        Item(alias: "left", type: "item", position: "left", properties: [
             "label=SBS",
             "label.font=Menlo:Bold:14",
             "background.color=0xff3355ff",
@@ -323,25 +504,25 @@ final class BarRenderGoldenTests: XCTestCase {
             "padding_left=4",
             "padding_right=4"
         ]),
-        Item(alias: "center", type: "item", properties: [
-            "position=center",
+        Item(alias: "center", type: "item", position: "center", properties: [
             "label=preview",
             "label.font=Menlo:Bold:14",
             "label.color=0xffffcc00"
         ]),
-        Item(alias: "right", type: "item", properties: [
-            "position=right",
+        Item(alias: "right", type: "item", position: "right", properties: [
             "label=26",
             "label.font=Menlo:Bold:14",
             "label.color=0xff00ff00"
         ])
     ]
 
-    /// Renders a bar and returns the image with the rectangles of the items.
+    /// Renders a bar and returns the image with the rectangles of the items
+    /// and the frame of the bar.
     private func renderBar(widthPoints: Double = 480,
                             heightPoints: Double = 25,
                             scale: Double = 2.0,
                             menuBarPoints: Double = 0,
+                            notch: Bool = false,
                             bar: [String] = [],
                             items: [Item]) throws -> RenderedBar {
         let handle = try XCTUnwrap(SketchyBarPreviewC.create(), "the core must hand out a preview handle")
@@ -356,13 +537,21 @@ final class BarRenderGoldenTests: XCTestCase {
             XCTAssertEqual(SketchyBarPreviewC.setMenuBar(handle, heightPoints: menuBarPoints),
                            SketchyBarPreviewC.Code.ok)
         }
+        if notch {
+            XCTAssertEqual(SketchyBarPreviewC.setNotch(handle, hasNotch: true),
+                           SketchyBarPreviewC.Code.ok)
+        }
         for property in bar {
             let (key, value) = try XCTUnwrap(Self.split(property))
             XCTAssertEqual(SketchyBarPreviewC.setBar(handle, key: key, value: value),
                            SketchyBarPreviewC.Code.ok, property)
         }
         for item in items {
-            XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: item.alias, type: item.type),
+            XCTAssertEqual(SketchyBarPreviewC.addItem(handle,
+                                                       alias: item.alias,
+                                                       type: item.type,
+                                                       position: item.position,
+                                                       argument: item.argument),
                            SketchyBarPreviewC.Code.ok, item.alias)
             for property in item.properties {
                 let (key, value) = try XCTUnwrap(Self.split(property))
@@ -376,7 +565,7 @@ final class BarRenderGoldenTests: XCTestCase {
         for item in items {
             rects[item.alias] = SketchyBarPreviewC.itemRect(handle, alias: item.alias)
         }
-        return RenderedBar(image: image, rects: rects)
+        return RenderedBar(image: image, rects: rects, frame: SketchyBarPreviewC.barFrame(handle))
     }
 
     /// Splits a "key=value" property. The value keeps everything after the
@@ -408,6 +597,25 @@ final class BarRenderGoldenTests: XCTestCase {
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         }
         return bytes
+    }
+
+    /// The image in the sRGB colour space.
+    ///
+    /// The render of the preview is in the colour space of the device and
+    /// the golden file is in sRGB, so the render is converted once and both
+    /// sides of the comparison are in sRGB.
+    private func sRGBImage(of image: CGImage) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        guard let context = CGContext(data: nil,
+                                      width: width,
+                                      height: height,
+                                      bitsPerComponent: 8,
+                                      bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
     }
 
     /// The place of the red pixels of an image.
@@ -450,18 +658,14 @@ final class BarRenderGoldenTests: XCTestCase {
     private enum GoldenMode {
         case compare
         case write
-        case force
 
         /// The mode the environment asks for.
         ///
-        /// "write" writes the golden file, "force" runs the test on a
-        /// machine that has no Nerd Font.
+        /// "write" writes the golden file to a temporary path and prints
+        /// that path, so the file of the tree is never rewritten by a test
+        /// run.
         static var current: GoldenMode {
-            switch ProcessInfo.processInfo.environment["SKETCHYBAR_STUDIO_GOLDEN"] {
-            case "write": return .write
-            case "force": return .force
-            default: return .compare
-            }
+            ProcessInfo.processInfo.environment["SKETCHYBAR_STUDIO_GOLDEN"] == "write" ? .write : .compare
         }
     }
 
@@ -480,14 +684,16 @@ final class BarRenderGoldenTests: XCTestCase {
             .appendingPathComponent(goldenFileName)
     }
 
-    /// True when the Nerd Font is installed. It is the default family of
-    /// the renderer (`src/font.c:152-158`).
-    private static var hackNerdFontIsInstalled: Bool {
-        let descriptor = CTFontDescriptorCreateWithAttributes([
-            kCTFontFamilyNameAttribute: "Hack Nerd Font"
-        ] as CFDictionary)
-        let font = CTFontCreateWithFontDescriptor(descriptor, 14, nil)
-        return (CTFontCopyFamilyName(font) as String) == "Hack Nerd Font"
+    /// The path the write mode writes the golden file to.
+    ///
+    /// The file of the tree is never written by a test run: the write mode
+    /// writes to a temporary directory and prints the path, so the golden
+    /// file of the tree is only replaced on purpose.
+    private static func goldenWriteURL() throws -> URL {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("sketchybar-studio-golden", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent(goldenFileName)
     }
 
     // MARK: - The object of the preview core

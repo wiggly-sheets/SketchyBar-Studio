@@ -13,7 +13,8 @@ static struct preview_display g_display = {
   PREVIEW_DISPLAY_HEIGHT,
   PREVIEW_DISPLAY_SCALE,
   false,
-  PREVIEW_MENU_BAR_HEIGHT
+  PREVIEW_MENU_BAR_HEIGHT,
+  false
 };
 
 void preview_display_configure(double width, double height, double scale) {
@@ -30,9 +31,26 @@ void preview_display_configure(double width, double height, double scale) {
      sb_preview_set_menu_bar. */
 }
 
+void preview_display_reset(void) {
+  g_display.width = PREVIEW_DISPLAY_WIDTH;
+  g_display.height = PREVIEW_DISPLAY_HEIGHT;
+  g_display.scale = PREVIEW_DISPLAY_SCALE;
+  g_display.menu_bar_visible = false;
+  g_display.menu_bar_height = PREVIEW_MENU_BAR_HEIGHT;
+  g_display.has_notch = false;
+}
+
 void preview_display_set_menu_bar(double height, bool visible) {
   g_display.menu_bar_height = height;
   g_display.menu_bar_visible = visible;
+}
+
+void preview_display_set_notch(bool has_notch) {
+  g_display.has_notch = has_notch;
+}
+
+bool preview_display_has_notch(void) {
+  return g_display.has_notch;
 }
 
 const struct preview_display* preview_display_config(void) {

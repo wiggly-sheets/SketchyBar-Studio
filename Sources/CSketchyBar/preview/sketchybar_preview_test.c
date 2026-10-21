@@ -7,6 +7,8 @@
 #include "bar_item.h"
 #include "bar_manager.h"
 #include "preview_internal.h"
+#include "surface.h"
+#include "window.h"
 
 /* The test-only accessors of the preview core. They read the state of the
    vendored model, so the tests of the preview can assert on it without
@@ -47,6 +49,20 @@ char* sb_preview_test_item_serialize(sb_preview_t* preview, const char* alias) {
   bar_item_serialize(item, rsp);
   fclose(rsp);
   return buffer;
+}
+
+CGImageRef sb_preview_test_item_image(sb_preview_t* preview, const char* alias) {
+  if (!preview || !alias) return NULL;
+  struct bar_item* item = preview_find_item(alias);
+  if (!item) return NULL;
+  if (item->num_windows < 1 || !item->windows[0]) return NULL;
+
+  /* The bitmap of the item itself, so a test can see what an export of
+     the item alone would show. */
+  struct window* window = item->windows[0];
+  if (!window->surface || !window->surface->context) return NULL;
+
+  return CGBitmapContextCreateImage(window->surface->context);
 }
 
 char* sb_preview_test_child_environment(void) {
