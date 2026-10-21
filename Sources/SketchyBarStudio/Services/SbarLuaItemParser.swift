@@ -142,6 +142,62 @@ enum SbarLuaItemParser {
         let item: StructuredItem
         /// The values that are not a single literal.
         let warnings: [String]
+        /// The values that are not a single literal, with the way they
+        /// were written.
+        let unreadable: [BarRenderUnreadableValue]
+    }
+
+    /// A declaration of an item of a Lua file, with the place it was
+    /// declared.
+    struct DraftDeclaration {
+        /// The number of the call of `sbar.add` inside the file.
+        ///
+        /// The number counts every call of the file, so a call the parser
+        /// does not read does not move the calls that follow it. The
+        /// resolver counts the calls the same way, so the number and the
+        /// file name the same declaration on both sides.
+        let index: Int
+        /// The alias of the item, empty when the item has no name.
+        let alias: String
+        /// The values the parser can read.
+        let properties: [BarRenderProperty]
+        /// The values the parser cannot read, such as an expression.
+        let unreadable: [BarRenderUnreadableValue]
+    }
+
+    /// The declarations of the items of a Lua file, in the order of the
+    /// source.
+    ///
+    /// The declarations are the ones of the plain items: the parser reads
+    /// no other type of item.
+    static func draftItems(in source: String) -> [DraftDeclaration] {
+        let result = LuaTableParser.parse(source: source)
+        var declarations: [DraftDeclaration] = []
+        var index = 0
+
+        for call in result.calls where call.path == ["sbar", "add"] {
+            let number = index
+            index += 1
+
+            guard let type = Self.type(of: call), type == "item" else { continue }
+            guard let alias = Self.alias(of: call) else { continue }
+            guard let declaration = Self.declaration(of: call,
+                                                    kind: .item,
+                                                    alias: alias.alias,
+                                                    keyPath: { $0 }) else { continue }
+
+            declarations.append(DraftDeclaration(
+                index: number,
+                alias: alias.alias,
+                properties: declaration.item.values.map {
+                    BarRenderProperty(key: $0.keyPath,
+                                      value: PreviewValue.value(for: $0.value, keyPath: $0.keyPath))
+                },
+                unreadable: declaration.unreadable
+            ))
+        }
+
+        return declarations
     }
 
     /// The declaration of a call: the values of its table with the key path
@@ -157,6 +213,7 @@ enum SbarLuaItemParser {
 
         var values: [StructuredItemValue] = []
         var warnings: [String] = []
+        var unreadable: [BarRenderUnreadableValue] = []
 
         for entry in table.entries {
             guard !entry.path.isEmpty else { continue }
@@ -167,6 +224,7 @@ enum SbarLuaItemParser {
                 // scan matches the leading literal of an expression, such
                 // as the `"popup."` of `"popup." .. name`.
                 warnings.append(PreviewWarning.skippedValue(path, kind: entry.kind))
+                unreadable.append(BarRenderUnreadableValue(keyPath: path, kind: entry.kind))
                 continue
             }
             values.append(
@@ -187,7 +245,8 @@ enum SbarLuaItemParser {
 
         return Declaration(
             item: StructuredItem(kind: kind, alias: alias, values: values, excludedRanges: excludedRanges),
-            warnings: warnings
+            warnings: warnings,
+            unreadable: unreadable
         )
     }
 

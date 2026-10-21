@@ -98,7 +98,7 @@ enum PreviewConfigBridge {
     }
 
     /// The reason of a failed run.
-    private static func reason(of error: Error) -> String {
+    static func reason(of error: Error) -> String {
         if let failure = error as? LuaConfigRunner.Failure {
             return failure.description
         }
@@ -118,6 +118,7 @@ enum PreviewConfigBridge {
         var aliases: [String] = []
         var properties: [String: [BarRenderProperty]] = [:]
         var kinds: [String: (type: String, argument: String?)] = [:]
+        var origins: [String: BarRenderOrigin] = [:]
         var warnings = [PreviewWarning.luaEntrypoint(resolved.entrypoint)]
         warnings += resolved.warnings
 
@@ -125,6 +126,7 @@ enum PreviewConfigBridge {
             if properties[item.alias] == nil {
                 aliases.append(item.alias)
                 kinds[item.alias] = (item.type, item.argument)
+                origins[item.alias] = BarRenderOrigin(file: item.file, index: item.index)
                 warnings.append(contentsOf: PreviewWarning.itemType(item.type,
                                                                      alias: item.alias,
                                                                      argument: item.argument))
@@ -141,10 +143,66 @@ enum PreviewConfigBridge {
                 BarRenderItemModel(alias: alias,
                                    properties: properties[alias] ?? [],
                                    type: kinds[alias]?.type ?? "item",
-                                   argument: kinds[alias]?.argument ?? nil)
+                                   argument: kinds[alias]?.argument ?? nil,
+                                   origin: origins[alias])
             },
             warnings: warnings
         )
+    }
+
+    /// The draft of the app: the items the parser reads from the text of
+    /// the files of a config.
+    ///
+    /// The files carry the drafts of the app. Every item knows the file
+    /// that declared it and the number of the declaration inside that file,
+    /// so the draft of a file can be put on the item of the resolved
+    /// config that the file declared.
+    ///
+    /// A file without a draft is left out: the resolved config already
+    /// holds its values.
+    static func draft(of files: [BarRenderFile], root: URL) -> BarRenderDraft {
+        var items: [BarRenderDraftItem] = []
+
+        for file in files {
+            guard let contents = file.contents else { continue }
+            // A `.lua` file is Lua. A file without an extension, such as
+            // the `sketchybarrc` of the sketchybar-package, is decided by
+            // its text.
+            guard file.kind == .lua || LuaSourceDetection.isLua(contents) else { continue }
+
+            let relative = relativePath(of: file.url, in: root)
+            let disk = SbarLuaItemParser.draftItems(in: diskText(of: file) ?? "")
+
+            for declaration in SbarLuaItemParser.draftItems(in: contents) {
+                // A value the parser cannot read is only a problem when the
+                // file on disk had a value there: the resolver read the
+                // value of the file on disk, and the draft cannot be run.
+                let diskItem = disk.first { $0.alias == declaration.alias }
+                let unreadable = declaration.unreadable.filter { value in
+                    !(diskItem?.unreadable.contains { $0.keyPath == value.keyPath } ?? false)
+                }
+                items.append(BarRenderDraftItem(origin: BarRenderOrigin(file: relative, index: declaration.index),
+                                                 alias: declaration.alias,
+                                                 properties: declaration.properties,
+                                                 unreadable: unreadable))
+            }
+        }
+
+        return BarRenderDraft(items: items)
+    }
+
+    /// The text of a file on disk.
+    private static func diskText(of file: BarRenderFile) -> String? {
+        try? String(contentsOf: file.url, encoding: .utf8)
+    }
+
+    /// The path of a file relative to the root of the config, the way the
+    /// sidebar names a file.
+    static func relativePath(of url: URL, in root: URL) -> String {
+        let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        let path = url.standardizedFileURL.path
+        guard path.hasPrefix(prefix) else { return url.lastPathComponent }
+        return String(path.dropFirst(prefix.count))
     }
 
     /// The tree of a parsed config.
@@ -513,6 +571,48 @@ enum PreviewWarning {
         }
         return "The preview ran '\(name)' as the entrypoint of the config, because the 'sketchybarrc' of the config is not a Lua file. The daemon runs the 'sketchybarrc' through the shell, so the preview may have resolved a different config."
     }
+
+    /// The items are in the order of the files and not in the order of the
+    /// loader.
+    ///
+    /// A config that a Lua interpreter resolves is rendered in the order
+    /// of the load, which is the order of the daemon. A config that the
+    /// parser reads is rendered in the order of its files.
+    static func fileOrder() -> String {
+        "The items are rendered in file order and not in loader order."
+    }
+
+    /// A value of the draft that the app cannot read.
+    ///
+    /// A value that is built by an expression, such as `colors.red`, needs
+    /// a Lua interpreter. The app cannot run the draft, so the preview
+    /// keeps the value of the resolved config and the user is told that
+    /// the edit is not shown.
+    static func draftValueUnreadable(_ value: BarRenderUnreadableValue, alias: String) -> String {
+        let reason: String
+        switch value.kind {
+        case .expression:
+            reason = "is an expression"
+        case .longString:
+            reason = "is a long string"
+        case .nilLiteral:
+            reason = "is nil"
+        case .string, .number, .boolean:
+            return ""
+        }
+        return "The value of '\(value.keyPath)' of the item '\(alias)' \(reason), so the preview cannot show your edit."
+    }
+
+    /// An item of the draft that the resolved config does not have.
+    ///
+    /// The item was typed after the config was resolved, so the preview
+    /// cannot show it. The user has to know that the item is missing.
+    static func draftItemWithoutResolved(alias: String, file: String, isInTheConfig: Bool) -> String {
+        if isInTheConfig {
+            return "The preview cannot show your edit for the item '\(alias)' of the file '\(file)'."
+        }
+        return "The item '\(alias)' of the file '\(file)' is not in the config the preview resolved, so the preview cannot show your edit."
+    }
 }
 
 /// The value that is sent to the vendored core.
@@ -533,5 +633,28 @@ enum PreviewValue {
             ? (SketchyBarBoolean.normalized(text) ?? text)
             : text
         return SketchyBarValueRules.normalizedDisplayValue(normalized, keyPath: keyPath)
+    }
+
+    /// The value of a draft, in the spelling the daemon receives.
+    ///
+    /// A colour that is written as a number becomes the hex word of the
+    /// number, the way SbarLua writes it (`parse_kv_table`,
+    /// `src/parsing.c` of SbarLua). The resolver writes it the same way,
+    /// so the value of the draft and the value of the resolver name the
+    /// same colour and the draft does not overwrite it by accident.
+    static func drafted(_ text: String, keyPath: String) -> String {
+        guard writesColourAsHex(keyPath),
+              !text.hasPrefix("0x"), !text.hasPrefix("#"),
+              let number = UInt64(text) else { return text }
+        return String(format: "0x%x", number % 4_294_967_296)
+    }
+
+    /// True when the key holds a colour that SbarLua writes as a hex word.
+    ///
+    /// SbarLua writes a number under `color` and under `border_color` as a
+    /// hex word, and the shim of the preview does the same.
+    private static func writesColourAsHex(_ keyPath: String) -> Bool {
+        let leaf = keyPath.lowercased().split(separator: ".").last.map(String.init) ?? keyPath.lowercased()
+        return leaf == "color" || leaf == "border_color"
     }
 }

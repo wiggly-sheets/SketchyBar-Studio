@@ -1,0 +1,6 @@
+#!/usr/bin/env lua
+-- The entrypoint of the fixture. The loader decides the order of the
+-- files, and the names of the files sort the other way round.
+sbar = require("sketchybar")
+require("second")
+require("first")

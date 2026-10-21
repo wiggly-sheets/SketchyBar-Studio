@@ -53,6 +53,21 @@ struct BarRenderFile: Sendable {
 struct BarRenderRequest: Sendable {
     /// The files of the config, in the order of the bar.
     let files: [BarRenderFile]
+    /// The folder of the config, when the source has one.
+    ///
+    /// The Lua resolver needs the whole tree on disk to resolve the
+    /// requires of the config, so it reads the config from the disk and
+    /// the draft of the app is applied on top of the resolved tree.
+    let root: URL?
+    /// True when the files of the request come in the order of their
+    /// names.
+    ///
+    /// The files of the config the app has open come in the order of the
+    /// loader, and the files of a config that is not open come in the
+    /// order of their names. The render needs to know, because the items
+    /// of the bar follow the order of the files when the config is not
+    /// resolved with Lua.
+    let filesAreInFileOrder: Bool
     /// The width of the virtual display, in points.
     let displayWidthPoints: Double
     /// The height of the virtual display, in points.
@@ -64,10 +79,14 @@ struct BarRenderRequest: Sendable {
     let warnings: [String]
 
     init(files: [BarRenderFile],
+         root: URL? = nil,
+         filesAreInFileOrder: Bool = true,
          displayWidthPoints: Double,
          displayHeightPoints: Double,
          warnings: [String] = []) {
         self.files = files
+        self.root = root
+        self.filesAreInFileOrder = filesAreInFileOrder
         self.displayWidthPoints = displayWidthPoints
         self.displayHeightPoints = displayHeightPoints
         self.warnings = warnings
@@ -198,7 +217,7 @@ actor BarRendererService {
             // its frame follows the new display (`src/bar.c:516-522`).
             try setDisplay(handle, request: request)
 
-            let plan = Self.plan(for: request.files)
+            let plan = Self.plan(for: request)
             // The defaults of the plan come before its items, so every item
             // inherits them the way it does in SketchyBar.
             var warnings = request.warnings
@@ -399,9 +418,45 @@ actor BarRendererService {
 
     /// The tree of the files of a config.
     ///
-    /// The plan of every file is combined, so the defaults of the whole
-    /// config reach every item, and the items keep the order of the files.
-    private static func plan(for files: [BarRenderFile]) -> BarRenderPlan {
+    /// A config that a Lua interpreter can resolve is resolved with it:
+    /// the values are the values of the config, the types are the types of
+    /// the config and the order is the order of the load, which is the
+    /// order of the daemon. The draft of the app is then applied on top of
+    /// the resolved tree.
+    ///
+    /// A config that cannot be resolved with Lua falls back to the parser:
+    /// the plan of the parser reads the text of the files, so it shows the
+    /// drafts of the app, and the warning says why the config was not
+    /// resolved.
+    static func plan(for request: BarRenderRequest) -> BarRenderPlan {
+        let parsed = parserPlan(for: request.files)
+
+        guard let root = request.root,
+              let entrypoint = LuaConfigRunner.entrypoint(in: root) else {
+            return parsed
+        }
+
+        do {
+            let resolved = try LuaConfigRunner.resolve(configRoot: root, entrypoint: entrypoint)
+            let draft = PreviewConfigBridge.draft(of: request.files, root: root)
+            return PreviewConfigBridge.plan(fromResolved: resolved).overlaying(draft: draft)
+        } catch {
+            var warnings = parsed.warnings
+            warnings.append(PreviewWarning.luaFallback(PreviewConfigBridge.reason(of: error)))
+            if request.filesAreInFileOrder {
+                warnings.append(PreviewWarning.fileOrder())
+            }
+            return BarRenderPlan(defaults: parsed.defaults,
+                                 bar: parsed.bar,
+                                 items: parsed.items,
+                                 warnings: warnings)
+        }
+    }
+
+    /// The tree of the parser: the plan of every file is combined, so the
+    /// defaults of the whole config reach every item, and the items keep
+    /// the order of the files.
+    private static func parserPlan(for files: [BarRenderFile]) -> BarRenderPlan {
         var combined = BarRenderPlan(defaults: [], bar: [], items: [], warnings: [])
         var readable = 0
 
@@ -558,12 +613,16 @@ extension SketchyBarStore {
     /// The files of the config the app has open carry the drafts of the
     /// app, so the preview shows the unsaved edits. Every other config and
     /// every profile is read from disk.
+    ///
+    /// Only the files with a draft carry their text: a file without a
+    /// draft is already in the resolved config, and the app has nothing to
+    /// put on top of it.
     func barRenderFiles(for source: BarRenderSource) -> [BarRenderFile] {
         if case .config(let id) = source, id == selectedConfig?.id {
             return filesInPreviewOrder.map { file in
                 BarRenderFile(url: file.url,
                               kind: file.kind,
-                              contents: effectiveContents(for: file))
+                              contents: hasUnsavedChanges(fileID: file.id) ? effectiveContents(for: file) : nil)
             }
         }
 

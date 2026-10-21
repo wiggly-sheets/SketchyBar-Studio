@@ -1,5 +1,20 @@
 import Foundation
 
+/// The place a declaration came from.
+///
+/// The file is the path of the file relative to the root of the config,
+/// such as `items/left/apple.lua`, and the index is the number of the
+/// declaration inside that file. The two name the same declaration on the
+/// side of the resolver and on the side of the parser: the resolver counts
+/// the calls of `sbar.add` of the file, and so does the parser, so the
+/// draft of a file can be put on the item that the file declared.
+struct BarRenderOrigin: Hashable {
+    /// The file that declared the item, relative to the root of the config.
+    let file: String
+    /// The number of the declaration inside that file.
+    let index: Int
+}
+
 /// One item of a parsed config.
 ///
 /// The alias is the name of the item, such as `clock`, and the properties
@@ -35,16 +50,23 @@ struct BarRenderItemModel: Hashable {
     /// bridge puts the member list of a bracket in the argument, so the
     /// preview reads the members from there.
     let argument: String?
+    /// The place the item was declared, when the resolver knows it.
+    ///
+    /// It is nil on the path of the parser: the parser reads one file at a
+    /// time and does not know which file of the config declared the item.
+    let origin: BarRenderOrigin?
 
     init(alias: String,
          properties: [BarRenderProperty],
          addPosition: String? = nil,
          type: String = "item",
-         argument: String? = nil) {
+         argument: String? = nil,
+         origin: BarRenderOrigin? = nil) {
         self.alias = alias
         self.properties = properties
         self.addPosition = addPosition
         self.type = type
         self.argument = argument
+        self.origin = origin
     }
 }

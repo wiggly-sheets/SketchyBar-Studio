@@ -1750,6 +1750,12 @@ final class SketchyBarStore: ObservableObject {
         switch source {
         case .config(let id):
             guard id == selectedConfig?.id else {
+                // A config that is not open is read from disk, so its files
+                // come in the order of their names. A config that a Lua
+                // interpreter resolves is rendered in the order of the
+                // load, which is the order of the daemon, so the warning
+                // is only for a config without a Lua entrypoint.
+                guard !canBeResolvedWithLua(source) else { return [] }
                 return ["This config is not open, so its items are rendered in file order and not in loader order."]
             }
             // A file that changed on disk cannot take the drafts of the
@@ -1759,8 +1765,26 @@ final class SketchyBarStore: ObservableObject {
                 return "\(file.displayName) changed on disk, so the bar shows the file as it is on disk and not the unsaved drafts."
             }
         case .profile:
+            guard !canBeResolvedWithLua(source) else { return [] }
             return ["This profile is rendered in file order and not in loader order."]
         }
+    }
+
+    /// True when a Lua interpreter can resolve a source, so the items of
+    /// the bar are rendered in the order of the load.
+    func canBeResolvedWithLua(_ source: BarRenderSource) -> Bool {
+        guard let root = barRenderRoot(for: source) else { return false }
+        return LuaConfigRunner.entrypoint(in: root) != nil
+    }
+
+    /// True when the files of a source come in the order of their names.
+    ///
+    /// The files of the config the app has open come in the order of the
+    /// loader, and the files of a config that is not open come in the
+    /// order of their names.
+    func barRenderFilesAreInFileOrder(for source: BarRenderSource) -> Bool {
+        if case .config(let id) = source, id == selectedConfig?.id { return false }
+        return true
     }
 
     /// A number that changes when the rendered source changes.

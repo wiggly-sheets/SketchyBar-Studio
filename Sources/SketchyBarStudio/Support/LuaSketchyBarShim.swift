@@ -27,6 +27,10 @@ import Foundation
 ///   and only when that argument is a table (`add`, `src/sketchybar.c` of
 ///   SbarLua), so the four argument form of a bracket keeps its members
 ///   out of the properties.
+/// * Every item knows the file that declared it and the number of the
+///   declaration inside that file. The sandbox tells the shim which file
+///   it is loading, so the draft of a file can be put on the item that
+///   the file declared.
 ///
 /// The result is a JSON document, written by hand. Every property keeps
 /// the Lua type of its value in the `type` field, and the text of the
@@ -50,10 +54,35 @@ enum LuaSketchyBarShim {
     local commands = {}
     local reads = {}
     local generatedNames = 0
+    local itemIndexes = {}
 
     --- Adds a warning of the run.
     local function warn(message)
       warnings[#warnings + 1] = message
+    end
+
+    --- The file that is being loaded.
+    ---
+    --- The sandbox sets the global when it loads a module, so the shim
+    --- knows which file every declaration comes from. The name of the file
+    --- is the path of the file relative to the root of the config, the way
+    --- the sidebar names it.
+    local function currentFile()
+      local file = _G.__CLUA_MODULE__
+      if type(file) == "string" and file ~= "" then return file end
+      return ""
+    end
+
+    --- The number of the next declaration of a file.
+    ---
+    --- The number counts every call of `sbar.add` of the file, so a call
+    --- the shim refuses does not shift the calls that follow it. The parser
+    --- of the app counts the calls of the file the same way, so the number
+    --- and the file name the same declaration on both sides.
+    local function nextIndex(file)
+      local index = itemIndexes[file] or 0
+      itemIndexes[file] = index + 1
+      return index
     end
 
     --- The text of a number, the way Lua writes it.
@@ -238,6 +267,12 @@ enum LuaSketchyBarShim {
       local count = select("#", ...)
       local arguments = { ... }
 
+      -- The file and the number of the declaration. The number is taken
+      -- before the shim looks at the call, so a call it refuses does not
+      -- move the calls that follow it.
+      local file = currentFile()
+      local index = nextIndex(file)
+
       if count < 1 then
         warn("An item was added without a name, so SketchyBar creates no item for it.")
         return nil
@@ -308,6 +343,8 @@ enum LuaSketchyBarShim {
         type = itemType,
         argument = argument,
         properties = properties,
+        file = file,
+        index = index,
       }
       items[#items + 1] = item
       itemsByName[alias] = item
@@ -450,6 +487,8 @@ enum LuaSketchyBarShim {
         itemTexts[#itemTexts + 1] = '{"alias":' .. jsonString(item.alias)
           .. ',"type":' .. jsonString(item.type)
           .. ',"argument":' .. (item.argument and jsonString(item.argument) or "null")
+          .. ',"file":' .. jsonString(item.file)
+          .. ',"index":' .. tostring(item.index)
           .. ',"properties":' .. jsonProperties(item.properties) .. '}'
       end
       parts[#parts + 1] = '"items":[' .. table.concat(itemTexts, ",") .. "]"

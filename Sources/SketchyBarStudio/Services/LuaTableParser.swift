@@ -16,7 +16,7 @@ struct LuaSourceRange: Hashable {
 }
 
 /// The kind of the value of a table field.
-enum LuaLiteralKind: Equatable {
+enum LuaLiteralKind: Equatable, Hashable {
     /// A quoted string, such as `"left"`.
     case string
     /// A number, such as `12` or `0xff0000`.

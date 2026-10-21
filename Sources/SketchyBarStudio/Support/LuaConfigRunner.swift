@@ -43,6 +43,14 @@ enum LuaConfigRunner {
         /// and of a slider, the diameter of a ring, the members of a
         /// bracket.
         let argument: String?
+        /// The file that declared the item, relative to the root of the
+        /// config, such as `items/left/apple.lua`.
+        let file: String
+        /// The number of the declaration inside that file. The shim counts
+        /// the calls of `sbar.add` of the file, and so does the parser of
+        /// the app, so the number and the file name the same declaration
+        /// on both sides.
+        let index: Int
         /// The properties of the item, in the order of the load.
         let properties: [ResolvedProperty]
     }
@@ -154,6 +162,12 @@ enum LuaConfigRunner {
             throw Failure.failed(message(of: error))
         }
 
+        // The entrypoint is the file that is being run, so the items it
+        // declares belong to it.
+        entrypoint.lastPathComponent.withCString { namePointer in
+            clua_set_global_string(state, "__CLUA_MODULE__", namePointer)
+        }
+
         let run = entrypoint.path.withCString { pathPointer in
             "=config".withCString { chunkPointer in
                 clua_run_file(state, pathPointer, chunkPointer, &error, error.count)
@@ -203,6 +217,8 @@ enum LuaConfigRunner {
                 alias: entry["alias"] as? String ?? "",
                 type: entry["type"] as? String ?? "item",
                 argument: entry["argument"] as? String,
+                file: entry["file"] as? String ?? "",
+                index: entry["index"] as? Int ?? 0,
                 properties: properties(of: entry["properties"])
             )
         }
@@ -376,9 +392,38 @@ enum LuaConfigSandbox {
     -- aborts the whole run, so it is never a soft failure.
     local timeoutMarker = "the Lua config ran for more than"
     local raw_require = require
+
+    -- The path of a module relative to the root of the config, the way the
+    -- sidebar names a file. The path of the package is the root of the
+    -- config, so a module is a file of the config or a folder with an
+    -- init.lua in it.
+    local function relativePathOf(name)
+      local plain = string.gsub(name, "^%./", "")
+      local slashed = string.gsub(plain, "%.", "/")
+      local candidate = slashed .. ".lua"
+      local handle = raw_open(root .. "/" .. candidate, "rb")
+      if handle then
+        handle:close()
+        return candidate
+      end
+      local folder = slashed .. "/init.lua"
+      handle = raw_open(root .. "/" .. folder, "rb")
+      if handle then
+        handle:close()
+        return folder
+      end
+      return candidate
+    end
+
+    -- The shim records the file that declares every item, so the draft of
+    -- a file can be put on the item that the file declared. The global
+    -- holds the file that is being loaded.
     require = function(name)
       package.cpath = ""
+      local previous = _G.__CLUA_MODULE__
+      _G.__CLUA_MODULE__ = relativePathOf(name)
       local ok, result = pcall(raw_require, name)
+      _G.__CLUA_MODULE__ = previous
       if ok then return result end
       local message = tostring(result)
       if message:find(timeoutMarker, 1, true) then
