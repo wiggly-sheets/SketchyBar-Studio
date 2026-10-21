@@ -13,6 +13,14 @@
    window server, no input and no notifications, so every event source is a
    no-op and every forced event does nothing. */
 
+/* The global bar manager of the vendored core. The preview owns it for the
+   lifetime of a preview handle: the items, the default item and the bar
+   properties live in it.
+
+   The duration of the animator stays 0. The ANIMATE macro only creates an
+   animation when the duration is above 0 (src/animation.h:11-27), and
+   animator_add would start a display link (src/animation.c:189). The
+   preview has no display link, so every value is applied at once. */
 struct bar_manager g_bar_manager;
 void* g_workspace_context = NULL;
 

@@ -16,6 +16,10 @@ copies the files below and applies the patches of
 [MODIFICATIONS.md](MODIFICATIONS.md). Run it after changing the patch list,
 so the tree can be rebuilt from a clean checkout of the upstream commit.
 
+The script only owns `src/`. The `shim/` and `preview/` directories hold
+the code of this project: the replacements of the dropped daemon files and
+the code of the preview itself. They are never overwritten by the script.
+
 ## Vendored files
 
 The files that are compiled into the target:
@@ -52,6 +56,18 @@ src/app_windows.h      src/display.h         src/event.h
 src/media.h            src/mouse.h           src/power.h
 src/source_pid.h       src/surface.h         src/volume.h
 src/wifi.h             src/window.h          src/workspace.h
+```
+
+## The code of the preview
+
+Neither upstream code nor a replacement of a dropped upstream file:
+
+```
+preview/preview_internal.h            the internal API of the preview
+preview/sketchybar_preview.c          the public C API and the item tree
+preview/sketchybar_preview_bar.c      the bar manager and the bar domain
+preview/sketchybar_preview_stubs.c    the symbols of the dropped files
+preview/sketchybar_preview_test.c     the test-only accessors
 ```
 
 ## Files that are not vendored

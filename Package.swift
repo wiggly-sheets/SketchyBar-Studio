@@ -33,7 +33,8 @@ let package = Package(
                     "-fno-modules"
                 ]),
                 .headerSearchPath("shim"),
-                .headerSearchPath("src")
+                .headerSearchPath("src"),
+                .headerSearchPath("preview")
             ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
@@ -49,7 +50,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SketchyBarStudioTests",
-            dependencies: ["SketchyBarStudio"],
+            dependencies: ["SketchyBarStudio", "CSketchyBar"],
             path: "Tests/SketchyBarStudioTests"
         )
     ]

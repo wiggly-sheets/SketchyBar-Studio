@@ -134,14 +134,20 @@ void animator_init(struct animator* animator) {
 
 void animator_renew_display_link(struct animator* animator) {
   animator_destroy_display_link(animator);
-  CVDisplayLinkCreateWithActiveCGDisplays(&animator->display_link);
 
-  CVDisplayLinkSetOutputCallback(animator->display_link,
-                                 animation_frame_callback,
-                                 animator                 );
+  /* The preview has no display link. The daemon drives its animations from
+     the display link of the window server, and the preview has no window
+     server: the link would only wake the app up for nothing. The duration
+     of the animator stays 0, so no animation is ever created and the link
+     is never needed. */
+  if (animator->display_link) {
+    CVDisplayLinkSetOutputCallback(animator->display_link,
+                                   animation_frame_callback,
+                                   animator                 );
 
-  animator->clock = CVGetHostClockFrequency();
-  CVDisplayLinkStart(animator->display_link);
+    animator->clock = CVGetHostClockFrequency();
+    CVDisplayLinkStart(animator->display_link);
+  }
 }
 
 void animator_destroy_display_link(struct animator* animator) {

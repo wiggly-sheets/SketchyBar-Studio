@@ -79,10 +79,19 @@ Sources/CSketchyBar/                          C target: vendored SketchyBar subs
   shim/sketchybar_preview_surface.c            bitmap surface that returns a CGImage
   shim/sketchybar_preview_shim.c               no-op event source
   shim/sketchybar_preview_fork.c               fork_exec with a preview environment
+  preview/sketchybar_preview.c                 the C API and the headless item tree (Stage 2)
+  preview/sketchybar_preview_bar.c             the bar manager and the bar domain (Stage 2)
+  preview/sketchybar_preview_stubs.c           the symbols of the dropped files (Stage 2)
+  preview/sketchybar_preview_test.c            the test-only accessors (Stage 2)
   LICENSE.md                                   the upstream licence, kept with the files
   MODIFICATIONS.md                             every patch this project makes
   UPSTREAM.md                                  the upstream commit that was vendored
 ```
+
+The `preview/` directory holds the code of the preview itself. It is not
+upstream code and not a replacement of a dropped upstream file, so it never
+lives in `src/`: the vendor script empties `src/` on every run and would
+delete it there.
 
 Every file on the Swift side, with the stage that owns it, is in the **Files** section of that stage file. The new files are `Models/BarRenderModels.swift` and `Models/BarRenderItemModel.swift` (Stage 3), `Services/PreviewConfigBridge.swift` (Stage 3), `Support/SketchyBarPreviewC.swift` (Stage 1), `Services/BarRendererService.swift` and `Views/BarRenderView.swift` and `Views/BarRenderProfilePicker.swift` (Stage 5), `Services/PreviewScriptShim.swift` and `Services/PreviewScriptRunner.swift` (Stage 6), `Services/LiveBarService.swift` (Stage 7), and `Services/SketchyBarQueryParser.swift` (Stage 8). The test files are in the stage that adds them, and the test files that already exist in the repository are listed in [reference.md](reference.md#the-repository-files-this-plan-touches).
 

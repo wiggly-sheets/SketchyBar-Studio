@@ -101,24 +101,13 @@ static inline char* escape_string(char* string) {
 }
 
 static inline void respond(FILE* rsp, char* response, ...) {
-  time_t t = time(NULL);
-  struct tm ltime = *localtime(&t);
-  printf("[%d-%02d-%02d %02d:%02d:%02d] ",
-         ltime.tm_year + 1900,
-         ltime.tm_mon + 1,
-         ltime.tm_mday,
-         ltime.tm_hour,
-         ltime.tm_min,
-         ltime.tm_sec                     );
-
+  /* The daemon writes every answer to its log as well. The preview has no
+     log, and the app would print a line on stdout for every rejected
+     property. The answer goes to the reply stream only. */
   va_list args_rsp;
-  va_list args_stdout;
   va_start(args_rsp, response);
-  va_copy(args_stdout, args_rsp);
   vfprintf(rsp, response, args_rsp);
-  vfprintf(stdout, response, args_stdout);
   va_end(args_rsp);
-  va_end(args_stdout);
 }
 
 static inline struct key_value_pair get_key_value_pair(char *token, char split) {
