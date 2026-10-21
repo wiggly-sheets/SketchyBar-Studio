@@ -23,6 +23,16 @@ enum BarPreviewTestAccessors {
         }
     }
 
+    /// The serialized form of an item, the same text `sketchybar --query
+    /// <item>` answers with.
+    static func itemSerialization(_ handle: OpaquePointer?, alias: String) -> String? {
+        alias.withCString { aliasPointer in
+            guard let pointer = sb_preview_test_item_serialize(handle, aliasPointer) else { return nil }
+            defer { free(pointer) }
+            return String(cString: pointer)
+        }
+    }
+
     /// The environment the child of the script runner receives, one
     /// "KEY=VALUE" per line.
     static func childEnvironment() -> String {

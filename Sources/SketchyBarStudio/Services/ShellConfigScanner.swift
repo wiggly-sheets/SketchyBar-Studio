@@ -315,3 +315,360 @@ struct ShellConfigScanner {
         return SketchyBarOptionDocs.doc(for: key) != nil
     }
 }
+
+/// The commands of a shell config.
+///
+/// A shell config calls the `sketchybar` binary, so the item a value
+/// belongs to is in the command line and not in the value:
+/// `sketchybar --set clock label="10:00"`. The scanner of the app reads
+/// the values of a line, but it does not know the item they belong to.
+/// This parser reads the commands, so the bridge knows the alias of every
+/// value.
+///
+/// The values are the text the shell passes on, so the quotes of a value
+/// are not part of it. The ranges of the values point at the value in the
+/// file, so a quoted value covers its quotes.
+struct ShellConfigCommandParser {
+    /// The result of the parse.
+    struct Result {
+        /// The items of the bar, one per declaration.
+        let items: [StructuredItem]
+        /// The declarations of the bar.
+        let bar: [StructuredItem]
+        /// The declarations of the default item.
+        let defaults: [StructuredItem]
+        /// The problems of the config that the parser found.
+        let warnings: [String]
+    }
+
+    /// One command of a shell config.
+    private enum Command {
+        /// `--add <type> <alias> <position>`
+        case add(type: String, alias: String, position: Word?)
+        /// `--set <alias> <property>=<value> …`
+        case set(alias: String, properties: [Property])
+        /// `--default <property>=<value> …`
+        case defaultItem(properties: [Property])
+        /// `--bar <property>=<value> …`
+        case bar(properties: [Property])
+    }
+
+    /// One declaration of an item: the add that creates it and the values
+    /// that are set on it.
+    private struct Declaration {
+        /// The alias of the item.
+        let alias: String
+        /// The position of the add command.
+        var addPosition: String?
+        /// The values that are set on the item.
+        var properties: [StructuredItemValue]
+    }
+
+    /// One property of a command.
+    private struct Property {
+        /// The name of the property, such as `label.string`.
+        let key: String
+        /// The value of the property, as the shell passes it on.
+        let value: String
+        /// The range of the value in the file.
+        let range: Range<Int>
+        /// True when the shell builds the value, so it is not a literal.
+        let dynamic: Bool
+    }
+
+    /// One word of a shell config.
+    private struct Word {
+        /// The text of the word, with the quotes removed.
+        let text: String
+        /// The text of the word as the file holds it, with the quotes.
+        let raw: String
+        /// The line of the word in the file. A command ends at the newline.
+        let line: Int
+        /// The range of the word in the file.
+        let range: Range<Int>
+    }
+
+    /// The commands of a config, read into the model of the app.
+    static func parse(in source: String) -> Result {
+        var declarations: [Declaration] = []
+        var barValues: [StructuredItemValue] = []
+        var defaultValues: [StructuredItemValue] = []
+        var warnings: [String] = []
+        let commands = Self.commands(in: source)
+
+        for command in commands.commands {
+            switch command {
+            case .add(let type, let alias, let position):
+                guard type == "item" else {
+                    // The preview only knows plain items. The other types
+                    // need the window server or their own setup.
+                    warnings.append(PreviewWarning.unsupportedType(type, alias: alias))
+                    continue
+                }
+                guard !alias.isEmpty else {
+                    warnings.append(PreviewWarning.unnamedItem(generated: false))
+                    continue
+                }
+                guard let position else {
+                    // The daemon creates the item and removes it again
+                    // (src/message.c:202-208).
+                    warnings.append(PreviewWarning.addWithoutPosition(alias))
+                    continue
+                }
+                declarations.append(Declaration(alias: alias, addPosition: position.text, properties: []))
+            case .set(let alias, let properties):
+                let literal = properties.filter { !$0.dynamic }
+                let dynamic = properties.filter(\.dynamic)
+                guard let index = declarations.lastIndex(where: { $0.alias == alias }) else {
+                    // The daemon sets nothing when the item does not exist
+                    // (src/message.c:635).
+                    warnings.append(PreviewWarning.setWithoutAdd(alias))
+                    continue
+                }
+                warnings.append(contentsOf: dynamic.map { PreviewWarning.dynamicValue($0.key) })
+                declarations[index].properties.append(contentsOf: literal.map {
+                    value(alias: alias, key: $0.key, text: $0.value, range: $0.range)
+                })
+            case .defaultItem(let properties):
+                warnings.append(contentsOf: properties.filter(\.dynamic).map { PreviewWarning.dynamicValue($0.key) })
+                defaultValues.append(contentsOf: properties.filter { !$0.dynamic }.map { value(alias: "default", key: $0.key, text: $0.value, range: $0.range) })
+            case .bar(let properties):
+                warnings.append(contentsOf: properties.filter(\.dynamic).map { PreviewWarning.dynamicValue($0.key) })
+                barValues.append(contentsOf: properties.filter { !$0.dynamic }.map { value(alias: "bar", key: $0.key, text: $0.value, range: $0.range) })
+            }
+        }
+
+        if commands.calls == 0 {
+            warnings.append(PreviewWarning.noSketchyBarCommand())
+        }
+
+        let items = declarations.map {
+            StructuredItem(kind: .item,
+                           alias: $0.alias,
+                           values: $0.properties,
+                           excludedRanges: [],
+                           addPosition: $0.addPosition)
+        }
+
+        return Result(
+            items: items,
+            bar: barValues.isEmpty ? [] : [StructuredItem(kind: .bar, alias: "bar", values: barValues, excludedRanges: [])],
+            defaults: defaultValues.isEmpty ? [] : [StructuredItem(kind: .defaultItem, alias: "default", values: defaultValues, excludedRanges: [])],
+            warnings: warnings
+        )
+    }
+
+    /// One value of a command, in the model of the app.
+    private static func value(alias: String, key: String, text: String, range: Range<Int>) -> StructuredItemValue {
+        StructuredItemValue(
+            alias: alias,
+            keyPath: key,
+            rawValue: text,
+            value: text,
+            valueStartOffset: range.lowerBound,
+            valueEndOffset: range.upperBound
+        )
+    }
+
+    // MARK: - The commands
+
+    /// The commands of the config, in the order of the file, and the
+    /// number of calls of the binary.
+    ///
+    /// A command ends at the newline, so the words of the next line are
+    /// not read as the properties of the command before it. A call of the
+    /// binary ends the command as well, so the commands of a config are
+    /// read one after the other.
+    private static func commands(in source: String) -> (commands: [Command], calls: Int) {
+        let words = Self.words(in: source)
+        var commands: [Command] = []
+        var calls = 0
+        var index = 0
+
+        while index < words.count {
+            guard Self.isBinary(words[index].text) else {
+                index += 1
+                continue
+            }
+
+            calls += 1
+            let line = words[index].line
+            var arguments: [Word] = []
+            var cursor = index + 1
+            while cursor < words.count,
+                  words[cursor].line == line,
+                  !Self.isBinary(words[cursor].text) {
+                arguments.append(words[cursor])
+                cursor += 1
+            }
+            index = cursor
+
+            if let command = Self.command(from: arguments) {
+                commands.append(command)
+            }
+        }
+
+        return (commands, calls)
+    }
+
+    /// One command, read from the words that follow the call of the binary.
+    private static func command(from arguments: [Word]) -> Command? {
+        guard let flag = arguments.first else { return nil }
+
+        switch flag.text {
+        case "--add":
+            guard arguments.count >= 3 else { return nil }
+            let position = arguments.count > 3 ? arguments[3] : nil
+            return .add(type: arguments[1].text, alias: arguments[2].text, position: position)
+        case "--set":
+            guard arguments.count >= 2 else { return nil }
+            return .set(alias: arguments[1].text, properties: Self.properties(in: Array(arguments.dropFirst(2))))
+        case "--default":
+            return .defaultItem(properties: Self.properties(in: Array(arguments.dropFirst())))
+        case "--bar":
+            return .bar(properties: Self.properties(in: Array(arguments.dropFirst())))
+        default:
+            return nil
+        }
+    }
+
+    /// The `property=value` pairs of a command.
+    ///
+    /// The pair is split at the first `=`, the way the daemon splits it
+    /// (src/misc/helpers.h:126). A value that the shell builds, such as
+    /// `$(date)` or `$HOME`, is not a literal, so it is marked as one the
+    /// preview cannot read.
+    private static func properties(in words: [Word]) -> [Property] {
+        var properties: [Property] = []
+
+        for word in words {
+            guard let separator = word.text.firstIndex(of: "=") else { continue }
+            let key = String(word.text[..<separator])
+            guard !key.isEmpty else { continue }
+            let value = String(word.text[word.text.index(after: separator)...])
+            // The range is measured on the raw text of the word, so it
+            // covers the quotes of a quoted value.
+            guard let rawSeparator = word.raw.firstIndex(of: "=") else { continue }
+            let offset = word.raw.distance(from: word.raw.startIndex, to: rawSeparator) + 1
+            properties.append(Property(key: key,
+                                       value: value,
+                                       range: word.range.lowerBound + offset..<word.range.upperBound,
+                                       dynamic: Self.isDynamic(value)))
+        }
+
+        return properties
+    }
+
+    /// True when the shell builds the value, so the value is not a literal.
+    private static func isDynamic(_ value: String) -> Bool {
+        value.contains("$") || value.contains("`")
+    }
+
+    /// True when the word calls the binary of SketchyBar.
+    private static func isBinary(_ word: String) -> Bool {
+        word == "sketchybar" || word.hasSuffix("/sketchybar")
+    }
+
+    // MARK: - The words
+
+    /// The words of a shell config, the way the shell passes them on.
+    ///
+    /// The quotes of a word are removed, a backslash at the end of a line
+    /// continues the line and a `#` that begins a word starts a comment.
+    private static func words(in source: String) -> [Word] {
+        let characters = Array(source)
+        var words: [Word] = []
+        var index = 0
+        var line = 1
+
+        while index < characters.count {
+            // The whitespace and the line continuations separate the words.
+            while index < characters.count {
+                if characters[index].isWhitespace {
+                    if characters[index] == "\n" { line += 1 }
+                    index += 1
+                    continue
+                }
+                if characters[index] == "\\", index + 1 < characters.count, characters[index + 1] == "\n" {
+                    index += 2
+                    continue
+                }
+                break
+            }
+            guard index < characters.count else { break }
+            if characters[index] == "#" {
+                while index < characters.count, characters[index] != "\n" { index += 1 }
+                continue
+            }
+
+            let start = index
+            let startLine = line
+            var text = ""
+
+            while index < characters.count {
+                let character = characters[index]
+                if character.isWhitespace { break }
+
+                if character == "\\" {
+                    let next = index + 1
+                    if next < characters.count, characters[next] == "\n" {
+                        // The line continues on the next one.
+                        index = next + 1
+                        continue
+                    }
+                    if next < characters.count {
+                        text.append(characters[next])
+                        index = next + 1
+                        continue
+                    }
+                }
+
+                if character == "'" {
+                    index += 1
+                    while index < characters.count, characters[index] != "'" {
+                        if characters[index] == "\n" { line += 1 }
+                        text.append(characters[index])
+                        index += 1
+                    }
+                    index += 1
+                    continue
+                }
+
+                if character == "\"" {
+                    index += 1
+                    while index < characters.count {
+                        let inner = characters[index]
+                        if inner == "\\" {
+                            let next = index + 1
+                            // Inside double quotes the shell only escapes
+                            // these four characters.
+                            if next < characters.count,
+                               characters[next] == "\"" || characters[next] == "\\"
+                               || characters[next] == "$" || characters[next] == "`" {
+                                text.append(characters[next])
+                                index = next + 1
+                                continue
+                            }
+                        }
+                        if inner == "\"" {
+                            index += 1
+                            break
+                        }
+                        if inner == "\n" { line += 1 }
+                        text.append(inner)
+                        index += 1
+                    }
+                    continue
+                }
+
+                text.append(character)
+                index += 1
+            }
+
+            let range = start..<index
+            words.append(Word(text: text, raw: String(characters[range]), line: startLine, range: range))
+        }
+
+        return words
+    }
+}
