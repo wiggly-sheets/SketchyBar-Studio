@@ -57,6 +57,30 @@ enum StatusKind {
     }
 }
 
+/// What the detail pane shows.
+///
+/// The pane is either the editor of the file or the rendered bar of a
+/// config or a profile. Switching between them never touches a draft: the
+/// drafts live in the store.
+enum DetailPaneMode: String, CaseIterable, Identifiable {
+    /// The editor of the file.
+    case edit
+    /// The rendered bar.
+    case preview
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .edit: return "Edit"
+        case .preview: return "Preview"
+        }
+    }
+
+    /// The mode the detail pane opens in.
+    static let defaultMode: DetailPaneMode = .edit
+}
+
 /// One config file read from disk together with the values scanned from it.
 private struct ScannedConfigFile {
     let file: ConfigFile
@@ -128,6 +152,14 @@ final class SketchyBarStore: ObservableObject {
     @Published var statusMessage = ""
     @Published var searchText = ""
     @Published var showModifiedOnly = false
+    /// The pane the detail view shows.
+    @Published var detailPaneMode: DetailPaneMode = .defaultMode
+    /// The config or the profile the preview pane renders. Nil is the
+    /// config the app has open.
+    @Published var barRenderSource: BarRenderSource?
+    /// The width of the display the bar is rendered for, in points. Nil is
+    /// the width of the display of the machine.
+    @Published var barRenderWidthOverride: Double?
     @Published var appTheme: AppTheme = SketchyBarStore.savedTheme() {
         didSet { UserDefaults.standard.set(appTheme.rawValue, forKey: "appTheme") }
     }
@@ -370,6 +402,9 @@ final class SketchyBarStore: ObservableObject {
         selectedConfigID = id
         configRoot = config.url
         newConfigPath = config.path
+        // The preview follows the config the app has open, so the choice
+        // of the picker starts over with the new config.
+        barRenderSource = nil
         UserDefaults.standard.set(id, forKey: "selectedConfigID")
         UserDefaults.standard.set(config.path, forKey: "configRoot")
         selectedFileID = nil

@@ -738,4 +738,92 @@ final class ViewLogicTests: XCTestCase {
             XCTAssertTrue(SketchyBarBoolean.isBooleanKey(key), "\(key) should be a boolean key")
         }
     }
+
+    // MARK: - The detail pane
+
+    func testTheDetailPaneOpensInEditMode() {
+        XCTAssertEqual(DetailPaneMode.defaultMode, .edit)
+    }
+
+    func testTheDetailPaneHasAnEditAndAPreviewMode() {
+        XCTAssertEqual(DetailPaneMode.allCases, [.edit, .preview])
+        XCTAssertEqual(DetailPaneMode.edit.title, "Edit")
+        XCTAssertEqual(DetailPaneMode.preview.title, "Preview")
+    }
+
+    // MARK: - The picker of the preview
+
+    func testThePickerStartsWithTheConfigTheAppHasOpen() {
+        let configs = [
+            ConfigWorkspace(id: "one", name: "One", path: "/one", createdAt: .now),
+            ConfigWorkspace(id: "two", name: "Two", path: "/two", createdAt: .now)
+        ]
+
+        XCTAssertEqual(BarRenderChoices.defaultSource(configs: configs, openConfigID: "two"), .config("two"))
+    }
+
+    func testThePickerFallsBackToTheFirstConfig() {
+        let configs = [ConfigWorkspace(id: "one", name: "One", path: "/one", createdAt: .now)]
+
+        XCTAssertEqual(BarRenderChoices.defaultSource(configs: configs, openConfigID: nil), .config("one"))
+        XCTAssertNil(BarRenderChoices.defaultSource(configs: [], openConfigID: nil))
+    }
+
+    func testThePickerOffersEveryConfigAndEverySavedProfile() {
+        let configs = [
+            ConfigWorkspace(id: "one", name: "One", path: "/one", createdAt: .now),
+            ConfigWorkspace(id: "two", name: "Two", path: "/two", createdAt: .now)
+        ]
+        let profiles = [ConfigProfile(name: "Morning",
+                                      url: URL(fileURLWithPath: "/profiles/Morning"),
+                                      createdAt: .now)]
+
+        let choices = BarRenderChoices.make(configs: configs, profiles: profiles, openConfigID: "one")
+
+        XCTAssertEqual(choices.count, 3, "every config and every profile must be a choice")
+        XCTAssertEqual(choices.map(\.source), [
+            .config("one"),
+            .config("two"),
+            .profile(profilePath: "/profiles/Morning")
+        ])
+        XCTAssertTrue(choices[0].isOpen, "the config the app has open must be marked")
+        XCTAssertFalse(choices[1].isOpen, "another config has no drafts")
+        XCTAssertFalse(choices[2].isOpen, "a profile has no drafts")
+    }
+
+    @MainActor
+    func testSwitchingBetweenEditAndPreviewKeepsTheDraft() throws {
+        let root = try makeConfigRoot()
+        let fileURL = root.appendingPathComponent("items/first.lua")
+        try write("width = 10\n", to: fileURL)
+        let store = SketchyBarStore(configRoot: root)
+        let file = try XCTUnwrap(store.files.first { $0.url == fileURL })
+        let value = try XCTUnwrap(file.values.first)
+        store.update(valueID: value.id, draftValue: "11")
+
+        store.detailPaneMode = .preview
+        store.detailPaneMode = .edit
+
+        XCTAssertTrue(store.hasUnsavedChanges(fileID: file.id), "the draft must survive the switch")
+        XCTAssertTrue(try XCTUnwrap(store.effectiveContents(for: file)).contains("11"),
+                      "the draft must be in the contents the preview renders")
+    }
+
+    // MARK: - The helpers of the store
+
+    private func makeConfigRoot() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SketchyBarStudioViewLogicTests")
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: root)
+        }
+        return root
+    }
+
+    private func write(_ contents: String, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+    }
 }

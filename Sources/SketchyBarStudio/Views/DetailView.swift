@@ -5,18 +5,9 @@ struct DetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            BarPreviewView(store: store, theme: store.appTheme)
-                .padding()
+            modePicker
 
-            if let file = store.selectedFile {
-                EditableFileView(store: store, file: file, theme: store.appTheme)
-            } else {
-                ContentUnavailableView(
-                    "No Editable Values",
-                    systemImage: "slider.horizontal.3",
-                    description: Text("Point the app at a SketchyBar config folder in Settings, then reload.")
-                )
-            }
+            pane
 
             Divider()
 
@@ -40,6 +31,45 @@ struct DetailView: View {
         .onChange(of: store.statusMessage) { _, message in
             guard !message.isEmpty else { return }
             AccessibilityNotification.Announcement(message).post()
+        }
+    }
+
+    /// The switch between the editor and the rendered bar.
+    ///
+    /// The switch never touches a draft: the drafts live in the store, so
+    /// they are there when the user comes back to the editor.
+    private var modePicker: some View {
+        Picker("Mode", selection: $store.detailPaneMode) {
+            ForEach(DetailPaneMode.allCases) { mode in
+                Text(mode.title).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .padding(.horizontal)
+        .padding(.top, 8)
+        .accessibilityLabel("Detail pane mode")
+    }
+
+    @ViewBuilder
+    private var pane: some View {
+        switch store.detailPaneMode {
+        case .edit:
+            BarPreviewView(store: store, theme: store.appTheme)
+                .padding()
+
+            if let file = store.selectedFile {
+                EditableFileView(store: store, file: file, theme: store.appTheme)
+            } else {
+                ContentUnavailableView(
+                    "No Editable Values",
+                    systemImage: "slider.horizontal.3",
+                    description: Text("Point the app at a SketchyBar config folder in Settings, then reload.")
+                )
+            }
+        case .preview:
+            BarRenderView(store: store, theme: store.appTheme)
+                .padding()
         }
     }
 }
