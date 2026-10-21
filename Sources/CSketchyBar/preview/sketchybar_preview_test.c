@@ -37,7 +37,10 @@ char* sb_preview_test_child_environment(void) {
   }
 
   char* text = malloc(length);
-  if (!text) return NULL;
+  if (!text) {
+    preview_free_environment(environment);
+    return NULL;
+  }
 
   text[0] = '\0';
   for (char** entry = environment; *entry; entry++) {
@@ -45,5 +48,6 @@ char* sb_preview_test_child_environment(void) {
     strcat(text, *entry);
   }
 
+  preview_free_environment(environment);
   return text;
 }

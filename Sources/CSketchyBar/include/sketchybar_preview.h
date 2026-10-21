@@ -26,10 +26,14 @@ typedef struct sb_preview sb_preview_t;
 
 /* Creates a preview handle. Returns NULL when the core cannot start: when
    the memory is gone, or when another preview is alive. The caller owns the
-   handle and releases it with sb_preview_destroy. */
+   handle and releases it with sb_preview_destroy.
+
+   One preview exists at a time; creating a second returns NULL. The API is
+   not thread-safe; call it from one queue. */
 SB_API sb_preview_t* sb_preview_create(void);
 
-/* Releases a handle created by sb_preview_create. Passing NULL is a no-op. */
+/* Releases a handle created by sb_preview_create. Passing NULL is a no-op.
+   The handle must be released exactly once. */
 SB_API void sb_preview_destroy(sb_preview_t* preview);
 
 /* Bar level: key is a SketchyBar bar property, e.g. "position", "margin".
@@ -50,13 +54,19 @@ SB_API int  sb_preview_set_item(sb_preview_t* preview, const char* alias,
 
 /* The virtual display the bar is laid out for. The width and the height are
    in POINTS. The scale is the scale of the backing bitmap, which is fixed at
-   2.0 in SketchyBar and is not the scale of the screen. A scale of zero or
-   less keeps the fixed scale of 2.0.
+   2.0 in SketchyBar and is not the scale of the screen. The preview keeps
+   that fixed scale of 2.0 and ignores the argument.
 
    The call rebuilds the bar of the preview, so its frame follows the new
    display (src/bar.c:516-522). */
 SB_API int  sb_preview_set_display(sb_preview_t* preview,
                                     double widthPoints, double heightPoints, double scale);
+
+/* The height of the menu bar above the bar, in POINTS. 0 means there is no
+   menu bar and the bar starts at the top of the display. The call comes
+   after sb_preview_set_display: the menu bar does not change the geometry
+   of the display. */
+SB_API int  sb_preview_set_menu_bar(sb_preview_t* preview, double heightPoints);
 
 /* Renders into a bitmap and returns a retained CGImage. The caller owns it
    and releases it with sb_preview_release_image. */
@@ -102,7 +112,8 @@ SB_API const char* sb_preview_messages(sb_preview_t* preview);
 
    The test-only accessors below are not part of the preview API. The app
    never calls them. They exist so that the tests of the preview core can
-   read the state of the vendored model without reaching into it. */
+   read the state of the vendored model without reaching into it: the tests
+   call them directly through this header. */
 
 /* The fixed width of an item, or -1 when the item has none or is unknown. */
 SB_API int sb_preview_test_item_width(sb_preview_t* preview, const char* alias);

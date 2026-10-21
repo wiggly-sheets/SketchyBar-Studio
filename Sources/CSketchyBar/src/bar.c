@@ -198,7 +198,10 @@ void bar_draw(struct bar* bar, bool forced) {
 }
 
 static void bar_calculate_bounds_top_bottom(struct bar* bar) {
-  bool is_builtin = CGDisplayIsBuiltin(bar->did);
+  /* The preview has no built-in display: the id of the virtual display is
+     1, which is the id of the built-in display of a real Mac, so the answer
+     would depend on the machine. The preview has no notch. */
+  bool is_builtin = false;
   uint32_t notch_width = is_builtin ? g_bar_manager.notch_width : 0;
 
   uint32_t center_length = bar_manager_length_for_bar_side(&g_bar_manager,
@@ -435,7 +438,10 @@ void bar_calculate_bounds(struct bar* bar) {
 }
 
 static CGRect bar_get_frame(struct bar *bar) {
-  bool is_builtin = CGDisplayIsBuiltin(bar->did);
+  /* The preview has no built-in display: the id of the virtual display is
+     1, which is the id of the built-in display of a real Mac, so the answer
+     would depend on the machine. The preview has no notch. */
+  bool is_builtin = false;
   int notch_offset = is_builtin ? g_bar_manager.notch_offset : 0;
   int notch_display_height = is_builtin ? g_bar_manager.notch_display_height : 0;
 

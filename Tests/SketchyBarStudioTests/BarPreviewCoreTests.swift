@@ -23,7 +23,7 @@ final class BarPreviewCoreTests: XCTestCase {
         XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple"), SketchyBarPreviewC.Code.ok)
         XCTAssertEqual(SketchyBarPreviewC.setItem(handle, alias: "apple", key: "width", value: "120"), SketchyBarPreviewC.Code.ok)
 
-        XCTAssertEqual(SketchyBarPreviewC.itemWidth(handle, alias: "apple"), 120)
+        XCTAssertEqual(BarPreviewTestAccessors.itemWidth(handle, alias: "apple"), 120)
     }
 
     /// The alias of an item that does not exist is a failure, not a crash.
@@ -85,6 +85,19 @@ final class BarPreviewCoreTests: XCTestCase {
         XCTAssertNil(SketchyBarPreviewC.create(), "a second preview must not take over the model of the first one")
     }
 
+    /// The menu bar of the virtual display is set after the display, and a
+    /// negative height is refused.
+    func testPreviewSetsTheMenuBar() {
+        let handle = SketchyBarPreviewC.create()
+        XCTAssertNotNil(handle)
+        defer { SketchyBarPreviewC.destroy(handle) }
+
+        XCTAssertEqual(SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25), SketchyBarPreviewC.Code.ok)
+        XCTAssertEqual(SketchyBarPreviewC.setMenuBar(handle, heightPoints: 24), SketchyBarPreviewC.Code.ok)
+        XCTAssertEqual(SketchyBarPreviewC.setMenuBar(handle, heightPoints: 0), SketchyBarPreviewC.Code.ok)
+        XCTAssertEqual(SketchyBarPreviewC.setMenuBar(handle, heightPoints: -1), SketchyBarPreviewC.Code.invalidArgument)
+    }
+
     // MARK: - The defaults
 
     /// A default that is set before the item is created is inherited by the
@@ -98,7 +111,7 @@ final class BarPreviewCoreTests: XCTestCase {
         XCTAssertEqual(SketchyBarPreviewC.setDefault(handle, key: "padding_left", value: "7"), SketchyBarPreviewC.Code.ok)
         XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple"), SketchyBarPreviewC.Code.ok)
 
-        XCTAssertEqual(SketchyBarPreviewC.itemPaddingLeft(handle, alias: "apple"), 7)
+        XCTAssertEqual(BarPreviewTestAccessors.itemPaddingLeft(handle, alias: "apple"), 7)
     }
 
     /// A default that is set after the item exists never reaches that item.
@@ -110,7 +123,7 @@ final class BarPreviewCoreTests: XCTestCase {
         XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple"), SketchyBarPreviewC.Code.ok)
         XCTAssertEqual(SketchyBarPreviewC.setDefault(handle, key: "padding_left", value: "7"), SketchyBarPreviewC.Code.ok)
 
-        XCTAssertEqual(SketchyBarPreviewC.itemPaddingLeft(handle, alias: "apple"), 0)
+        XCTAssertEqual(BarPreviewTestAccessors.itemPaddingLeft(handle, alias: "apple"), 0)
     }
 
     /// The reset empties the default item again, like `--default reset` does.
@@ -123,7 +136,7 @@ final class BarPreviewCoreTests: XCTestCase {
         XCTAssertEqual(SketchyBarPreviewC.setDefault(handle, key: "reset", value: ""), SketchyBarPreviewC.Code.ok)
         XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple"), SketchyBarPreviewC.Code.ok)
 
-        XCTAssertEqual(SketchyBarPreviewC.itemPaddingLeft(handle, alias: "apple"), 0)
+        XCTAssertEqual(BarPreviewTestAccessors.itemPaddingLeft(handle, alias: "apple"), 0)
     }
 
     // MARK: - The child of the script runner
@@ -135,7 +148,7 @@ final class BarPreviewCoreTests: XCTestCase {
         setenv("BAR_NAME", "sketchybar", 1)
         defer { unsetenv("BAR_NAME") }
 
-        let environment = SketchyBarPreviewC.childEnvironment()
+        let environment = BarPreviewTestAccessors.childEnvironment()
         XCTAssertFalse(environment.contains("BAR_NAME="), "the child must not get BAR_NAME: \(environment)")
         XCTAssertTrue(environment.contains("SKETCHYBAR_PREVIEW=1"), "the child must know it runs in a preview: \(environment)")
         XCTAssertTrue(environment.contains("PATH="), "the child must inherit the environment of the app: \(environment)")
@@ -148,28 +161,33 @@ final class BarPreviewCoreTests: XCTestCase {
         setenv("BAR_NAME", "sketchybar", 1)
         defer { unsetenv("BAR_NAME") }
 
-        _ = SketchyBarPreviewC.childEnvironment()
+        _ = BarPreviewTestAccessors.childEnvironment()
 
         XCTAssertEqual(getenv("BAR_NAME").map { String(cString: $0) }, "sketchybar")
     }
 
     // MARK: - The soak
 
-    /// A thousand create and destroy cycles leave the process with the same
-    /// number of open file descriptors and the same resident memory.
+    /// Ten thousand create and destroy cycles leave the process with the
+    /// same number of open file descriptors and the same resident memory.
     ///
     /// The resident size of a process grows while the heap of the core finds
     /// its working size, and that growth is not a leak: it is bounded and it
     /// stops. The warm-up of a thousand cycles pays it, and the measured
-    /// thousand cycles then show the steady state.
+    /// ten thousand cycles then show the steady state.
+    ///
+    /// The tolerance is 65,536 bytes. The leak this catches is one item name
+    /// per cycle: the name of an item is a malloc chunk of about 32 bytes, so
+    /// a leak of one name per cycle is about 320,000 bytes over the ten
+    /// thousand cycles, which is over the tolerance. Over a thousand cycles
+    /// the same leak would be about 32,000 bytes, which is under the
+    /// tolerance, so the soak has to run ten thousand cycles to catch it.
     ///
     /// The measured numbers on this machine, after the warm-up of a thousand
     /// cycles: the descriptor count stays at 88, and the resident size grows
-    /// by 0 or 16,384 bytes over the next thousand cycles. Over the nine
-    /// thousand cycles after that it grows by 0 bytes. The tolerance is
-    /// 65,536 bytes, four times the largest measured growth, and it still
-    /// catches a leak of one item name per cycle, which would be about
-    /// 100,000 bytes over a thousand cycles.
+    /// by 32,768 bytes over the ten thousand cycles. Over forty thousand
+    /// cycles it grows by 0 bytes, so the growth is the heap of the process
+    /// finding its working size and not a leak.
     func testSoakKeepsTheFileDescriptorCount() {
         // The warm-up pays the one-time allocations of the core, which are
         // not a leak.
@@ -178,7 +196,7 @@ final class BarPreviewCoreTests: XCTestCase {
         let descriptorsBefore = openFileDescriptorCount()
         let residentBefore = residentSize()
 
-        for _ in 0..<1000 { runPreviewCycle() }
+        for _ in 0..<10000 { runPreviewCycle() }
 
         let descriptorsAfter = openFileDescriptorCount()
         let residentAfter = residentSize()

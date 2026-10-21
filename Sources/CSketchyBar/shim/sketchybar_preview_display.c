@@ -19,9 +19,15 @@ static struct preview_display g_display = {
 void preview_display_configure(double width, double height, double scale) {
   g_display.width = width;
   g_display.height = height;
-  g_display.scale = scale > 0 ? scale : PREVIEW_DISPLAY_SCALE;
-  g_display.menu_bar_visible = false;
-  g_display.menu_bar_height = PREVIEW_MENU_BAR_HEIGHT;
+
+  /* The preview keeps the fixed backing scale of 2.0 of SketchyBar
+     (src/surface.c:37): the scale of the screen is not a parameter of the
+     layout, so the argument is ignored. */
+  (void)scale;
+  g_display.scale = PREVIEW_DISPLAY_SCALE;
+
+  /* The menu bar is not touched: the caller sets it after the display, with
+     sb_preview_set_menu_bar. */
 }
 
 void preview_display_set_menu_bar(double height, bool visible) {
@@ -64,6 +70,10 @@ uint32_t display_active_display_count(void) {
 
 uint32_t* display_active_display_list(uint32_t* count) {
   uint32_t* list = malloc(sizeof(uint32_t));
+  if (!list) {
+    *count = 0;
+    return NULL;
+  }
   list[0] = PREVIEW_DISPLAY_ID;
   *count = 1;
   return list;
@@ -91,6 +101,10 @@ uint64_t display_space_id(uint32_t did) {
 
 uint64_t* display_space_list(uint32_t did, int* count) {
   uint64_t* list = malloc(sizeof(uint64_t));
+  if (!list) {
+    *count = 0;
+    return NULL;
+  }
   list[0] = PREVIEW_SPACE_ID;
   *count = 1;
   return list;

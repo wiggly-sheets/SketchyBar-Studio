@@ -71,36 +71,20 @@ enum SketchyBarPreviewC {
         sb_preview_set_display(handle, widthPoints, heightPoints, scale)
     }
 
+    /// Sets the height of the menu bar above the bar, in points. Zero means
+    /// there is no menu bar and the bar starts at the top of the display.
+    /// The call comes after `setDisplay`.
+    @discardableResult
+    static func setMenuBar(_ handle: OpaquePointer?, heightPoints: Double) -> Int32 {
+        sb_preview_set_menu_bar(handle, heightPoints)
+    }
+
     /// The messages the vendored code produced, one per line. The pointer
     /// belongs to the preview and must not be freed.
     static func messages(_ handle: OpaquePointer?) -> String {
         guard let handle else { return "" }
         guard let text = sb_preview_messages(handle) else { return "" }
         return String(cString: text)
-    }
-
-    /// The fixed width of an item, or nil when the item has none.
-    static func itemWidth(_ handle: OpaquePointer?, alias: String) -> Int? {
-        withCStrings(alias) { aliasPointer in
-            let width = sb_preview_test_item_width(handle, aliasPointer)
-            return width < 0 ? nil : Int(width)
-        }
-    }
-
-    /// The left padding of the background of an item.
-    static func itemPaddingLeft(_ handle: OpaquePointer?, alias: String) -> Int? {
-        withCStrings(alias) { aliasPointer in
-            let padding = sb_preview_test_item_padding_left(handle, aliasPointer)
-            return padding < 0 ? nil : Int(padding)
-        }
-    }
-
-    /// The environment the child of the script runner receives, one
-    /// "KEY=VALUE" per line.
-    static func childEnvironment() -> String {
-        guard let pointer = sb_preview_test_child_environment() else { return "" }
-        defer { free(pointer) }
-        return String(cString: pointer)
     }
 
     /// Hands the strings to the C API as C strings.

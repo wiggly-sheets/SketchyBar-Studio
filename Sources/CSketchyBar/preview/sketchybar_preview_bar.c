@@ -88,11 +88,11 @@ void preview_bar_manager_destroy(void) {
 void preview_reset_default_item(void) {
   /* The daemon resets the default item with bar_item_init, which leaves the
      memory of the old item behind (src/bar_item.c:1363-1364). The preview
-     destroys the item first, so a reset does not leak. */
+     destroys the item first, so a reset does not leak. The name stays NULL,
+     like upstream. */
   bar_item_destroy(&g_bar_manager.default_item, false);
   memset(&g_bar_manager.default_item, 0, sizeof(struct bar_item));
   bar_item_init(&g_bar_manager.default_item, NULL);
-  bar_item_set_name(&g_bar_manager.default_item, string_copy("defaults"));
 }
 
 struct bar_item* preview_find_item(const char* alias) {

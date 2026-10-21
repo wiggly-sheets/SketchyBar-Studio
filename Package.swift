@@ -50,7 +50,7 @@ let package = Package(
         ),
         .testTarget(
             name: "SketchyBarStudioTests",
-            dependencies: ["SketchyBarStudio"],
+            dependencies: ["SketchyBarStudio", "CSketchyBar"],
             path: "Tests/SketchyBarStudioTests"
         )
     ]

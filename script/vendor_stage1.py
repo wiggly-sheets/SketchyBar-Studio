@@ -118,8 +118,11 @@ def copy_subset():
     check_upstream_commit()
 
     # The code of the preview lives outside SRC, so the emptying of SRC
-    # below never touches it. The check keeps it that way.
-    if PREVIEW.exists() and SRC in PREVIEW.parents:
+    # below never touches it. The check keeps it that way, and it runs even
+    # when the preview directory does not exist yet.
+    preview_path = PREVIEW.resolve()
+    src_path = SRC.resolve()
+    if preview_path == src_path or src_path in preview_path.parents:
         sys.exit(f"the preview code must not live in {SRC}")
 
     if SRC.exists():
@@ -303,6 +306,44 @@ extern int g_connection;
 """,
 )
 
+# respond() copies every answer to stdout, so a rejected property prints a
+# line in the app. The preview has no log: the answer goes to the reply
+# stream only.
+patch(
+    "misc/helpers.h",
+    """static inline void respond(FILE* rsp, char* response, ...) {
+  time_t t = time(NULL);
+  struct tm ltime = *localtime(&t);
+  printf("[%d-%02d-%02d %02d:%02d:%02d] ",
+         ltime.tm_year + 1900,
+         ltime.tm_mon + 1,
+         ltime.tm_mday,
+         ltime.tm_hour,
+         ltime.tm_min,
+         ltime.tm_sec                     );
+
+  va_list args_rsp;
+  va_list args_stdout;
+  va_start(args_rsp, response);
+  va_copy(args_stdout, args_rsp);
+  vfprintf(rsp, response, args_rsp);
+  vfprintf(stdout, response, args_stdout);
+  va_end(args_rsp);
+  va_end(args_stdout);
+}
+""",
+    """static inline void respond(FILE* rsp, char* response, ...) {
+  /* The daemon writes every answer to its log as well. The preview has no
+     log, and the app would print a line on stdout for every rejected
+     property. The answer goes to the reply stream only. */
+  va_list args_rsp;
+  va_start(args_rsp, response);
+  vfprintf(rsp, response, args_rsp);
+  va_end(args_rsp);
+}
+""",
+)
+
 # --- event.h: the message machinery is gone -------------------------------
 # message.h pulls in mach.h, which declares the Mach bootstrap server the
 # preview does not have. display.h takes its place: it carries the display
@@ -322,6 +363,37 @@ patch(
     "bar.c",
     "  bar->shown = SLSSpaceGetType(g_connection, bar->dsid) != 4;",
     "  bar->shown = preview_space_type(bar->dsid) != PREVIEW_SPACE_TYPE_FULLSCREEN;",
+)
+
+# The daemon asks CoreGraphics whether the display is built-in, because the
+# notch of a built-in display is part of its layout. The preview has no
+# window server, and the id of its virtual display is 1, which is the id of
+# the built-in display of a real Mac: the answer would depend on the machine.
+# The preview has no notch.
+patch(
+    "bar.c",
+    """static void bar_calculate_bounds_top_bottom(struct bar* bar) {
+  bool is_builtin = CGDisplayIsBuiltin(bar->did);
+""",
+    """static void bar_calculate_bounds_top_bottom(struct bar* bar) {
+  /* The preview has no built-in display: the id of the virtual display is
+     1, which is the id of the built-in display of a real Mac, so the answer
+     would depend on the machine. The preview has no notch. */
+  bool is_builtin = false;
+""",
+)
+
+patch(
+    "bar.c",
+    """static CGRect bar_get_frame(struct bar *bar) {
+  bool is_builtin = CGDisplayIsBuiltin(bar->did);
+""",
+    """static CGRect bar_get_frame(struct bar *bar) {
+  /* The preview has no built-in display: the id of the virtual display is
+     1, which is the id of the built-in display of a real Mac, so the answer
+     would depend on the machine. The preview has no notch. */
+  bool is_builtin = false;
+""",
 )
 
 patch(

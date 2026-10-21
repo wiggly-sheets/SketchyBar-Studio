@@ -69,6 +69,12 @@ static void preview_environment_remove(char*** environment,
   *count = kept;
 }
 
+void preview_free_environment(char** environment) {
+  if (!environment) return;
+  for (size_t i = 0; environment[i]; i++) free(environment[i]);
+  free(environment);
+}
+
 char** preview_build_environment(struct env_vars* env_vars) {
   char** environment = NULL;
   size_t count = 0;
@@ -134,13 +140,27 @@ bool sync_exec(char* command, struct env_vars* env_vars) {
 }
 
 bool fork_exec(char* command, struct env_vars* env_vars) {
-  pid_t pid = fork();
-  if (pid == -1) return false;
-  if (pid != 0) return true;
+  /* The environment is built in the parent: the child of a forked process
+     must not call malloc, because the allocator of a multithreaded process
+     can be locked by another thread at the moment of the fork, and the
+     child would deadlock on that lock. The child only calls the functions
+     that are safe in a signal handler. */
+  char** environment = preview_build_environment(env_vars);
+  if (!environment) return false;
 
-  /* The child builds its own environment, so the environment of the app is
-     never touched. */
+  pid_t pid = fork();
+  if (pid == -1) {
+    preview_free_environment(environment);
+    return false;
+  }
+  if (pid != 0) {
+    preview_free_environment(environment);
+    return true;
+  }
+
   alarm(FORK_TIMEOUT);
-  preview_exec(command, env_vars);
+  execve("/usr/bin/env",
+         (char*[]) { "/usr/bin/env", "sh", "-c", command, NULL },
+         environment);
   _exit(127);
 }

@@ -18,7 +18,9 @@
 
 /* The error codes of the API live in include/sketchybar_preview.h. */
 
-static bool g_preview_alive = false;
+/* The live handle. The vendored core keeps its model in one global, so the
+   model belongs to the handle that created it. */
+static sb_preview_t* g_preview = NULL;
 
 static char* preview_copy(const char* text) {
   size_t length = strlen(text);
@@ -101,7 +103,7 @@ static int preview_apply_item_property(sb_preview_t* preview,
 }
 
 sb_preview_t* sb_preview_create(void) {
-  if (g_preview_alive) return NULL;
+  if (g_preview) return NULL;
 
   sb_preview_t* preview = calloc(1, sizeof(sb_preview_t));
   if (!preview) return NULL;
@@ -111,16 +113,23 @@ sb_preview_t* sb_preview_create(void) {
     return NULL;
   }
 
-  g_preview_alive = true;
+  g_preview = preview;
   return preview;
 }
 
 void sb_preview_destroy(sb_preview_t* preview) {
   if (!preview) return;
+
+  /* The global model belongs to the live handle. A handle that is not the
+     live one was already released, so there is nothing to do: the model must
+     not be destroyed a second time, because bar_manager_destroy frees the
+     bars of the manager without resetting them (src/bar_manager.c:1063). */
+  if (preview != g_preview) return;
+
   preview_bar_manager_destroy();
+  g_preview = NULL;
   preview_clear_messages(preview);
   free(preview);
-  g_preview_alive = false;
 }
 
 int sb_preview_set_bar(sb_preview_t* preview, const char* key, const char* value) {
@@ -161,8 +170,8 @@ int sb_preview_add_item(sb_preview_t* preview, const char* alias) {
   if (!preview || !alias || alias[0] == '\0') return SB_ERR_INVALID_ARGUMENT;
   if (preview_find_item(alias)) return SB_ERR_ITEM_EXISTS;
 
+  /* bar_manager_create_item never returns NULL. */
   struct bar_item* item = bar_manager_create_item(&g_bar_manager);
-  if (!item) return SB_ERR_OUT_OF_MEMORY;
 
   char* name = preview_copy(alias);
   if (!name) {
@@ -186,11 +195,20 @@ int sb_preview_set_display(sb_preview_t* preview, double widthPoints, double hei
   if (!preview) return SB_ERR_INVALID_ARGUMENT;
   if (widthPoints <= 0 || heightPoints <= 0) return SB_ERR_INVALID_ARGUMENT;
 
-  preview_display_configure(widthPoints, heightPoints, scale);
+  /* The preview keeps the fixed backing scale of 2.0 of SketchyBar
+     (src/surface.c:37), so the argument is ignored. */
+  (void)scale;
+  preview_display_configure(widthPoints, heightPoints, PREVIEW_DISPLAY_SCALE);
 
   /* The bar of the preview is rebuilt, so its frame follows the new display
      (src/bar.c:516-522). */
   bar_manager_reset(&g_bar_manager);
+  return SB_OK;
+}
+
+int sb_preview_set_menu_bar(sb_preview_t* preview, double heightPoints) {
+  if (!preview || heightPoints < 0) return SB_ERR_INVALID_ARGUMENT;
+  preview_display_set_menu_bar(heightPoints, heightPoints > 0);
   return SB_OK;
 }
 

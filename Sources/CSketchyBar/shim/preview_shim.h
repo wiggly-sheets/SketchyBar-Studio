@@ -26,7 +26,7 @@
    the menu bar of a real display is not part of the virtual one, and the
    fixed 480 x 25 display of the golden test is exactly the bar. The bar of
    the preview sits at the top of the display until a caller sets a menu
-   bar with preview_display_set_menu_bar. */
+   bar with sb_preview_set_menu_bar. */
 #define PREVIEW_MENU_BAR_HEIGHT 0.0
 
 /* The one virtual space of the virtual display. */
@@ -46,8 +46,9 @@ struct preview_display {
   double menu_bar_height;  /* points */
 };
 
-/* Sets the geometry of the virtual display. The menu bar goes back to its
-   default, because it belongs to the display it was measured on. */
+/* Sets the geometry of the virtual display. The scale is ignored: the
+   preview keeps the fixed backing scale of 2.0. The menu bar is not
+   touched: the caller sets it after the display. */
 void preview_display_configure(double width, double height, double scale);
 
 /* Sets the menu bar of the virtual display. The daemon reads the menu bar
@@ -76,7 +77,11 @@ bool sync_exec(char* command, struct env_vars* env_vars);
 
 /* The environment of the child of the script runner, one "KEY=VALUE" per
    entry. The caller owns the array and releases every entry and the array
-   itself. */
+   itself with preview_free_environment. */
 char** preview_build_environment(struct env_vars* env_vars);
+
+/* Releases an environment of preview_build_environment: every entry and the
+   array itself. */
+void preview_free_environment(char** environment);
 
 #endif

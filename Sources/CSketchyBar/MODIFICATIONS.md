@@ -36,6 +36,15 @@ vendor script empties `src/` on every run (`script/vendor_stage1.py`), so a
 new file there would be deleted by the next run of the script. The script
 now refuses to run if the preview code ever moves into `src/`.
 
+The handle owns the model of the vendored core while it is alive. The
+vendored core keeps that model in one global bar manager, so only one
+preview exists at a time: `sb_preview_create` returns `NULL` when another
+preview is alive, and `sb_preview_destroy` releases the model of the live
+handle. A handle that is not the live one was already released, so a second
+call does nothing. The model must not be destroyed twice, because
+`bar_manager_destroy` frees the bars of the manager without resetting them
+(`src/bar_manager.c:1063`).
+
 ## `src/misc/helpers.h`
 
 * `#include "extern.h"` became `#include "preview_shim.h"`. `extern.h`
@@ -51,6 +60,9 @@ now refuses to run if the preview code ever moves into `src/`.
   `shim/sketchybar_preview_fork.c`. Stage 2 makes `fork_exec` set a preview
   environment for the child process. Stage 6 only adds the `PATH` shim and
   the sink variable.
+* `respond` writes its answer to the reply stream only. The daemon copies
+  every answer to stdout, with a timestamp in front of it, so a rejected
+  property printed a line in the app. The preview has no log.
 * `extern int g_connection;` is gone. The connection id of the window
   server means nothing in the preview.
 
@@ -68,6 +80,12 @@ now refuses to run if the preview code ever moves into `src/`.
   shim: `preview_space_type(bar->dsid) != PREVIEW_SPACE_TYPE_FULLSCREEN`.
   The bar is hidden in a fullscreen space, and the shim has no fullscreen
   space.
+* `bar_calculate_bounds_top_bottom` and `bar_get_frame` do not ask
+  CoreGraphics whether the display is built-in. The id of the virtual
+  display is 1, which is the id of the built-in display of a real Mac, so
+  the answer would depend on the machine: the notch width of the bar would
+  be 200 on some hosts and 0 on others. The preview has no notch, so the
+  answer is always false.
 
 ## `src/bar_manager.c`
 
@@ -156,12 +174,12 @@ lines of this tree.
 | H2 | The duration of the animator stays 0, so the `ANIMATE` macro never creates an animation. | `shim/sketchybar_preview_shim.c:24` (the comment on `g_bar_manager`) and `preview/sketchybar_preview_bar.c:79` |
 | H3 | `animator_update` is never called, so no animation ever progresses. A preview is a still image. | no call site; `preview/sketchybar_preview_bar.c` |
 | H4 | There is exactly one default item: `g_bar_manager.default_item`. The preview does not keep a second one. | `preview/sketchybar_preview_bar.c:70` (`bar_item_init(&bar_manager->default_item, NULL)`) |
-| H5 | The virtual display has a configurable frame and a configurable scale. The default is 1440 x 900 points at the scale of 2.0. | `shim/preview_shim.h:18` and `shim/sketchybar_preview_display.c:19` |
-| H6 | The menu bar of the virtual display is modelled. The default is no menu bar at all, so the bar of the preview sits at the top of the display. | `shim/preview_shim.h:30` and `shim/sketchybar_preview_display.c:27` |
-| H7 | The id of the display is the fake id 1. `CGDisplayIsBuiltin` answers false for it, so the notch width is 0. A notched Mac cannot be reproduced and that is accepted. | `shim/preview_shim.h:17` |
+| H5 | The virtual display has a configurable frame. The scale of the backing bitmap is the fixed scale of 2.0 of SketchyBar, and the argument of `sb_preview_set_display` is ignored. The default frame is 1440 x 900 points. | `shim/preview_shim.h:18` and `shim/sketchybar_preview_display.c:19` |
+| H6 | The menu bar of the virtual display is modelled. The default is no menu bar at all, so the bar of the preview sits at the top of the display. The caller sets it with `sb_preview_set_menu_bar`, after the display. | `shim/preview_shim.h:30` and `shim/sketchybar_preview_display.c:27` |
+| H7 | The id of the display is the fake id 1. The bar never asks CoreGraphics whether the display is built-in, so the notch width is 0 on every host. A notched Mac cannot be reproduced and that is accepted. | `shim/preview_shim.h:17` and the patch of `src/bar.c` above |
 | H8 | Every symbol the kept headers declare and the dropped files define is defined in the preview as a safe no-op. None of them is called by the vendored tree. | `preview/sketchybar_preview_stubs.c` |
 | H9 | The alias item never touches the window server. The enumeration of the menu bar items and the request of the Screen Recording permission are gone. | `src/alias.c`, the three patches above |
-| H10 | The script runner builds the environment of the child and hands it over with `execve`, so the environment of the app is never changed. The child never gets `BAR_NAME`. The runner forks instead of `vfork`ing. | `shim/sketchybar_preview_fork.c:72` (`preview_build_environment`) and `shim/sketchybar_preview_fork.c:134` (`fork_exec`) |
+| H10 | The script runner builds the environment of the child in the parent and hands it over with `execve`, so the environment of the app is never changed. The child never gets `BAR_NAME`. The runner forks instead of `vfork`ing. | `shim/sketchybar_preview_fork.c:72` (`preview_build_environment`) and `shim/sketchybar_preview_fork.c:141` (`fork_exec`) |
 | H11 | The messages come from the reply stream of the parsers. The preview opens a memory stream, runs the parser and keeps the text until the next message. | `preview/sketchybar_preview.c:69` (`preview_apply_item_property`) |
 | H12 | Every export carries `SB_API` and every file that defines one includes the public header before the definition. | `include/sketchybar_preview.h` and `preview/sketchybar_preview.c:5` |
 | H13 | No new file lives in `src/`. The code of the preview lives in `preview/`, and the vendor script refuses to run if it ever moves into `src/`. | `preview/` and `script/vendor_stage1.py:26` |
@@ -197,9 +215,10 @@ layout of stage 4 reads them from there (`src/bar_manager.c:323`,
 ### H5 and H6 in detail
 
 `sb_preview_set_display(widthPoints, heightPoints, scale)` sets the frame
-of the virtual display and the scale of the backing bitmap. The scale of the
-bitmap is the fixed scale of 2.0 of SketchyBar (`src/surface.c:47`), and a
-scale of zero or less keeps it.
+of the virtual display. The scale of the bitmap is the fixed scale of 2.0 of
+SketchyBar (`src/surface.c:47`), which is what the stage file of stage 2
+asks for, so the preview keeps it and ignores the argument: the scale of the
+screen is not a parameter of the layout.
 
 The menu bar of the display is a part of the display, so it is set with it.
 The default is a display without a menu bar: the bar of the preview sits at
@@ -208,13 +227,16 @@ display of the golden test (`docs/bar-renderer/testing.md`): its whole
 height is the bar, so a menu bar of 24 points would push the bar out of the
 display. The menu bar of the machine is a property of the machine, not of
 the config, so the preview models it and lets the caller set it:
-`preview_display_set_menu_bar(height, visible)` in `shim/preview_shim.h`.
-The differential test of stage 8 needs it, so that the vertical origin of
-the bar of the preview is the vertical origin of the bar of the machine.
+`sb_preview_set_menu_bar(heightPoints)` in `include/sketchybar_preview.h`.
+The call comes after `sb_preview_set_display`, because the menu bar does
+not change the geometry of the display. The differential test of stage 8
+needs it, so that the vertical origin of the bar of the preview is the
+vertical origin of the bar of the machine.
 
-The id of the display is the fake id 1. `CGDisplayIsBuiltin` answers false
-for it, so the notch width of the bar is 0 (`src/bar.c:201`). A notched Mac
-cannot be reproduced in the preview and that is accepted.
+The id of the display is the fake id 1. The bar never asks CoreGraphics
+whether the display is built-in, so the notch width of the bar is 0 on
+every host (`src/bar.c:201`). A notched Mac cannot be reproduced in the
+preview and that is accepted.
 
 ### H10 in detail
 
@@ -230,6 +252,12 @@ so the environment of the app is never changed. `BAR_NAME` is removed even
 when the variables of the item hold it: the daemon sets it for its own
 children (`src/sketchybar.c:208`), and a script of the preview must never
 believe it talks to the real daemon.
+
+The environment is built in the parent, before the fork. The child of a
+forked process must not call `malloc`: the allocator of a multithreaded
+process can be locked by another thread at the moment of the fork, and the
+child would deadlock on that lock. The child only calls the functions that
+are safe in a signal handler: `alarm`, `execve` and `_exit`.
 
 The daemon reaps the children of its scripts with `signal(SIGCHLD, SIG_IGN)`
 (`src/sketchybar.c:139`). The app does not do that yet, because it runs no
