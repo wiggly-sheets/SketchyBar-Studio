@@ -4,11 +4,19 @@ import SwiftUI
 /// The preview pane of the rendered bar.
 ///
 /// The bar is rendered by the vendored SketchyBar code, so the pane shows
-/// the bar as SketchyBar would draw it. The image is drawn at its true
-/// pixel size and the view applies one uniform factor that fits the pane,
-/// so the proportions of the real menu bar survive. The 1:1 control shows
-/// the bar at one image pixel per point, and the pane scrolls sideways.
+/// the bar as SketchyBar would draw it. The image is drawn at the true
+/// point size of the bar and the view applies one uniform factor that fits
+/// the pane, so the proportions of the real menu bar survive. The 1:1
+/// control shows the bar at its true point size, so one image pixel lands
+/// on one device pixel of a display with the scale of 2.0, and the pane
+/// scrolls sideways.
 struct BarRenderView: View {
+    /// The axis the pane scrolls on.
+    ///
+    /// The pane always scrolls sideways, because the bar of a display is
+    /// wider than the pane at its true size.
+    static let scrollAxis: Axis.Set = .horizontal
+
     @ObservedObject var store: SketchyBarStore
     let theme: AppTheme
     @StateObject private var state = BarRenderState()
@@ -36,13 +44,13 @@ struct BarRenderView: View {
 
             Toggle("1:1", isOn: $isOneToOne)
                 .toggleStyle(.checkbox)
-                .help("Show the bar at one image pixel per point. The pane scrolls sideways then.")
+                .help("Show the bar at its true point size, so one image pixel lands on one device pixel of a display with the scale of 2.0. The pane scrolls sideways then.")
         }
     }
 
     private var imagePane: some View {
         GeometryReader { proxy in
-            ScrollView(.horizontal) {
+            ScrollView(Self.scrollAxis) {
                 imageView(in: proxy.size)
                     .frame(minWidth: proxy.size.width, maxHeight: .infinity, alignment: .center)
             }
@@ -90,21 +98,18 @@ struct BarRenderView: View {
         }
     }
 
-    /// What the render depends on: the source, the width and the drafts.
+    /// What the render depends on: the source, the display and the files
+    /// of that source.
     ///
-    /// The key changes with every draft, so a new draft renders the bar
-    /// again.
+    /// The key changes with every draft of the config the app has open,
+    /// and with every change on disk of a config that is not open, so the
+    /// bar is rendered again when the rendered source really changed.
     private var requestKey: Int {
         var hasher = Hasher()
         hasher.combine(effectiveSource)
+        hasher.combine(store.barRenderDisplayID)
         hasher.combine(store.barRenderWidthOverride)
-        hasher.combine(store.sourceDraftRevision)
-        for file in store.files {
-            hasher.combine(file.id)
-            for value in file.values {
-                hasher.combine(value.draftValue)
-            }
-        }
+        hasher.combine(store.barRenderSignature(for: effectiveSource))
         return hasher.finalize()
     }
 
@@ -115,16 +120,36 @@ struct BarRenderView: View {
                                               openConfigID: store.selectedConfig?.id)
     }
 
+    /// The display the bar is rendered for.
+    ///
+    /// The width of that display is the width of the virtual display, so
+    /// the bar has the proportions of the real menu bar of that display: a
+    /// SketchyBar bar is the display width minus twice the margin
+    /// (`src/bar.c:437-494`).
+    private func targetDisplay() -> BarRenderDisplay? {
+        let displays = BarRenderDisplays.all()
+        if let id = store.barRenderDisplayID,
+           let display = displays.first(where: { $0.id == id }) {
+            return display
+        }
+        if let main = BarRenderDisplays.main(),
+           let display = displays.first(where: { $0.id == main.id }) {
+            return display
+        }
+        return displays.first
+    }
+
     /// Renders the bar of the current source.
     @MainActor
     private func renderCurrent() async {
         guard let source = effectiveSource else { return }
-        let display = BarRenderDisplay.target()
-        let width = store.barRenderWidthOverride ?? BarRenderDisplay.width(of: display)
+        let display = targetDisplay()
+        let width = store.barRenderWidthOverride ?? display?.widthPoints ?? 1440
         let request = BarRenderRequest(
             files: store.barRenderFiles(for: source),
             displayWidthPoints: width,
-            displayHeightPoints: BarRenderDisplay.height(of: display)
+            displayHeightPoints: display?.heightPoints ?? 900,
+            warnings: store.barRenderWarnings(for: source)
         )
         await state.render(request)
     }
@@ -155,13 +180,13 @@ final class BarRenderState: ObservableObject {
 
         do {
             let result = try await BarRendererService.shared.render(request)
-            guard token == generation else { return }
+            guard !Task.isCancelled, token == generation else { return }
             image = result.image
             pixelSize = result.pixelSize
             warnings = result.warnings
             isRendering = false
         } catch {
-            guard token == generation else { return }
+            guard !Task.isCancelled, token == generation else { return }
             image = nil
             pixelSize = .zero
             warnings = []

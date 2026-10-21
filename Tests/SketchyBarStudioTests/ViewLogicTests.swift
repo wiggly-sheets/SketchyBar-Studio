@@ -774,21 +774,35 @@ final class ViewLogicTests: XCTestCase {
             ConfigWorkspace(id: "one", name: "One", path: "/one", createdAt: .now),
             ConfigWorkspace(id: "two", name: "Two", path: "/two", createdAt: .now)
         ]
-        let profiles = [ConfigProfile(name: "Morning",
-                                      url: URL(fileURLWithPath: "/profiles/Morning"),
-                                      createdAt: .now)]
+        let profiles = [
+            BarRenderProfile(config: configs[0],
+                             profile: ConfigProfile(name: "Morning",
+                                                    url: URL(fileURLWithPath: "/profiles/Morning"),
+                                                    createdAt: .now)),
+            BarRenderProfile(config: configs[1],
+                             profile: ConfigProfile(name: "Evening",
+                                                    url: URL(fileURLWithPath: "/profiles/Evening"),
+                                                    createdAt: .now))
+        ]
 
         let choices = BarRenderChoices.make(configs: configs, profiles: profiles, openConfigID: "one")
 
-        XCTAssertEqual(choices.count, 3, "every config and every profile must be a choice")
+        XCTAssertEqual(choices.count, 4, "every config and every profile must be a choice")
         XCTAssertEqual(choices.map(\.source), [
             .config("one"),
             .config("two"),
-            .profile(profilePath: "/profiles/Morning")
+            .profile(profilePath: "/profiles/Morning"),
+            .profile(profilePath: "/profiles/Evening")
         ])
         XCTAssertTrue(choices[0].isOpen, "the config the app has open must be marked")
         XCTAssertFalse(choices[1].isOpen, "another config has no drafts")
         XCTAssertFalse(choices[2].isOpen, "a profile has no drafts")
+        XCTAssertEqual(choices[2].detail, "Saved profile of One",
+                       "a profile must name the config it belongs to")
+        XCTAssertEqual(choices[3].detail, "Saved profile of Two",
+                       "a profile must name the config it belongs to")
+        XCTAssertEqual(choices[3].menuTitle, "Evening — Two",
+                       "the menu must tell two profiles of the same name apart")
     }
 
     @MainActor
