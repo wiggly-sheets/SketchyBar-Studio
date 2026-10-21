@@ -38,17 +38,26 @@ struct DetailView: View {
     ///
     /// The switch never touches a draft: the drafts live in the store, so
     /// they are there when the user comes back to the editor.
+    ///
+    /// The picker of the live bar sits next to it, so the mode is visible
+    /// where the user writes and not only in the preview pane.
     private var modePicker: some View {
-        Picker("Mode", selection: $store.detailPaneMode) {
-            ForEach(DetailPaneMode.allCases) { mode in
-                Text(mode.title).tag(mode)
+        HStack {
+            Picker("Mode", selection: $store.detailPaneMode) {
+                ForEach(DetailPaneMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel("Detail pane mode")
+
+            Spacer()
+
+            LiveUpdateModePicker(store: store)
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
         .padding(.horizontal)
         .padding(.top, 8)
-        .accessibilityLabel("Detail pane mode")
     }
 
     @ViewBuilder

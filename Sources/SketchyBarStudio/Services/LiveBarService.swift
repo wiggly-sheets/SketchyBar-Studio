@@ -120,14 +120,20 @@ struct LiveBarCommandResult: Equatable {
     }
 
     /// The refusal of a text of the daemon, when the text holds one.
+    ///
+    /// The daemon writes a refusal as `[!] …` and the refusal always
+    /// starts the answer of the daemon (`src/misc/helpers.h:103-120`,
+    /// `src/sketchybar.c:88-95`), so an answer that only holds `[!]` in a
+    /// value is not a refusal.
     static func failure(in output: String) -> String? {
-        guard let start = output.range(of: "[!]") else { return nil }
-        let text = output[start.upperBound...]
+        let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.hasPrefix("[!]") else { return nil }
+        let reason = text.dropFirst(3)
             .split(separator: "\n", omittingEmptySubsequences: true)
             .first
             .map(String.init) ?? ""
-        let reason = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return reason.isEmpty ? "the daemon refused the call" : reason
+        let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "the daemon refused the call" : trimmed
     }
 }
 
@@ -180,6 +186,13 @@ struct SketchyBarRunner: LiveBarRunning {
         process.standardOutput = output
         process.standardError = errors
 
+        // The handler is set before the process starts: a process that ends
+        // right away must not leave the semaphore unsignalled
+        // (`src/sketchybar.c:88-95` exits as soon as the daemon does not
+        // answer).
+        let finished = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in finished.signal() }
+
         do {
             try process.run()
         } catch {
@@ -206,12 +219,16 @@ struct SketchyBarRunner: LiveBarRunning {
             group.leave()
         }
 
-        let finished = DispatchSemaphore(value: 0)
-        process.terminationHandler = { _ in finished.signal() }
         if finished.wait(timeout: .now() + Self.timeout) == .timedOut {
             process.terminate()
-            _ = finished.wait(timeout: .now() + 1)
-            group.wait()
+            if finished.wait(timeout: .now() + 1) == .timedOut {
+                // The child ignores the signal, so it is killed.
+                kill(process.processIdentifier, SIGKILL)
+                _ = finished.wait(timeout: .now() + 1)
+            }
+            // The wait is bounded: a child that holds the pipe open must
+            // not hang the app.
+            _ = group.wait(timeout: .now() + 1)
             return LiveBarCommandResult(
                 output: "",
                 failure: "sketchybar \(command.arguments.joined(separator: " ")) did not finish within \(Int(Self.timeout)) seconds and was stopped."
@@ -221,8 +238,18 @@ struct SketchyBarRunner: LiveBarRunning {
 
         let text = String(data: outputBox.data, encoding: .utf8) ?? ""
         let errorText = String(data: errorBox.data, encoding: .utf8) ?? ""
-        let combined = text + errorText
-        return LiveBarCommandResult(output: text, failure: LiveBarCommandResult.failure(in: combined))
+        // The client of the daemon answers with the code of a failure when
+        // the daemon refused the call (`src/sketchybar.c:88-95`), so the
+        // code of the process says how the call went.
+        if process.terminationStatus != 0 {
+            let reason = LiveBarCommandResult.failure(in: errorText)
+                ?? LiveBarCommandResult.failure(in: text)
+                ?? "sketchybar \(command.arguments.joined(separator: " ")) exited with code \(process.terminationStatus)."
+            return LiveBarCommandResult(output: text, failure: reason)
+        }
+        return LiveBarCommandResult(output: text,
+                                    failure: LiveBarCommandResult.failure(in: errorText)
+                                        ?? LiveBarCommandResult.failure(in: text))
     }
 }
 
@@ -233,10 +260,12 @@ private final class DataBox: @unchecked Sendable {
 
 /// The reader of the reply of `sketchybar --query`.
 ///
-/// The reply is close to JSON, but it is not JSON: a value that holds a
-/// backslash is not escaped (`src/misc/helpers.h:83-103`), and the refusal
-/// of the daemon is not JSON at all (`[!] …`, `src/message.c:512`). The
-/// reader takes the values it can read and leaves the rest alone.
+/// The reply is close to JSON, but it is not JSON: the label and the icon
+/// are written raw (`src/bar_item.c:1027-1041`) and only the quote and the
+/// newline of the other values are escaped (`src/misc/helpers.h:83-103`),
+/// and the refusal of the daemon is not JSON at all (`[!] …`,
+/// `src/message.c:512`). The reader takes the values it can read and
+/// leaves the rest alone.
 enum LiveBarQuery {
     /// The values of a reply, keyed by their path, such as `label.value`.
     static func values(in reply: String) -> [String: String] {
@@ -250,6 +279,14 @@ enum LiveBarQuery {
         private var index = 0
         private var path: [String] = []
         private var values: [String: String] = [:]
+        /// True when the value that was read cannot be trusted.
+        ///
+        /// The daemon writes the label and the icon raw and escapes only
+        /// the quote and the newline of the other values, so a value with
+        /// a backslash in it cannot be read back with certainty. Such a
+        /// value is left out, so the restore never writes back a value
+        /// that was mis-read.
+        private var valueIsReadable = true
 
         init(text: String) {
             characters = Array(text)
@@ -257,23 +294,25 @@ enum LiveBarQuery {
 
         mutating func read() -> [String: String] {
             skipSpaces()
-            readValue(storing: true)
+            _ = readValue()
             return values
         }
 
         /// Reads a value: an object, an array, a string or a bare word.
-        private mutating func readValue(storing: Bool) {
+        ///
+        /// The result is the text of the value and whether it can be read
+        /// back with certainty.
+        private mutating func readValue() -> (text: String, readable: Bool)? {
             skipSpaces()
-            guard index < characters.count else { return }
+            guard index < characters.count else { return nil }
             switch characters[index] {
-            case "{": readObject()
-            case "[": readArray()
+            case "{": readObject(); return nil
+            case "[": readArray(); return nil
             case "\"":
                 let text = readString()
-                if storing { store(text) }
+                return (text, valueIsReadable)
             default:
-                let text = readBare()
-                if storing { store(text) }
+                return (readBare(), true)
             }
         }
 
@@ -295,23 +334,34 @@ enum LiveBarQuery {
                 let key = readString()
                 skipSpaces()
                 guard index < characters.count, characters[index] == ":" else {
-                    index += 1
+                    // The key has no value. The loop reads on, so a brace
+                    // that ends the object is still seen.
                     continue
                 }
                 index += 1
                 let previous = path
                 path.append(key)
-                readValue(storing: true)
-                path = previous
+                let value = readValue()
                 skipSpaces()
-                if index < characters.count, characters[index] == "," {
+                // A member ends with a comma or with the end of the
+                // object. A value that ends anywhere else was cut short by
+                // a quote the daemon wrote raw, so it is not readable.
+                let endsWell = index < characters.count
+                    && (characters[index] == "," || characters[index] == "}")
+                if let value, value.readable, endsWell {
+                    store(value.text)
+                }
+                path = previous
+                guard endsWell else {
                     index += 1
                     continue
                 }
-                if index < characters.count, characters[index] == "}" {
+                if characters[index] == "," {
                     index += 1
-                    return
+                    continue
                 }
+                index += 1
+                return
             }
         }
 
@@ -326,7 +376,7 @@ enum LiveBarQuery {
                     index += 1
                     return
                 }
-                readValue(storing: false)
+                _ = readValue()
                 skipSpaces()
                 if index < characters.count, characters[index] == "," {
                     index += 1
@@ -339,12 +389,15 @@ enum LiveBarQuery {
             }
         }
 
-        /// Reads a string. The daemon escapes the quote and the newline of
-        /// a value, and it leaves the backslash alone, so a backslash that
-        /// is not one of the two keeps itself and the character behind it.
+        /// Reads a string.
+        ///
+        /// The daemon escapes the quote and the newline of a value and it
+        /// leaves the backslash alone, so a backslash in a value means the
+        /// value cannot be read back with certainty.
         private mutating func readString() -> String {
             index += 1
             var text = ""
+            valueIsReadable = true
             while index < characters.count {
                 let character = characters[index]
                 if character == "\"" {
@@ -356,14 +409,9 @@ enum LiveBarQuery {
                     guard index < characters.count else { return text }
                     let next = characters[index]
                     index += 1
-                    if next == "n" {
-                        text.append("\n")
-                    } else if next == "\"" {
-                        text.append("\"")
-                    } else {
-                        text.append("\\")
-                        text.append(next)
-                    }
+                    valueIsReadable = false
+                    text.append("\\")
+                    text.append(next)
                     continue
                 }
                 text.append(character)
@@ -475,23 +523,36 @@ struct LiveBarSnapshotStore: Sendable {
     }
 
     /// The snapshot on disk, when there is one.
+    ///
+    /// The scripts are taken out of the snapshot on the way in, exactly as
+    /// they are taken out on the way out: a snapshot that was edited by
+    /// hand must not make the daemon run a script on a Restore.
     func load() -> LiveBarSnapshot? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(LiveBarSnapshot.self, from: data)
+        guard let snapshot = try? decoder.decode(LiveBarSnapshot.self, from: data) else { return nil }
+        return snapshot.withoutScripts
     }
 
     /// Writes the snapshot to disk.
+    ///
+    /// The folder of the snapshot belongs to the app alone and the file
+    /// holds the values of the bar of the user, so neither of them is
+    /// readable by the other users of the machine.
     func save(_ snapshot: LiveBarSnapshot) throws {
         let manager = FileManager.default
-        try manager.createDirectory(at: url.deletingLastPathComponent(),
-                                    withIntermediateDirectories: true)
+        let folder = url.deletingLastPathComponent()
+        try manager.createDirectory(at: folder,
+                                    withIntermediateDirectories: true,
+                                    attributes: [.posixPermissions: 0o700])
+        try manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(snapshot.withoutScripts)
         try data.write(to: url, options: .atomic)
+        try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     /// Removes the snapshot from disk.
@@ -508,6 +569,14 @@ enum LiveBarService {
     /// running bar, and a pushed script would run against the real bar.
     static let neverPushedKeys: Set<String> = ["script", "click_script"]
 
+    /// The bar properties the automatic modes may push.
+    ///
+    /// `drawing` and `blur_radius` do not change the shape of the bar of
+    /// the user, so the automatic modes may push them. Every other
+    /// property of the bar changes the bar itself, so it is pushed only
+    /// by the explicit action of the user.
+    static let safeBarLeaves: Set<String> = ["drawing", "blur_radius"]
+
     /// The leaves of a text of an item, such as `label.color`.
     private static let textLeaves: Set<String> = [
         "color", "highlight", "highlight_color", "drawing", "align",
@@ -522,17 +591,39 @@ enum LiveBarService {
     ]
 
     /// The properties of the bar that the live bar can take.
-    private static let barLeaves: Set<String> = [
-        "position", "topmost", "sticky", "show_in_fullscreen", "blur_radius",
+    ///
+    /// `clip` is not in it: the daemon refuses it (`src/message.c:449-450`).
+    /// `position` is not in it: the position of the bar is structure and
+    /// not a value, so it is never pushed.
+    static let barLeaves: Set<String> = [
+        "topmost", "sticky", "show_in_fullscreen", "blur_radius",
         "margin", "y_offset", "drawing", "color", "border_color", "border_width",
-        "height", "corner_radius", "padding_left", "padding_right", "x_offset", "clip"
+        "height", "corner_radius", "padding_left", "padding_right", "x_offset"
     ]
+
+    /// The keys whose value the daemon reads as a boolean and that have a
+    /// value of their own beside the boolean one.
+    ///
+    /// `topmost` has the level `window` and `updates` has `when_shown`.
+    private static let booleanKeys: Set<String> = ["topmost", "updates"]
+
+    /// True when the daemon reads the alias as a regular expression.
+    ///
+    /// The daemon treats a name that starts and ends with a slash as a
+    /// regular expression and sets every item that matches it
+    /// (`src/message.c:628-631`), so such an alias is never pushed.
+    static func isRegexAlias(_ alias: String) -> Bool {
+        alias.count > 1 && alias.hasPrefix("/") && alias.hasSuffix("/")
+    }
 
     /// The path of the live bar a property of an item is read from.
     ///
     /// The path is nil when the live bar does not hold the property in a
     /// way that can be read back. Such a property is not pushed: a
     /// property that cannot be put back must not be changed.
+    ///
+    /// The position of an item has no path: the position is structure and
+    /// not a value, so it is never pushed.
     static func livePath(of key: String) -> String? {
         let name = key.lowercased()
         if name == "label" { return "label.value" }
@@ -540,7 +631,6 @@ enum LiveBarService {
 
         guard let dot = name.firstIndex(of: ".") else {
             switch name {
-            case "position": return "geometry.position"
             case "width": return "geometry.width"
             case "drawing": return "geometry.drawing"
             case "scroll_texts": return "geometry.scroll_texts"
@@ -566,11 +656,70 @@ enum LiveBarService {
         }
     }
 
-    /// The path of the live bar a property of the bar is read from.
-    static func liveBarPath(of key: String) -> String? {
+    /// The name of a property of the bar, without its prefix.
+    static func barLeaf(of key: String) -> String {
         var name = key.lowercased()
         if name.hasPrefix("bar.") { name = String(name.dropFirst(4)) }
-        return barLeaves.contains(name) ? name : nil
+        return name
+    }
+
+    /// True when the automatic modes may push the property of the bar.
+    static func isSafeBarProperty(_ key: String) -> Bool {
+        safeBarLeaves.contains(barLeaf(of: key))
+    }
+
+    /// True when the property of the bar changes the bar of the user.
+    ///
+    /// Such a property is pushed only by the explicit action of the user.
+    static func isDestructiveBarProperty(_ key: String) -> Bool {
+        barLeaves.contains(barLeaf(of: key)) && !isSafeBarProperty(key)
+    }
+
+    /// The path of the live bar a property of the bar is read from.
+    ///
+    /// The bar writes the properties of its background under `background`
+    /// (`src/bar_manager.c:1098-1117`).
+    static func liveBarPath(of key: String) -> String? {
+        let name = barLeaf(of: key)
+        guard barLeaves.contains(name) else { return nil }
+        switch name {
+        case "drawing", "color", "border_color", "border_width", "height",
+             "corner_radius", "padding_left", "padding_right", "x_offset",
+             "y_offset":
+            return "background.\(name)"
+        default:
+            return name
+        }
+    }
+
+    /// True when the live value is the value of the config.
+    ///
+    /// The daemon writes a boolean as `on` or `off`
+    /// (`src/misc/helpers.h:83-86`) and the config writes it as `true` or
+    /// `false`, so both sides are read the way the daemon reads them
+    /// (`src/misc/helpers.h:278-290`).
+    static func sameValue(key: String, planned: String, live: String) -> Bool {
+        let name = key.lowercased()
+        let leaf = name.split(separator: ".").last.map(String.init) ?? name
+        if booleanKeys.contains(leaf) || SketchyBarBoolean.isBooleanKey(name) {
+            return normalisedBoolean(planned, leaf: leaf) == normalisedBoolean(live, leaf: leaf)
+        }
+        return planned == live
+    }
+
+    /// The value of a boolean, the way the daemon reads it.
+    private static func normalisedBoolean(_ value: String, leaf: String) -> String {
+        let text = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch leaf {
+        case "topmost" where text == "window":
+            // The bar level of `topmost` is a value of its own
+            // (`src/message.c:409-418`).
+            return "true"
+        case "updates" where text == "when_shown":
+            return "when_shown"
+        default:
+            return SketchyBarBoolean.normalized(text) ?? text
+        }
     }
 
     /// True when a live value can be put back with a call.
@@ -585,21 +734,45 @@ enum LiveBarService {
     /// The items of a plan that the live bar can take.
     ///
     /// A file may declare several items, so the push is per declared item
-    /// and never per file. A script is never pushed, and a property whose
-    /// live value cannot be read back is not pushed either.
+    /// and never per file. A script is never pushed, the position of an
+    /// item is never pushed, and a property whose live value cannot be
+    /// read back is not pushed either.
     static func liveItems(of plan: BarRenderPlan) -> (items: [LiveBarItem], notes: [String]) {
         var items: [LiveBarItem] = []
         var notes: [String] = []
         var unreadable = 0
+        var positions = 0
+        var popups = 0
+        var regexes = 0
 
         for item in plan.items {
             guard !item.alias.isEmpty else {
                 notes.append("An item of the preview has no name, so it cannot be pushed to the live bar.")
                 continue
             }
+            if isRegexAlias(item.alias) {
+                regexes += 1
+                continue
+            }
             var properties: [LiveBarProperty] = []
             for property in item.properties {
-                if neverPushedKeys.contains(property.key.lowercased()) { continue }
+                let key = property.key.lowercased()
+                if neverPushedKeys.contains(key) { continue }
+                let isPosition = key == "position" || key.hasSuffix(".position")
+                if isPosition {
+                    // The position of an item is structure and not a value:
+                    // pushing it would move the item into a popup or off
+                    // the bar (`src/bar_item.c:468-496`).
+                    positions += 1
+                }
+                if property.value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased().hasPrefix("popup") {
+                    // A value that starts with `popup` puts the item into
+                    // the popup of another item (`src/bar_item.c:1276-1289`).
+                    popups += 1
+                    continue
+                }
+                if isPosition { continue }
                 guard livePath(of: property.key) != nil else {
                     unreadable += 1
                     continue
@@ -610,15 +783,40 @@ enum LiveBarService {
             items.append(LiveBarItem(alias: item.alias, properties: properties))
         }
 
+        if positions > 0 {
+            notes.append("\(positions) positions of the preview are structure and not values, so they were not pushed.")
+        }
+        if popups > 0 {
+            notes.append("\(popups) values of the preview start with 'popup' and would put an item into a popup, so they were not pushed.")
+        }
+        if regexes > 0 {
+            notes.append("\(regexes) items of the preview have a name the daemon reads as a regular expression, so they were not pushed.")
+        }
         if unreadable > 0 {
             notes.append("\(unreadable) properties of the preview cannot be read back from the live bar, so they were not pushed.")
         }
         return (items, notes)
     }
 
-    /// The properties of the bar that the live bar can take.
+    /// The properties of the bar that the automatic modes may push.
+    ///
+    /// The properties that change the bar of the user are not here: they
+    /// are pushed only by the explicit action of the user.
     static func liveBarProperties(of plan: BarRenderPlan) -> [LiveBarProperty] {
         plan.bar.compactMap { property in
+            guard isSafeBarProperty(property.key) else { return nil }
+            guard liveBarPath(of: property.key) != nil else { return nil }
+            return LiveBarProperty(key: property.key, value: property.value)
+        }
+    }
+
+    /// The properties of the bar that change the bar of the user.
+    ///
+    /// They are pushed only by the explicit action of the user, and only
+    /// after the user saw what changes.
+    static func destructiveBarProperties(of plan: BarRenderPlan) -> [LiveBarProperty] {
+        plan.bar.compactMap { property in
+            guard isDestructiveBarProperty(property.key) else { return nil }
             guard liveBarPath(of: property.key) != nil else { return nil }
             return LiveBarProperty(key: property.key, value: property.value)
         }
@@ -628,7 +826,7 @@ enum LiveBarService {
     static func pushCommands(for items: [LiveBarItem], bar: [LiveBarProperty] = []) -> [LiveBarCommand] {
         var commands: [LiveBarCommand] = []
         if !bar.isEmpty { commands.append(LiveBarCommand.setBar(properties: bar)) }
-        for item in items where !item.alias.isEmpty && !item.properties.isEmpty {
+        for item in items where !item.alias.isEmpty && !item.properties.isEmpty && !isRegexAlias(item.alias) {
             commands.append(LiveBarCommand.set(alias: item.alias, properties: item.properties))
         }
         return commands
@@ -699,6 +897,114 @@ enum LiveBarService {
         }
     }
 
+    /// What a push would change.
+    struct LiveBarChange {
+        /// The items with the properties that really change.
+        var items: [LiveBarItem] = []
+        /// The properties of the bar that really change.
+        var bar: [LiveBarProperty] = []
+        /// The value the live bar had for every property that changes.
+        var previous: [LiveBarSnapshot.Property] = []
+        /// The values of the items the live bar already has.
+        ///
+        /// The next push only looks at the items whose values differ from
+        /// these, so a push does not ask the daemon about every item of
+        /// the config.
+        var known: [String: [String: String]] = [:]
+        /// The messages about what the push leaves out.
+        var notes: [String] = []
+    }
+
+    /// Works out what a push of the plan would change.
+    ///
+    /// The live values are read from the daemon, so only the properties
+    /// that really change are pushed. The `known` values are the values of
+    /// the last push: the items whose values did not change are not read
+    /// from the daemon again.
+    static func change(of plan: BarRenderPlan,
+                       runner: LiveBarRunning,
+                       known: [String: [String: String]] = [:]) -> LiveBarChange {
+        var change = LiveBarChange()
+        let (items, notes) = liveItems(of: plan)
+        change.notes += notes
+
+        // The bar. Only the properties that the automatic modes may push
+        // are here.
+        let barProperties = liveBarProperties(of: plan)
+        if !barProperties.isEmpty, let live = runner.liveValues(of: "bar") {
+            for property in barProperties {
+                guard let path = liveBarPath(of: property.key), let current = live[path] else { continue }
+                guard !sameValue(key: property.key, planned: property.value, live: current) else { continue }
+                change.bar.append(property)
+                change.previous.append(LiveBarSnapshot.Property(alias: "", key: property.key, value: current))
+            }
+        }
+
+        // The items. Only the items whose values changed are read from the
+        // daemon, so a push costs one call per changed item.
+        for item in items where changed(of: item, since: known) {
+            guard let live = runner.liveValues(of: item.alias) else {
+                change.notes.append("The item '\(item.alias)' is not on the live bar, so it was not pushed.")
+                // The item stays a candidate, so the next push tries it
+                // again: the item may come back later.
+                continue
+            }
+            var changedProperties: [LiveBarProperty] = []
+            for property in item.properties {
+                guard let path = livePath(of: property.key), let current = live[path] else { continue }
+                guard !sameValue(key: property.key, planned: property.value, live: current) else { continue }
+                changedProperties.append(property)
+                change.previous.append(LiveBarSnapshot.Property(alias: item.alias,
+                                                               key: property.key,
+                                                               value: current))
+            }
+            guard !changedProperties.isEmpty else {
+                // The live bar already has these values, so the next push
+                // does not have to ask about the item again.
+                change.known[item.alias] = values(of: item)
+                continue
+            }
+            change.items.append(LiveBarItem(alias: item.alias, properties: changedProperties))
+        }
+
+        return change
+    }
+
+    /// What a push of the plan would change, for the confirmation of the
+    /// user.
+    static func preview(of plan: BarRenderPlan, runner: LiveBarRunning) -> LiveBarPushPreview {
+        guard runner.daemonIsRunning() else {
+            return LiveBarPushPreview(itemCount: 0,
+                                      propertyCount: 0,
+                                      barPropertyCount: 0,
+                                      notes: ["SketchyBar is not running, so there is nothing to push."])
+        }
+        let change = change(of: plan, runner: runner)
+        return LiveBarPushPreview(
+            itemCount: change.items.count,
+            propertyCount: change.items.reduce(0) { $0 + $1.properties.count },
+            barPropertyCount: change.bar.count,
+            notes: change.notes
+        )
+    }
+
+    /// The properties of the bar that change, with the value they have
+    /// now.
+    static func barChanges(of plan: BarRenderPlan, runner: LiveBarRunning) -> [LiveBarPropertyChange] {
+        let properties = destructiveBarProperties(of: plan)
+        guard !properties.isEmpty else { return [] }
+        guard let live = runner.liveValues(of: "bar") else { return [] }
+        var changes: [LiveBarPropertyChange] = []
+        for property in properties {
+            guard let path = liveBarPath(of: property.key), let current = live[path] else { continue }
+            guard !sameValue(key: property.key, planned: property.value, live: current) else { continue }
+            changes.append(LiveBarPropertyChange(key: property.key,
+                                                 oldValue: current,
+                                                 newValue: property.value))
+        }
+        return changes
+    }
+
     /// Pushes the values of the preview to the live bar.
     ///
     /// The daemon is asked first: when it does not answer, nothing is
@@ -714,8 +1020,6 @@ enum LiveBarService {
                      runner: LiveBarRunning,
                      known: [String: [String: String]] = [:]) -> PushOutcome {
         var outcome = PushOutcome()
-        let (items, notes) = liveItems(of: plan)
-        outcome.notes += notes
         outcome.known = known
 
         guard runner.daemonIsRunning() else {
@@ -724,55 +1028,22 @@ enum LiveBarService {
             return outcome
         }
 
+        let change = change(of: plan, runner: runner, known: known)
+        outcome.notes += change.notes
+        outcome.known.merge(change.known) { _, new in new }
+
         var snapshot = snapshotStore.load() ?? LiveBarSnapshot()
         var newProperties: [LiveBarSnapshot.Property] = []
-        var pending: [(command: LiveBarCommand, item: LiveBarItem?)] = []
-
-        // The bar.
-        let barProperties = liveBarProperties(of: plan)
-        if !barProperties.isEmpty, let live = runner.liveValues(of: "bar") {
-            var changedBar: [LiveBarProperty] = []
-            for property in barProperties {
-                guard let path = liveBarPath(of: property.key), let current = live[path] else { continue }
-                guard current != property.value else { continue }
-                changedBar.append(property)
-                if !snapshot.holds(alias: "", key: property.key) {
-                    newProperties.append(LiveBarSnapshot.Property(alias: "", key: property.key, value: current))
-                }
-            }
-            if !changedBar.isEmpty {
-                pending.append((LiveBarCommand.setBar(properties: changedBar), nil))
-                outcome.pushedProperties += changedBar.count
-            }
+        for property in change.previous where !snapshot.holds(alias: property.alias, key: property.key) {
+            newProperties.append(property)
         }
 
-        // The items. Only the items whose values changed are read from the
-        // daemon, so a push costs one call per changed item.
-        for item in items where changed(of: item, since: known) {
-            guard let live = runner.liveValues(of: item.alias) else {
-                outcome.notes.append("The item '\(item.alias)' is not on the live bar, so it was not pushed.")
-                outcome.known[item.alias] = values(of: item)
-                continue
-            }
-            var changedProperties: [LiveBarProperty] = []
-            for property in item.properties {
-                guard let path = livePath(of: property.key), let current = live[path] else { continue }
-                guard current != property.value else { continue }
-                changedProperties.append(property)
-                if !snapshot.holds(alias: item.alias, key: property.key) {
-                    newProperties.append(LiveBarSnapshot.Property(alias: item.alias,
-                                                                   key: property.key,
-                                                                   value: current))
-                }
-            }
-            guard !changedProperties.isEmpty else {
-                // The live bar already has these values.
-                outcome.known[item.alias] = values(of: item)
-                continue
-            }
-            pending.append((LiveBarCommand.set(alias: item.alias, properties: changedProperties), item))
-            outcome.pushedItems += 1
-            outcome.pushedProperties += changedProperties.count
+        var pending: [(command: LiveBarCommand, item: LiveBarItem?)] = []
+        if !change.bar.isEmpty {
+            pending.append((LiveBarCommand.setBar(properties: change.bar), nil))
+        }
+        for item in change.items {
+            pending.append((LiveBarCommand.set(alias: item.alias, properties: item.properties), item))
         }
 
         // The snapshot is written before the first push, so a restart can
@@ -796,10 +1067,70 @@ enum LiveBarService {
                 continue
             }
             if let item = entry.item {
+                outcome.pushedItems += 1
+                outcome.pushedProperties += item.properties.count
                 outcome.known[item.alias] = values(of: item)
+            } else {
+                outcome.pushedProperties += entry.command.arguments.count - 1
             }
         }
 
+        return outcome
+    }
+
+    /// Pushes the properties of the bar to the live bar.
+    ///
+    /// The properties of the bar change the bar of the user, so this is
+    /// the only path that pushes them and it runs only when the user
+    /// asked for it.
+    static func pushBarSettings(plan: BarRenderPlan,
+                                snapshotStore: LiveBarSnapshotStore,
+                                runner: LiveBarRunning) -> PushOutcome {
+        var outcome = PushOutcome()
+
+        guard runner.daemonIsRunning() else {
+            outcome.daemonIsMissing = true
+            outcome.failures.append("SketchyBar is not running, so the live bar cannot be reached and nothing was pushed.")
+            return outcome
+        }
+
+        let properties = destructiveBarProperties(of: plan)
+        guard !properties.isEmpty else { return outcome }
+
+        guard let live = runner.liveValues(of: "bar") else {
+            outcome.failures.append("The live bar could not be read, so the settings of the bar were not pushed.")
+            return outcome
+        }
+
+        var changed: [LiveBarProperty] = []
+        var newProperties: [LiveBarSnapshot.Property] = []
+        for property in properties {
+            guard let path = liveBarPath(of: property.key), let current = live[path] else { continue }
+            guard !sameValue(key: property.key, planned: property.value, live: current) else { continue }
+            changed.append(property)
+            newProperties.append(LiveBarSnapshot.Property(alias: "", key: property.key, value: current))
+        }
+        guard !changed.isEmpty else { return outcome }
+
+        var snapshot = snapshotStore.load() ?? LiveBarSnapshot()
+        let fresh = newProperties.filter { !snapshot.holds(alias: $0.alias, key: $0.key) }
+        if !fresh.isEmpty {
+            snapshot.properties += fresh
+            do {
+                try snapshotStore.save(snapshot)
+            } catch {
+                outcome.failures.append("The snapshot of the live bar could not be written (\(error.localizedDescription)), so nothing was pushed.")
+                return outcome
+            }
+        }
+
+        let command = LiveBarCommand.setBar(properties: changed)
+        let result = runner.run(command)
+        if let failure = result.failure {
+            outcome.failures.append("'\(command.displayText)' was refused: \(failure)")
+            return outcome
+        }
+        outcome.pushedProperties += changed.count
         return outcome
     }
 
@@ -875,29 +1206,72 @@ enum LiveBarService {
     }
 }
 
-/// The debounce of the live push.
+/// The throttle of the live push.
 ///
 /// The push waits for the interval, so a run of changes is one push and
-/// not one push per keystroke.
+/// not one push per keystroke. The throttle also runs while the user
+/// keeps typing: a change that comes in while the push waits does not
+/// push the wait away, so the bar follows the edits of the user while
+/// the user writes.
 final class LiveBarDebouncer {
-    /// The time the push waits.
+    /// The time between two pushes.
     static let interval: TimeInterval = 0.6
 
     private let queue = DispatchQueue(label: "com.sketchybarstudio.live-bar.debounce")
+    /// The action that runs at the next run.
+    private var pending: (() -> Void)?
+    /// The work of the run that waits, when there is one.
     private var work: DispatchWorkItem?
+    /// The moment of the last run.
+    private var lastRun: TimeInterval = 0
 
     /// Schedules the action and forgets the one before it.
     func schedule(_ action: @escaping () -> Void) {
-        work?.cancel()
-        let work = DispatchWorkItem(block: action)
-        self.work = work
-        queue.asyncAfter(deadline: .now() + Self.interval, execute: work)
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.pending = action
+            self.arm()
+        }
     }
 
     /// Forgets the scheduled action.
     func cancel() {
-        work?.cancel()
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.work?.cancel()
+            self.work = nil
+            self.pending = nil
+        }
+    }
+
+    /// Makes sure a run waits for the action.
+    ///
+    /// A run that waits is not pushed away by a later action, so the
+    /// action runs at most once per interval.
+    private func arm() {
+        guard work == nil else { return }
+        let interval = UInt64(Self.interval * 1_000_000_000)
+        var delay = interval
+        if lastRun > 0 {
+            let now = DispatchTime.now().uptimeNanoseconds
+            let since = now - UInt64(lastRun * 1_000_000_000)
+            delay = since >= interval ? 0 : interval - since
+        }
+        let work = DispatchWorkItem { [weak self] in self?.run() }
+        self.work = work
+        queue.asyncAfter(deadline: .now() + Double(delay) / 1_000_000_000, execute: work)
+    }
+
+    /// Runs the action that waits.
+    private func run() {
         work = nil
+        lastRun = Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
+        let action = pending
+        pending = nil
+        action?()
+        // A change that came in while the action ran waits for the next
+        // run.
+        if pending != nil { arm() }
     }
 }
 
@@ -905,16 +1279,67 @@ final class LiveBarDebouncer {
 struct LiveBarPushPreview: Equatable {
     /// The number of items the push carries.
     let itemCount: Int
-    /// The number of properties the push carries.
+    /// The number of the properties of the items the push carries.
     let propertyCount: Int
+    /// The number of the properties of the bar the push carries.
+    let barPropertyCount: Int
     /// The messages about what the push leaves out.
     let notes: [String]
 
+    init(itemCount: Int,
+         propertyCount: Int,
+         barPropertyCount: Int = 0,
+         notes: [String] = []) {
+        self.itemCount = itemCount
+        self.propertyCount = propertyCount
+        self.barPropertyCount = barPropertyCount
+        self.notes = notes
+    }
+
     /// The sentence of the confirmation.
     var summary: String {
-        var text = "\(itemCount) items and \(propertyCount) properties of the preview will be pushed to your live SketchyBar."
+        var text = "\(itemCount) items and \(propertyCount) properties of the preview"
+        if barPropertyCount > 0 {
+            text += ", and \(barPropertyCount) properties of the bar"
+        }
+        text += " will be pushed to your live SketchyBar."
         if !notes.isEmpty { text += " " + notes.joined(separator: " ") }
         return text
+    }
+}
+
+/// One property of the bar that changes, with the value it has now.
+struct LiveBarPropertyChange: Equatable {
+    /// The name of the property, such as `bar.height`.
+    let key: String
+    /// The value the property has now.
+    let oldValue: String
+    /// The value the property gets.
+    let newValue: String
+
+    /// The property as the user reads it.
+    var text: String {
+        "\(key): \(oldValue) → \(newValue)"
+    }
+}
+
+/// What a push carries.
+enum LiveBarPushRequest {
+    /// The values of the items of the preview.
+    ///
+    /// The flag says that only the structured values of the config are
+    /// pushed: a raw source draft is a whole file, and a half-typed file
+    /// must not reach the live bar.
+    case items(structuredOnly: Bool)
+    /// The settings of the bar itself.
+    case barSettings
+
+    /// True when the push carries the structured values only.
+    var structuredOnly: Bool {
+        switch self {
+        case .items(let structuredOnly): return structuredOnly
+        case .barSettings: return true
+        }
     }
 }
 
@@ -924,6 +1349,36 @@ struct PendingLiveBarPush {
     let preview: LiveBarPushPreview
     /// True when the push carries the structured values only.
     let structuredOnly: Bool
+    /// The properties of the bar that change, with the value they have
+    /// now. It is empty for a push of the values of the items.
+    let barChanges: [LiveBarPropertyChange]
+    /// The name of the config the push belongs to.
+    let configName: String
+
+    init(preview: LiveBarPushPreview,
+         structuredOnly: Bool,
+         barChanges: [LiveBarPropertyChange] = [],
+         configName: String = "") {
+        self.preview = preview
+        self.structuredOnly = structuredOnly
+        self.barChanges = barChanges
+        self.configName = configName
+    }
+
+    /// True when the push changes the bar of the user itself.
+    var changesTheBar: Bool { !barChanges.isEmpty }
+
+    /// The sentence of the confirmation.
+    ///
+    /// The push of the bar itself names the config and says what changes,
+    /// because it changes the bar the user looks at.
+    var summary: String {
+        guard changesTheBar else { return preview.summary }
+        var text = "The bar settings of \(configName) will change on your live SketchyBar: "
+        text += barChanges.map(\.text).joined(separator: ", ")
+        text += "."
+        return text
+    }
 }
 
 extension SketchyBarStore {
@@ -937,12 +1392,45 @@ extension SketchyBarStore {
         return configs.first.map { .config($0.id) }
     }
 
+    /// The name of the source of the preview, for the user.
+    var liveBarSourceName: String {
+        switch liveBarSource {
+        case .config(let id):
+            return "the config '\(configs.first { $0.id == id }?.name ?? id)'"
+        case .profile(let profilePath):
+            return "the profile '\(libraryProfiles.first { $0.profile.id == profilePath }?.profile.name ?? profilePath)'"
+        case nil:
+            return "no config"
+        }
+    }
+
+    /// True when the source of the preview is the config the live bar runs.
+    ///
+    /// The values of another config would change the bar of the user
+    /// without the config of the user saying so, so the push is allowed
+    /// for the live config only.
+    var isLiveBarSourceLive: Bool {
+        guard case .config(let id) = liveBarSource else { return false }
+        guard let config = configs.first(where: { $0.id == id }) else { return false }
+        return configSwitchService.isLive(config: config)
+    }
+
+    /// Why the push is not allowed, when it is not.
+    var liveBarBlockedReason: String? {
+        guard !isLiveBarSourceLive else { return nil }
+        return "Only the live config of SketchyBar can be pushed to the live bar, and the preview shows \(liveBarSourceName), so the push is off."
+    }
+
     /// The files of the source, with the drafts of the app.
     ///
     /// The files of the config the app has open carry the drafts of the
     /// app, so the push carries the values the user sees. Every other
     /// config and every profile is read from disk.
+    ///
+    /// The files of a source that is not the live config are never
+    /// returned: the push may only carry the values of the live config.
     func liveBarFiles(structuredOnly: Bool) -> [BarRenderFile] {
+        guard isLiveBarSourceLive else { return [] }
         guard let source = liveBarSource else { return [] }
         if case .config(let id) = source, id == selectedConfig?.id {
             return filesInPreviewOrder.map { file in

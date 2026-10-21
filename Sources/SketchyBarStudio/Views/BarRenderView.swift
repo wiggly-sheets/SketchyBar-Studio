@@ -43,14 +43,7 @@ struct BarRenderView: View {
 
             Spacer()
 
-            Picker("Live bar", selection: $store.liveUpdateMode) {
-                ForEach(LiveUpdateMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 150)
-            .help("How the live bar of SketchyBar follows the edits of the app. \(store.liveUpdateMode.explanation)")
+            LiveUpdateModePicker(store: store)
 
             Toggle("1:1", isOn: $isOneToOne)
                 .toggleStyle(.checkbox)
@@ -64,6 +57,12 @@ struct BarRenderView: View {
             Text(store.liveUpdateMode.explanation)
                 .font(.caption)
                 .foregroundStyle(theme.muted)
+
+            if let reason = store.liveBarBlockedReason {
+                Label(reason, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
 
             if store.liveBarHasSnapshot {
                 Label("The live bar was changed by this app. The Restore button in the toolbar puts it back.",
@@ -184,6 +183,33 @@ struct BarRenderView: View {
             warnings: store.barRenderWarnings(for: source)
         )
         await state.render(request)
+    }
+}
+
+/// The picker of the mode of the live bar.
+///
+/// The picker is off when the preview does not show the live config of
+/// SketchyBar: the values of another config must never reach the bar of
+/// the user, and the help of the picker says which source is shown.
+struct LiveUpdateModePicker: View {
+    @ObservedObject var store: SketchyBarStore
+
+    var body: some View {
+        Picker("Live bar", selection: $store.liveUpdateMode) {
+            ForEach(LiveUpdateMode.allCases) { mode in
+                Text(mode.title).tag(mode)
+            }
+        }
+        .labelsHidden()
+        .frame(width: 150)
+        .disabled(!store.isLiveBarSourceLive)
+        .help(help)
+    }
+
+    /// The help of the picker.
+    private var help: String {
+        if let reason = store.liveBarBlockedReason { return reason }
+        return "How the live bar of SketchyBar follows the edits of the app. \(store.liveUpdateMode.explanation)"
     }
 }
 

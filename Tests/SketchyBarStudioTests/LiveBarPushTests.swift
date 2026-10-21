@@ -229,11 +229,47 @@ final class LiveBarPushTests: XCTestCase {
     /// The snapshot lives in the Application Support of the app and never
     /// under the config of the user.
     func testTheSnapshotLivesInTheApplicationSupportOfTheApp() throws {
-        let root = try makeTestRoot()
-        let store = LiveBarSnapshotStore(appSupportRoot: root)
+        let store = LiveBarSnapshotStore()
 
         XCTAssertTrue(store.url.path.contains("SketchyBarStudio"))
         XCTAssertEqual(store.url.lastPathComponent, "LiveBarSnapshot.json")
+    }
+
+    /// The file of the snapshot belongs to the user alone.
+    func testTheSnapshotFileBelongsToTheUserAlone() throws {
+        let root = try makeTestRoot()
+        let store = LiveBarSnapshotStore(appSupportRoot: root.appendingPathComponent("support"))
+        try store.save(LiveBarSnapshot(createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                                       properties: [
+                                           LiveBarSnapshot.Property(alias: "clock", key: "label", value: "09:00")
+                                       ]))
+
+        let manager = FileManager.default
+        let file = try XCTUnwrap(manager.attributesOfItem(atPath: store.url.path)[.posixPermissions] as? NSNumber)
+        XCTAssertEqual(file.int16Value, 0o600)
+
+        let folder = try XCTUnwrap(manager.attributesOfItem(atPath: store.url.deletingLastPathComponent().path)[.posixPermissions] as? NSNumber)
+        XCTAssertEqual(folder.int16Value, 0o700)
+    }
+
+    /// A snapshot that was edited by hand never holds a script, so the
+    /// daemon cannot run it on a Restore.
+    func testASnapshotThatWasEditedByHandNeverHoldsAScript() throws {
+        let root = try makeTestRoot()
+        let store = LiveBarSnapshotStore(appSupportRoot: root)
+        try store.save(LiveBarSnapshot(createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                                       properties: [
+                                           LiveBarSnapshot.Property(alias: "clock", key: "label", value: "09:00")
+                                       ]))
+
+        // The file on disk gets a script, the way a hand edit would.
+        var text = try String(contentsOf: store.url, encoding: .utf8)
+        text = text.replacingOccurrences(of: "\"key\" : \"label\"",
+                                         with: "\"key\" : \"script\"")
+        try text.write(to: store.url, atomically: true, encoding: .utf8)
+
+        let loaded = try XCTUnwrap(store.load())
+        XCTAssertFalse(loaded.properties.contains { $0.key == "script" })
     }
 
     // MARK: - The restore
@@ -394,8 +430,12 @@ final class LiveBarPushTests: XCTestCase {
 
     // MARK: - The debounce
 
-    /// A run of changes is one push and not one push per change.
-    func testTheDebounceTurnsManyChangesIntoOnePush() {
+    /// Ten schedules that come at the same time run the push once.
+    ///
+    /// The test does not say anything about a run of changes that comes
+    /// one change after the other: the throttle of the push is the thing
+    /// that holds that case.
+    func testTenSchedulesAtTheSameTimeRunThePushOnce() {
         let expectation = expectation(description: "the push runs once")
         expectation.expectedFulfillmentCount = 1
         expectation.assertForOverFulfill = true
@@ -416,24 +456,448 @@ final class LiveBarPushTests: XCTestCase {
         XCTAssertEqual(counter.value, 1)
     }
 
+    /// The throttle runs the push while the user keeps typing.
+    ///
+    /// A change that comes in while the push waits does not push the wait
+    /// away, so the push runs again after the interval.
+    func testTheThrottleRunsThePushWhileTheUserKeepsTyping() {
+        let expectation = expectation(description: "the push runs twice")
+        expectation.expectedFulfillmentCount = 2
+        expectation.assertForOverFulfill = false
+
+        let counter = Counter()
+        let debouncer = LiveBarDebouncer()
+        // The user keeps typing for a second and a half.
+        for step in 0..<8 {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.2 * Double(step)) {
+                debouncer.schedule {
+                    counter.increment()
+                    expectation.fulfill()
+                }
+            }
+        }
+
+        wait(for: [expectation], timeout: 5)
+        XCTAssertGreaterThanOrEqual(counter.value, 2)
+    }
+
     /// The mode `While Editing` asks for a push after the debounce, and the
     /// mode `Never` asks for nothing.
+    ///
+    /// The test confirms the push and looks at what the daemon got, so a
+    /// push that does nothing cannot pass the test.
     @MainActor
-    func testTheModeWhileEditingAsksForThePushAndTheModeNeverDoesNot() async throws {
+    func testTheModeWhileEditingPushesTheValueAndTheModeNeverDoesNot() async throws {
         let defaults = try makeDefaults()
-        let store = try makeStore(defaults: defaults)
-        let valueID = try XCTUnwrap(store.files.first?.values.first?.id)
+        let runner = FakeRunner()
+        runner.values = ["clock": ["label.value": "09:00"]]
+        let store = try makeStore(defaults: defaults, runner: runner)
+        let valueID = try XCTUnwrap(store.files.first?.values.first { $0.keyPath == "label" }?.id)
 
         store.liveUpdateMode = .never
         store.update(valueID: valueID, draftValue: "changed once")
         try await Task.sleep(nanoseconds: 1_500_000_000)
         XCTAssertNil(store.pendingLiveBarPush)
+        XCTAssertTrue(runner.calls.isEmpty)
 
         store.liveUpdateMode = .whileEditing
         store.update(valueID: valueID, draftValue: "changed twice")
         try await Task.sleep(nanoseconds: 1_500_000_000)
         let pending = try XCTUnwrap(store.pendingLiveBarPush)
         XCTAssertGreaterThan(pending.preview.propertyCount, 0)
+
+        store.confirmLiveBarPush()
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        let call = try XCTUnwrap(runner.calls.first)
+        XCTAssertEqual(call.arguments.first, "--set")
+        XCTAssertEqual(call.arguments[1], "clock")
+        XCTAssertTrue(call.arguments.contains("label=changed twice"),
+                      "the daemon got \(call.arguments)")
+    }
+
+    // MARK: - The shape of the calls
+
+    /// A value with an equal sign in it keeps the equal sign: the daemon
+    /// splits the argument at the first equal sign
+    /// (`src/misc/helpers.h:143-162`).
+    func testAValueWithAnEqualSignKeepsIt() {
+        let plan = BarRenderPlan(
+            defaults: [],
+            bar: [],
+            items: [
+                BarRenderItemModel(alias: "clock", properties: [
+                    BarRenderProperty(key: "label", value: "a=b")
+                ])
+            ],
+            warnings: []
+        )
+
+        let live = LiveBarService.liveItems(of: plan)
+        let commands = LiveBarService.pushCommands(for: live.items)
+        XCTAssertEqual(commands.first?.arguments, ["--set", "clock", "label=a=b"])
+    }
+
+    /// An item the daemon does not know is refused, and the item stays a
+    /// candidate, so the next push tries it again.
+    func testAnItemTheDaemonDoesNotKnowIsRefusedAndTriedAgain() throws {
+        let root = try makeTestRoot()
+        let store = LiveBarSnapshotStore(appSupportRoot: root.appendingPathComponent("support"))
+        let plan = BarRenderPlan(
+            defaults: [],
+            bar: [],
+            items: [
+                BarRenderItemModel(alias: "clock", properties: [
+                    BarRenderProperty(key: "label", value: "10:00")
+                ])
+            ],
+            warnings: []
+        )
+
+        let runner = FakeRunner()
+        runner.values = ["clock": ["label.value": "09:00"]]
+        runner.refusedAliases = ["clock"]
+
+        let first = LiveBarService.push(plan: plan, snapshotStore: store, runner: runner)
+        XCTAssertEqual(first.pushedItems, 0)
+        XCTAssertEqual(first.failures.count, 1)
+        XCTAssertTrue(first.failures[0].contains("clock"))
+
+        // The item was not pushed, so the next push tries it again.
+        let second = LiveBarService.push(plan: plan, snapshotStore: store, runner: runner, known: first.known)
+        XCTAssertEqual(second.failures.count, 1)
+    }
+
+    /// An item that is not on the live bar is tried again by the next
+    /// push.
+    func testAnItemThatIsNotOnTheLiveBarIsTriedAgain() throws {
+        let root = try makeTestRoot()
+        let store = LiveBarSnapshotStore(appSupportRoot: root.appendingPathComponent("support"))
+        let plan = BarRenderPlan(
+            defaults: [],
+            bar: [],
+            items: [
+                BarRenderItemModel(alias: "clock", properties: [
+                    BarRenderProperty(key: "label", value: "10:00")
+                ])
+            ],
+            warnings: []
+        )
+
+        let runner = FakeRunner()
+        let first = LiveBarService.push(plan: plan, snapshotStore: store, runner: runner)
+        XCTAssertEqual(first.pushedItems, 0)
+        XCTAssertNil(first.known["clock"], "the item stays a candidate")
+
+        let second = LiveBarService.push(plan: plan, snapshotStore: store, runner: runner, known: first.known)
+        XCTAssertEqual(second.notes.filter { $0.contains("clock") }.count, 1)
+    }
+
+    /// A malformed answer of the daemon holds no value, so the item is
+    /// not on the live bar as far as the app knows it.
+    func testAMalformedAnswerOfTheDaemonHoldsNoValue() {
+        let runner = FakeRunner()
+        runner.replies = ["clock": "{ \"label\": { \"value\": \"10:00\""]
+        XCTAssertNil(runner.liveValues(of: "clock"))
+    }
+
+    // MARK: - The rules of the push
+
+    /// The automatic modes push the safe properties of the bar and nothing
+    /// else.
+    ///
+    /// The properties that change the bar of the user are pushed only by
+    /// the explicit action of the user.
+    func testTheAutomaticModesPushOnlyTheSafePropertiesOfTheBar() {
+        let plan = BarRenderPlan(
+            defaults: [],
+            bar: [
+                BarRenderProperty(key: "bar.drawing", value: "true"),
+                BarRenderProperty(key: "bar.blur_radius", value: "15"),
+                BarRenderProperty(key: "bar.height", value: "30"),
+                BarRenderProperty(key: "bar.margin", value: "8"),
+                BarRenderProperty(key: "bar.color", value: "0xff000000"),
+                BarRenderProperty(key: "bar.topmost", value: "true")
+            ],
+            items: [],
+            warnings: []
+        )
+
+        XCTAssertEqual(LiveBarService.liveBarProperties(of: plan).map(\.key),
+                       ["bar.drawing", "bar.blur_radius"])
+        XCTAssertEqual(LiveBarService.destructiveBarProperties(of: plan).map(\.key),
+                       ["bar.height", "bar.margin", "bar.color", "bar.topmost"])
+    }
+
+    /// The push of the automatic modes never sends a property that
+    /// changes the bar of the user.
+    func testThePushNeverSendsTheSettingsOfTheBar() throws {
+        let root = try makeTestRoot()
+        let store = LiveBarSnapshotStore(appSupportRoot: root.appendingPathComponent("support"))
+        let plan = BarRenderPlan(
+            defaults: [],
+            bar: [
+                BarRenderProperty(key: "bar.height", value: "30"),
+                BarRenderProperty(key: "bar.drawing", value: "true")
+            ],
+            items: [],
+            warnings: []
+        )
+
+        let runner = FakeRunner()
+        runner.values = ["bar": ["background.height": "25", "background.drawing": "off"]]
+
+        let outcome = LiveBarService.push(plan: plan, snapshotStore: store, runner: runner)
+        XCTAssertEqual(outcome.pushedProperties, 1)
+        let call = try XCTUnwrap(runner.calls.first)
+        XCTAssertEqual(call.arguments, ["--bar", "bar.drawing=true"])
+    }
+
+    /// The settings of the bar are pushed only by the explicit action of
+    /// the user, and the action says what changes.
+    func testTheSettingsOfTheBarArePushedOnlyByTheExplicitAction() throws {
+        let root = try makeTestRoot()
+        let store = LiveBarSnapshotStore(appSupportRoot: root.appendingPathComponent("support"))
+        let plan = BarRenderPlan(
+            defaults: [],
+            bar: [
+                BarRenderProperty(key: "bar.height", value: "30"),
+                BarRenderProperty(key: "bar.margin", value: "8")
+            ],
+            items: [],
+            warnings: []
+        )
+
+        let runner = FakeRunner()
+        runner.values = ["bar": ["background.height": "25", "margin": "4"]]
+
+        let changes = LiveBarService.barChanges(of: plan, runner: runner)
+        XCTAssertEqual(changes.map(\.key), ["bar.height", "bar.margin"])
+        XCTAssertEqual(changes.map(\.oldValue), ["25", "4"])
+        XCTAssertEqual(changes.map(\.newValue), ["30", "8"])
+
+        let outcome = LiveBarService.pushBarSettings(plan: plan, snapshotStore: store, runner: runner)
+        XCTAssertEqual(outcome.pushedProperties, 2)
+        let call = try XCTUnwrap(runner.calls.first)
+        XCTAssertEqual(call.arguments, ["--bar", "bar.height=30", "bar.margin=8"])
+    }
+
+    /// The position of an item is structure and not a value, so it is
+    /// never pushed.
+    func testThePositionOfAnItemIsNeverPushed() {
+        let plan = BarRenderPlan(
+            defaults: [],
+            bar: [],
+            items: [
+                BarRenderItemModel(alias: "clock", properties: [
+                    BarRenderProperty(key: "position", value: "right"),
+                    BarRenderProperty(key: "label", value: "10:00")
+                ])
+            ],
+            warnings: []
+        )
+
+        let live = LiveBarService.liveItems(of: plan)
+        XCTAssertEqual(live.items.first?.properties.map(\.key), ["label"])
+        XCTAssertTrue(live.notes.contains { $0.contains("positions") })
+    }
+
+    /// A value that starts with `popup` would put the item into a popup
+    /// of another item, so it is refused.
+    func testAValueThatStartsWithPopupIsRefused() {
+        let plan = BarRenderPlan(
+            defaults: [],
+            bar: [],
+            items: [
+                BarRenderItemModel(alias: "clock", properties: [
+                    BarRenderProperty(key: "position", value: "popup.clock"),
+                    BarRenderProperty(key: "label", value: "10:00")
+                ])
+            ],
+            warnings: []
+        )
+
+        let live = LiveBarService.liveItems(of: plan)
+        XCTAssertEqual(live.items.first?.properties.map(\.key), ["label"])
+        XCTAssertTrue(live.notes.contains { $0.contains("popup") })
+    }
+
+    /// A name the daemon reads as a regular expression is never pushed:
+    /// the daemon would set every item that matches it.
+    func testANameThatLooksLikeARegexIsNeverPushed() {
+        let plan = BarRenderPlan(
+            defaults: [],
+            bar: [],
+            items: [
+                BarRenderItemModel(alias: "/clock/", properties: [
+                    BarRenderProperty(key: "label", value: "10:00")
+                ])
+            ],
+            warnings: []
+        )
+
+        let live = LiveBarService.liveItems(of: plan)
+        XCTAssertTrue(live.items.isEmpty)
+        XCTAssertTrue(live.notes.contains { $0.contains("regular expression") })
+    }
+
+    /// The boolean of the config and the boolean of the daemon are the
+    /// same value, so the push does not send it again and again.
+    func testTheBooleanOfTheConfigAndTheBooleanOfTheDaemonAreTheSameValue() {
+        XCTAssertTrue(LiveBarService.sameValue(key: "drawing", planned: "true", live: "on"))
+        XCTAssertTrue(LiveBarService.sameValue(key: "label.drawing", planned: "true", live: "on"))
+        XCTAssertTrue(LiveBarService.sameValue(key: "scroll_texts", planned: "false", live: "off"))
+        XCTAssertTrue(LiveBarService.sameValue(key: "bar.topmost", planned: "window", live: "on"))
+        XCTAssertFalse(LiveBarService.sameValue(key: "drawing", planned: "true", live: "off"))
+        XCTAssertFalse(LiveBarService.sameValue(key: "label", planned: "10:00", live: "on"))
+    }
+
+    /// The push of the automatic modes does not send the boolean of an
+    /// item again and again.
+    func testThePushDoesNotSendTheBooleanOfTheItemAgain() throws {
+        let root = try makeTestRoot()
+        let store = LiveBarSnapshotStore(appSupportRoot: root.appendingPathComponent("support"))
+        let plan = BarRenderPlan(
+            defaults: [],
+            bar: [],
+            items: [
+                BarRenderItemModel(alias: "clock", properties: [
+                    BarRenderProperty(key: "drawing", value: "true"),
+                    BarRenderProperty(key: "label", value: "10:00")
+                ])
+            ],
+            warnings: []
+        )
+
+        let runner = FakeRunner()
+        runner.values = ["clock": ["geometry.drawing": "on", "label.value": "10:00"]]
+
+        let outcome = LiveBarService.push(plan: plan, snapshotStore: store, runner: runner)
+        XCTAssertEqual(outcome.pushedProperties, 0)
+        XCTAssertTrue(runner.calls.isEmpty)
+    }
+
+    // MARK: - The store
+
+    /// The push is refused for a source that is not the live config.
+    ///
+    /// The values of another config would change the bar of the user
+    /// without that config saying so, so the control is off and the
+    /// message names the source.
+    @MainActor
+    func testThePushIsRefusedForASourceThatIsNotTheLiveConfig() async throws {
+        let defaults = try makeDefaults()
+        let runner = FakeRunner()
+        let root = try makeTestRoot()
+        let store = try makeStore(defaults: defaults,
+                                  runner: runner,
+                                  liveConfigURL: root.appendingPathComponent("another-config"))
+        let valueID = try XCTUnwrap(store.files.first?.values.first { $0.keyPath == "label" }?.id)
+
+        XCTAssertFalse(store.isLiveBarSourceLive)
+        XCTAssertNotNil(store.liveBarBlockedReason)
+
+        store.liveUpdateMode = .whileEditing
+        store.update(valueID: valueID, draftValue: "changed")
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+
+        XCTAssertNil(store.pendingLiveBarPush)
+        XCTAssertTrue(runner.calls.isEmpty)
+    }
+
+    /// A push that changed nothing does not use up the confirmation of the
+    /// user: the next push asks again.
+    @MainActor
+    func testAFailedPushDoesNotUseUpTheConfirmationOfTheUser() async throws {
+        let defaults = try makeDefaults()
+        let runner = FakeRunner()
+        runner.isRunning = false
+        let store = try makeStore(defaults: defaults, runner: runner)
+        let valueID = try XCTUnwrap(store.files.first?.values.first { $0.keyPath == "label" }?.id)
+
+        store.liveUpdateMode = .whileEditing
+        store.update(valueID: valueID, draftValue: "changed")
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        XCTAssertNotNil(store.pendingLiveBarPush)
+        store.confirmLiveBarPush()
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertTrue(runner.calls.isEmpty)
+        XCTAssertTrue(store.statusMessage.contains("not running"))
+
+        // The push changed nothing, so the user is asked again.
+        store.update(valueID: valueID, draftValue: "changed again")
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        XCTAssertNotNil(store.pendingLiveBarPush)
+    }
+
+    /// Two pushes that follow each other do not fight: the older plan
+    /// does not win over the newer one.
+    @MainActor
+    func testTwoPushesThatFollowEachOtherDoNotFight() async throws {
+        let defaults = try makeDefaults()
+        let runner = FakeRunner()
+        runner.values = ["clock": ["label.value": "09:00"]]
+        let store = try makeStore(defaults: defaults, runner: runner)
+        let valueID = try XCTUnwrap(store.files.first?.values.first { $0.keyPath == "label" }?.id)
+
+        store.liveUpdateMode = .whileEditing
+        store.update(valueID: valueID, draftValue: "changed once")
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        store.confirmLiveBarPush()
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+
+        // The push that follows is slow, so the request that comes after
+        // it has to wait for it.
+        runner.delays = [0, 3]
+        store.update(valueID: valueID, draftValue: "changed twice")
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+
+        // The request comes in while the slow push runs.
+        store.update(valueID: valueID, draftValue: "changed three times")
+        store.requestLiveBarPush(structuredOnly: true)
+        try await Task.sleep(nanoseconds: 5_000_000_000)
+
+        let values = runner.calls.flatMap(\.arguments).filter { $0.hasPrefix("label=") }
+        XCTAssertEqual(values.last, "label=changed three times",
+                       "the daemon got \(runner.calls.map(\.arguments))")
+
+        // The app knows the values of the live bar, so the next push has
+        // nothing to do. An older plan that won would send the value
+        // again.
+        runner.forgetCalls()
+        store.requestLiveBarPush(structuredOnly: true)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        XCTAssertTrue(runner.calls.isEmpty,
+                      "the daemon got \(runner.calls.map(\.arguments))")
+    }
+
+    /// A restore drops the values of the last push, so the next push asks
+    /// the daemon again.
+    @MainActor
+    func testARestoreDropsTheValuesOfTheLastPush() async throws {
+        let defaults = try makeDefaults()
+        let runner = FakeRunner()
+        runner.values = ["clock": ["label.value": "09:00"]]
+        let store = try makeStore(defaults: defaults, runner: runner)
+        let valueID = try XCTUnwrap(store.files.first?.values.first { $0.keyPath == "label" }?.id)
+
+        store.liveUpdateMode = .whileEditing
+        store.update(valueID: valueID, draftValue: "changed")
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        store.confirmLiveBarPush()
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertFalse(runner.calls.isEmpty)
+
+        store.restoreLiveBar()
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        // The next push asks the daemon about the item again.
+        runner.forgetQueries()
+        store.update(valueID: valueID, draftValue: "changed again")
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        XCTAssertTrue(runner.queries.contains("clock"),
+                      "the next push asks the daemon about the item")
     }
 
     // MARK: - The config of the user
@@ -511,20 +975,59 @@ final class LiveBarPushTests: XCTestCase {
         XCTAssertEqual(values["scripting.update_freq"], "5")
     }
 
-    /// The daemon does not escape the backslash of a value, so the reader
-    /// has to keep it.
-    func testTheQueryReaderKeepsTheBackslashOfAValue() {
+    /// The daemon does not escape the backslash of a value, so a value
+    /// with a backslash in it cannot be read back with certainty and is
+    /// left out.
+    func testTheQueryReaderLeavesOutAValueWithABackslash() {
         let reply = "{ \"label\": { \"value\": \"C:\\Users\" } }"
         let values = LiveBarQuery.values(in: reply)
-        XCTAssertEqual(values["label.value"], "C:\\Users")
+        XCTAssertNil(values["label.value"])
+    }
+
+    /// A quote inside a value cuts the value short, so the value is not
+    /// readable and the rest of the reply still is.
+    func testTheQueryReaderLeavesOutAValueWithAQuoteInIt() {
+        let reply = "{ \"label\": { \"value\": \"He said \"hi\"\" }, \"icon\": { \"value\": \"SF:Clock\" } }"
+        let values = LiveBarQuery.values(in: reply)
+        XCTAssertNil(values["label.value"])
+        XCTAssertEqual(values["icon.value"], "SF:Clock")
+    }
+
+    /// A newline in a value is a newline of the value, so the reader keeps
+    /// it and reads the rest of the reply.
+    func testTheQueryReaderKeepsANewlineInAValue() {
+        let reply = "{ \"label\": { \"value\": \"one\ntwo\" }, \"icon\": { \"value\": \"SF:Clock\" } }"
+        let values = LiveBarQuery.values(in: reply)
+        XCTAssertEqual(values["label.value"], "one\ntwo")
+        XCTAssertEqual(values["icon.value"], "SF:Clock")
+    }
+
+    /// A reply that ends in the middle is not read as a whole, so the
+    /// value that was cut is left out.
+    func testTheQueryReaderLeavesOutTheValueOfATruncatedReply() {
+        let reply = "{ \"label\": { \"value\": \"10:00\""
+        let values = LiveBarQuery.values(in: reply)
+        XCTAssertNil(values["label.value"])
+    }
+
+    /// A value that ends with a backslash cannot be read back, so it is
+    /// left out.
+    func testTheQueryReaderLeavesOutAValueWithATrailingBackslash() {
+        let reply = "{ \"label\": { \"value\": \"C:\\\" } }"
+        let values = LiveBarQuery.values(in: reply)
+        XCTAssertNil(values["label.value"])
     }
 
     /// The refusal of the daemon is found in its answer.
+    ///
+    /// The refusal always starts the answer of the daemon, so an answer
+    /// that only holds `[!]` in a value is not a refusal.
     func testTheRefusalOfTheDaemonIsFound() {
-        let output = "[2026-10-21 12:00:00] [!] Set: Item not found 'clock'\n"
+        let output = "[!] Set: Item not found 'clock'\n"
         XCTAssertEqual(LiveBarCommandResult.failure(in: output),
                        "Set: Item not found 'clock'")
         XCTAssertNil(LiveBarCommandResult.failure(in: "{ \"name\": \"clock\" }"))
+        XCTAssertNil(LiveBarCommandResult.failure(in: "{ \"label\": { \"value\": \"[!] hello\" } }"))
     }
 
     // MARK: - The daemon of the machine
@@ -597,9 +1100,15 @@ final class LiveBarPushTests: XCTestCase {
 
     /// The runner of the tests: it answers like a daemon would, without
     /// one.
-    private final class FakeRunner: LiveBarRunning {
+    private final class FakeRunner: LiveBarRunning, @unchecked Sendable {
         /// The live values the runner holds, keyed by the alias.
         var values: [String: [String: String]] = [:]
+        /// The raw answers of the runner, keyed by the alias.
+        ///
+        /// An answer that is given this way is read by the reader of the
+        /// app, so a broken answer can be held on a machine without a
+        /// daemon.
+        var replies: [String: String] = [:]
         /// The aliases the runner refuses to set.
         var refusedAliases: Set<String> = []
         /// True when the daemon answers.
@@ -608,21 +1117,50 @@ final class LiveBarPushTests: XCTestCase {
         private(set) var calls: [LiveBarCommand] = []
         /// The items the runner was asked about.
         private(set) var queries: [String] = []
+        /// The time every call takes, in the order of the calls.
+        var delays: [TimeInterval] = []
+        /// The lock of the runner: a push runs in the background.
+        private let lock = NSLock()
 
         /// Forgets the items the runner was asked about.
         func forgetQueries() {
+            lock.lock()
+            defer { lock.unlock() }
             queries = []
+        }
+
+        /// Forgets the calls the runner received.
+        func forgetCalls() {
+            lock.lock()
+            defer { lock.unlock() }
+            calls = []
         }
 
         func daemonIsRunning() -> Bool { isRunning }
 
         func liveValues(of alias: String) -> [String: String]? {
+            lock.lock()
+            defer { lock.unlock() }
             queries.append(alias)
+            if let reply = replies[alias] {
+                let values = LiveBarQuery.values(in: reply)
+                return values.isEmpty ? nil : values
+            }
             return values[alias]
         }
 
         func run(_ command: LiveBarCommand) -> LiveBarCommandResult {
+            lock.lock()
+            let index = calls.count
             calls.append(command)
+            let delay = index < delays.count ? delays[index] : 0
+            lock.unlock()
+            // A call that is slow stands for a daemon that needs a while,
+            // so two pushes can follow each other.
+            if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+
+            lock.lock()
+            defer { lock.unlock() }
             guard command.arguments.first == "--set", command.arguments.count > 1 else {
                 return LiveBarCommandResult(output: "")
             }
@@ -661,8 +1199,15 @@ final class LiveBarPushTests: XCTestCase {
     }
 
     /// A store with a config of its own.
+    ///
+    /// The config of the store is the live config of SketchyBar for the
+    /// test, so the push is allowed. The runner and the file of the
+    /// snapshot are the ones of the test, so the test never reaches the
+    /// daemon of the user and never writes the snapshot of the user.
     @MainActor
-    private func makeStore(defaults: UserDefaults) throws -> SketchyBarStore {
+    private func makeStore(defaults: UserDefaults,
+                           runner: FakeRunner = FakeRunner(),
+                           liveConfigURL: URL? = nil) throws -> SketchyBarStore {
         let root = try makeTestRoot()
         let configRoot = root.appendingPathComponent("config")
         try write("""
@@ -675,7 +1220,10 @@ final class LiveBarPushTests: XCTestCase {
         let libraryURL = root.appendingPathComponent("config-library.json")
         let store = SketchyBarStore(configRoot: configRoot,
                                     libraryURL: libraryURL,
-                                    defaults: defaults)
+                                    defaults: defaults,
+                                    liveBarRunner: runner,
+                                    liveBarSnapshotStore: LiveBarSnapshotStore(appSupportRoot: root.appendingPathComponent("support")),
+                                    liveSketchyBarConfigURL: liveConfigURL ?? configRoot)
         store.reload()
         return store
     }

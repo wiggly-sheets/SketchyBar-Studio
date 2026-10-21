@@ -223,8 +223,22 @@ final class SketchyBarStore: ObservableObject {
     /// True when the app pushed the live bar already in this session.
     ///
     /// The first push of a session asks the user first, so the user sees
-    /// what is about to change.
+    /// what is about to change. A push that changed nothing does not
+    /// count, so the user is asked again.
     private var hasPushedLiveBar = false
+    /// The number of the pushes of the session.
+    ///
+    /// Every request gets a number, and the result of a push that is not
+    /// the newest one is dropped: a push that is slower than the next one
+    /// must not win over it.
+    private var liveBarPushGeneration = 0
+    /// True while a push runs.
+    private var liveBarPushIsRunning = false
+    /// The push that waits for the running push to end.
+    ///
+    /// A new request replaces the one that waits, so the newest values of
+    /// the user reach the live bar.
+    private var queuedLiveBarPush: LiveBarPushRequest?
     /// The values of the items of the last push.
     ///
     /// The next push only looks at the items whose values differ from
@@ -239,24 +253,44 @@ final class SketchyBarStore: ObservableObject {
     private let shellScanner = ShellConfigScanner()
     private let activationService = ConfigActivationService()
     private let configLibraryService: ConfigLibraryService
-    private let configSwitchService = ConfigSwitchService()
+    let configSwitchService: ConfigSwitchService
     private let profileService = ProfileArchiveService()
     private let backupService = ConfigBackupService()
+    /// The runner of the calls of the daemon of SketchyBar.
+    ///
+    /// A test injects a runner of its own, so a test never pushes to the
+    /// daemon of the user.
+    private let liveBarRunner: LiveBarRunning
+    /// The file of the snapshot of the live bar.
+    ///
+    /// A test injects a file of its own, so a test never writes the
+    /// snapshot of the user.
+    private let liveBarSnapshotStore: LiveBarSnapshotStore
 
     /// `libraryURL` points the config library at another file, so a test
     /// never writes the library of the user. `defaults` holds the live
     /// update mode, so a test never writes the settings of the user.
+    /// `liveBarRunner` and `liveBarSnapshotStore` keep a test away from
+    /// the daemon and from the snapshot of the user.
+    /// `liveSketchyBarConfigURL` is the config the daemon of SketchyBar
+    /// runs, so a test can name a config of its own as the live one.
     init(
         configRoot initialConfigRoot: URL? = nil,
         undoStack: UndoStack? = nil,
         libraryURL: URL? = nil,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        liveBarRunner: LiveBarRunning = SketchyBarRunner(),
+        liveBarSnapshotStore: LiveBarSnapshotStore = LiveBarSnapshotStore(),
+        liveSketchyBarConfigURL: URL? = nil
     ) {
         self.configLibraryService = ConfigLibraryService(libraryURL: libraryURL)
+        self.configSwitchService = ConfigSwitchService(liveSketchyBarConfigURL: liveSketchyBarConfigURL)
         self.undoStack = undoStack ?? UndoStack()
         self.defaults = defaults
+        self.liveBarRunner = liveBarRunner
+        self.liveBarSnapshotStore = liveBarSnapshotStore
         self.liveUpdateMode = LiveUpdateMode.saved(in: defaults)
-        self.liveBarHasSnapshot = LiveBarSnapshotStore().exists
+        self.liveBarHasSnapshot = liveBarSnapshotStore.exists
         if let initialConfigRoot {
             let config = ConfigWorkspace.make(name: initialConfigRoot.lastPathComponent, url: initialConfigRoot)
             configRoot = initialConfigRoot
@@ -1013,11 +1047,14 @@ final class SketchyBarStore: ObservableObject {
     ///
     /// The mode `On Apply` pushes the values of the preview after the
     /// reload: the reload rebuilds the items of the daemon, and the push
-    /// sets the values of the preview on them.
+    /// sets the values of the preview on them. The push carries the
+    /// structured values only, exactly as the mode `While Editing` does: a
+    /// raw source draft is a whole file, and a half-typed file must not
+    /// reach the live bar.
     private func finishSketchyBarReload(_ message: String) {
         setStatusMessage(message)
         guard liveUpdateMode == .onApply else { return }
-        requestLiveBarPush(structuredOnly: false)
+        requestLiveBarPush(structuredOnly: true)
     }
 
     /// Asks for a push of the previewed bar to the live bar.
@@ -1025,26 +1062,73 @@ final class SketchyBarStore: ObservableObject {
     /// The first push of a session waits for the confirmation of the
     /// user: the dialog says how many items and how many properties of
     /// the preview change on the live bar.
+    ///
+    /// The push is allowed for the live config only. The values of
+    /// another config would change the bar of the user without that
+    /// config saying so.
     func requestLiveBarPush(structuredOnly: Bool) {
         guard liveUpdateMode != .never else {
             statusMessage = "The live bar update mode is 'Never', so the live bar is not changed."
             return
         }
 
-        if hasPushedLiveBar {
-            performLiveBarPush(structuredOnly: structuredOnly)
+        guard isLiveBarSourceLive else {
+            statusMessage = liveBarBlockedReason ?? "The live bar cannot be pushed from this source."
             return
         }
 
-        let plan = liveBarPlan(structuredOnly: structuredOnly)
-        let live = LiveBarService.liveItems(of: plan)
+        if hasPushedLiveBar {
+            performLiveBarPush(.items(structuredOnly: structuredOnly))
+            return
+        }
+
+        prepareLiveBarPush(.items(structuredOnly: structuredOnly))
+    }
+
+    /// Asks for the settings of the bar to be pushed to the live bar.
+    ///
+    /// The settings of the bar change the bar the user looks at, so they
+    /// are pushed only by this action and only after the user saw what
+    /// changes: the dialog names the config and says every property with
+    /// the value it has now and the value it gets.
+    func requestLiveBarSettingsPush() {
+        guard isLiveBarSourceLive else {
+            statusMessage = liveBarBlockedReason ?? "The live bar cannot be pushed from this source."
+            return
+        }
+
+        prepareLiveBarPush(.barSettings)
+    }
+
+    /// Works out what the push would change and asks the user about it.
+    private func prepareLiveBarPush(_ request: LiveBarPushRequest) {
+        let plan = liveBarPlan(structuredOnly: request.structuredOnly)
+        let runner = liveBarRunner
+        Task.detached(priority: .userInitiated) { [weak self] in
+            switch request {
+            case .items:
+                let preview = LiveBarService.preview(of: plan, runner: runner)
+                await self?.finishLiveBarPreview(preview, request: request)
+            case .barSettings:
+                let changes = LiveBarService.barChanges(of: plan, runner: runner)
+                await self?.finishLiveBarPreview(LiveBarPushPreview(itemCount: 0,
+                                                                     propertyCount: 0,
+                                                                     barPropertyCount: changes.count),
+                                                  request: request,
+                                                  barChanges: changes)
+            }
+        }
+    }
+
+    /// Takes over the preview of a push and asks the user about it.
+    private func finishLiveBarPreview(_ preview: LiveBarPushPreview,
+                                      request: LiveBarPushRequest,
+                                      barChanges: [LiveBarPropertyChange] = []) {
         pendingLiveBarPush = PendingLiveBarPush(
-            preview: LiveBarPushPreview(
-                itemCount: live.items.count,
-                propertyCount: live.items.reduce(0) { $0 + $1.properties.count },
-                notes: live.notes
-            ),
-            structuredOnly: structuredOnly
+            preview: preview,
+            structuredOnly: request.structuredOnly,
+            barChanges: barChanges,
+            configName: liveBarSourceName
         )
     }
 
@@ -1052,7 +1136,11 @@ final class SketchyBarStore: ObservableObject {
     func confirmLiveBarPush() {
         guard let pending = pendingLiveBarPush else { return }
         pendingLiveBarPush = nil
-        performLiveBarPush(structuredOnly: pending.structuredOnly)
+        if pending.barChanges.isEmpty {
+            performLiveBarPush(.items(structuredOnly: pending.structuredOnly))
+        } else {
+            performLiveBarPush(.barSettings)
+        }
     }
 
     /// Drops the push the user was asked about.
@@ -1061,40 +1149,82 @@ final class SketchyBarStore: ObservableObject {
     }
 
     /// Pushes the values of the preview to the live bar.
-    private func performLiveBarPush(structuredOnly: Bool) {
-        let plan = liveBarPlan(structuredOnly: structuredOnly)
-        let snapshotStore = LiveBarSnapshotStore()
+    ///
+    /// Only one push runs at a time. A request that comes in while a push
+    /// runs waits for it and replaces the request that waits, so the
+    /// newest values of the user reach the live bar and not the values of
+    /// an older push.
+    private func performLiveBarPush(_ request: LiveBarPushRequest) {
+        liveBarPushGeneration &+= 1
+        queuedLiveBarPush = request
+        startQueuedLiveBarPush()
+    }
+
+    /// Starts the push that waits, when no push runs.
+    private func startQueuedLiveBarPush() {
+        guard !liveBarPushIsRunning, let request = queuedLiveBarPush else { return }
+        queuedLiveBarPush = nil
+        liveBarPushIsRunning = true
+        let generation = liveBarPushGeneration
+        let plan = liveBarPlan(structuredOnly: request.structuredOnly)
         let known = liveBarKnownValues
+        let runner = liveBarRunner
+        let snapshotStore = liveBarSnapshotStore
         Task.detached(priority: .userInitiated) { [weak self] in
-            let outcome = LiveBarService.push(plan: plan,
-                                             snapshotStore: snapshotStore,
-                                             runner: SketchyBarRunner(),
-                                             known: known)
-            await self?.finishLiveBarPush(outcome)
+            let outcome: LiveBarService.PushOutcome
+            switch request {
+            case .items:
+                outcome = LiveBarService.push(plan: plan,
+                                              snapshotStore: snapshotStore,
+                                              runner: runner,
+                                              known: known)
+            case .barSettings:
+                outcome = LiveBarService.pushBarSettings(plan: plan,
+                                                         snapshotStore: snapshotStore,
+                                                         runner: runner)
+            }
+            await self?.finishLiveBarPush(outcome, generation: generation)
         }
     }
 
     /// Takes over the result of a push.
-    private func finishLiveBarPush(_ outcome: LiveBarService.PushOutcome) {
-        hasPushedLiveBar = true
-        liveBarKnownValues = outcome.known
-        liveBarHasSnapshot = LiveBarSnapshotStore().exists
-        liveBarMessage = outcome.message
-        statusMessage = outcome.message
+    ///
+    /// The result of a push that is not the newest one is dropped: a
+    /// newer push is already on its way, so the values of the older one
+    /// would be the wrong ones.
+    private func finishLiveBarPush(_ outcome: LiveBarService.PushOutcome, generation: Int) {
+        liveBarPushIsRunning = false
+        if generation == liveBarPushGeneration {
+            liveBarKnownValues = outcome.known
+            liveBarHasSnapshot = liveBarSnapshotStore.exists
+            liveBarMessage = outcome.message
+            statusMessage = outcome.message
+            // A push that changed nothing does not count: the user is
+            // asked again before the next push.
+            if outcome.pushedItems > 0 || outcome.pushedProperties > 0 {
+                hasPushedLiveBar = true
+            }
+        }
+        // A request that came in while the push was running goes now.
+        startQueuedLiveBarPush()
     }
 
     /// Puts the live bar back to the state it had before the first push.
     func restoreLiveBar() {
-        let snapshotStore = LiveBarSnapshotStore()
+        let runner = liveBarRunner
+        let snapshotStore = liveBarSnapshotStore
         Task.detached(priority: .userInitiated) { [weak self] in
-            let outcome = LiveBarService.restore(snapshotStore: snapshotStore, runner: SketchyBarRunner())
+            let outcome = LiveBarService.restore(snapshotStore: snapshotStore, runner: runner)
             await self?.finishLiveBarRestore(outcome)
         }
     }
 
     /// Takes over the result of a restore.
     private func finishLiveBarRestore(_ outcome: LiveBarService.RestoreOutcome) {
-        liveBarHasSnapshot = LiveBarSnapshotStore().exists
+        // The live bar has the old values again, so the values of the last
+        // push are dropped: the next push asks the daemon again.
+        liveBarKnownValues = [:]
+        liveBarHasSnapshot = liveBarSnapshotStore.exists
         liveBarMessage = outcome.message
         statusMessage = outcome.message
     }
