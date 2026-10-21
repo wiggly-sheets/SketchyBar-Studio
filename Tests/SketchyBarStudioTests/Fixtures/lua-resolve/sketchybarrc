@@ -1,0 +1,4 @@
+#!/usr/bin/env lua
+-- The entrypoint of the fixture. The shebang says the file is Lua, so
+-- SketchyBar runs it with Lua.
+require("init")

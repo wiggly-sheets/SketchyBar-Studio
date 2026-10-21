@@ -1,0 +1,7 @@
+#!/usr/bin/env lua
+-- The loader decides the order of the items. The name of the files sorts
+-- the other way round, so the order of the files and the order of the load
+-- are not the same.
+sbar = require("sketchybar")
+require("z_first")
+require("a_second")
