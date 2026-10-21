@@ -1,5 +1,7 @@
 # Stage 5 — The in-app preview pane
 
+**Status: done (2026-10-21).** The preview pane is merged with this stage. The next stage is Stage 6.
+
 ## Goal
 
 The user can look at a rendered bar of any config or profile, from the detail view. The rendered bar is scaled to fit the panel with one uniform factor, so the real menu-bar proportions survive, and a 1:1 toggle restores the exact pixel geometry.
