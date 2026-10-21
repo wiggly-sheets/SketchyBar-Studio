@@ -73,6 +73,13 @@ Plus an explicit **Restore** action that puts the live bar back.
 * A push that half succeeds leaves the live bar in a mixed state. Mitigation: rule 5, plus a snapshot taken before the first push, so Restore can put it back.
 * The snapshot is written to disk and holds the user's live bar values. It must stay inside the app's own support directory, and it must not be written under the user's config root.
 
+## Known limits
+
+* An alias that the config declares twice is merged into one item by the config bridge, and the merged item keeps the last value of a property. The daemon refuses the second add and keeps the first item of the alias (`src/message.c:189-193`), so a push can set a value the running bar does not have, and the next reload of the config undoes it. The bridge owns the merge, and another branch owns the bridge, so this stage records the limit instead of changing it.
+* The daemon writes the label and the icon raw (`src/text.c:1027`), so a quote in a value breaks the reply of a query. Such a reply is refused as a whole, because the reader would read the rest of it wrong. The item is then not pushed, and its value is never put back by a Restore.
+* The daemon writes the settings of the bar flat, next to the keys of the bar itself (`src/bar_manager.c:1096-1119`, `src/background.c:261-297`), and the daemon wants the plain name of a property of the bar (`src/message.c:680-692`). The push reads and writes the bar that way, and the `bar.` prefix of the app never reaches the daemon.
+* A name the daemon reads as a regular expression is never pushed and never put back: the daemon would set every item that matches it (`src/message.c:628-631`).
+
 ## Done when
 
 The three modes behave as described, Restore returns the live bar to its state before the first push and works after a restart, `script` and `click_script` are never pushed, the isolation tests pass, and the branch is merged into master with `git merge --no-ff` and master is green.

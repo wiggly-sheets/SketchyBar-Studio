@@ -25,6 +25,7 @@ struct BarRenderView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            liveBarNote
             BarRenderProfilePicker(store: store, theme: theme)
             imagePane
             messages
@@ -42,9 +43,33 @@ struct BarRenderView: View {
 
             Spacer()
 
+            LiveUpdateModePicker(store: store)
+
             Toggle("1:1", isOn: $isOneToOne)
                 .toggleStyle(.checkbox)
                 .help("Show the bar at its true point size, so one image pixel lands on one device pixel of a display with the scale of 2.0. The pane scrolls sideways then.")
+        }
+    }
+
+    /// What the live bar does now, and what the user can do about it.
+    private var liveBarNote: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(store.liveUpdateMode.explanation)
+                .font(.caption)
+                .foregroundStyle(theme.muted)
+
+            if store.liveBarHasSnapshot {
+                Label("The live bar was changed by this app. The Restore button in the toolbar puts it back.",
+                      systemImage: "arrow.uturn.backward")
+                    .font(.caption)
+                    .foregroundStyle(theme.accent)
+            }
+
+            if !store.liveBarMessage.isEmpty {
+                Text(store.liveBarMessage)
+                    .font(.caption)
+                    .foregroundStyle(theme.muted)
+            }
         }
     }
 
@@ -152,6 +177,43 @@ struct BarRenderView: View {
             warnings: store.barRenderWarnings(for: source)
         )
         await state.render(request)
+    }
+}
+
+/// The picker of the mode of the live bar.
+///
+/// The picker is always on: the mode is a setting, so the user must be
+/// able to go back to `Never` at any time, also when the preview does
+/// not show the live config of SketchyBar. The reason the push is off
+/// sits under the picker, and the store refuses the push anyway.
+struct LiveUpdateModePicker: View {
+    @ObservedObject var store: SketchyBarStore
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Picker("Live bar", selection: $store.liveUpdateMode) {
+                ForEach(LiveUpdateMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 150)
+            .help(help)
+
+            if let reason = store.liveBarBlockedReason {
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 260, alignment: .trailing)
+            }
+        }
+    }
+
+    /// The help of the picker.
+    private var help: String {
+        if let reason = store.liveBarBlockedReason { return reason }
+        return "How the live bar of SketchyBar follows the edits of the app. \(store.liveUpdateMode.explanation)"
     }
 }
 
