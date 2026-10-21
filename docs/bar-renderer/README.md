@@ -1,6 +1,6 @@
 # Bar Renderer — stage documents
 
-Status: **Approved design. Stages 0-6 merged (including the added stages 3b and 3c); Stage 7 (live update mode) is next.**
+Status: **Approved design. Stages 0-7 merged; Stage 8 (exactness and the differential test) is next.**
 Date: 2026-10-20
 Owner: repository owner (sole contributor)
 Audience: orchestrating agents and coding agents picking this work up.
@@ -59,13 +59,15 @@ The stages below are the scope. Each stage file states its own in scope and out 
 | 4 | [phase-4-layout-and-render.md](phase-4-layout-and-render.md) | Layout and offscreen render to a `CGImage` | 3 | L |
 | 5 | [phase-5-preview-pane.md](phase-5-preview-pane.md) | The in-app preview pane, profile picker and scaling | 4 | M |
 | 6 | [phase-6-live-values.md](phase-6-live-values.md) | The item scripts run inside the preview, isolated from the real bar | 5 | M |
-| 7 | [phase-7-live-update-mode.md](phase-7-live-update-mode.md) | The user-configurable live-update mode and Restore | 5 | M |
+| 7 | [phase-7-live-update-mode.md](phase-7-live-update-mode.md) | The user-configurable live-update mode and Restore, so a push to the running bar stays opt-in and can always be undone | 5 | M |
 | 8 | [phase-8-exactness-and-diff.md](phase-8-exactness-and-diff.md) | Golden images and the differential test against `sketchybar --query` | 6 | L |
 | 9 | [phase-9-docs-and-release.md](phase-9-docs-and-release.md) | README claims, CHANGELOG, release checklist | 8 | S |
 
 The original plan had nine phases, and its Phase 1 was an XL task. It is split here into Stage 1 (vendor the subset, get it to compile and link) and Stage 2 (the headless item tree and the C API). Every other phase is renumbered to match the file names above. Stage 7 does not depend on Stage 6: it only needs Stage 5. Stage 8 needs Stage 6, because the differential test checks the item rectangles that live values change.
 
 Stages 3b and 3c were added later, and both exist because of the config of the owner: 3b because 141 of the values of that config are built by Lua expressions that no parser can resolve (its fonts, its colours and its paddings among them), and 3c because the resolver of Stage 3b found 36 components that are not plain items and the bridge was dropping them.
+
+Stage 7 exists because the preview and the running bar are two different things: a user who edits a config in Studio wants to see the result in the running SketchyBar, and a user who changed the bar in the running daemon wants to see it in the preview. A push is a side effect on the running system of the user, so it is opt-in (`Never`, `On Apply`, `While Editing`), the automatic modes push only the safe properties of the bar and the settings of the bar need an explicit action, and a snapshot of the live bar on disk makes Restore work after a restart.
 
 ## The preview scale (confirmed by the owner on 2026-10-20)
 
@@ -244,4 +246,4 @@ The `icon` prefix semantics are a separate question to confirm, written up in [r
 
 Read this file, then read the stage file you were given, then execute that stage. Nothing else needs to be read first.
 
-Status: Stage 6 (live values) is done — this document lands with its merge. The next stage to run is Stage 7 (the live update mode) — see docs/bar-renderer/phase-7-live-update-mode.md.
+Status: Stage 7 (the live update mode) is done — this document lands with its merge. The next stage to run is Stage 8 (exactness and the differential test) — see docs/bar-renderer/phase-8-exactness-and-diff.md.
