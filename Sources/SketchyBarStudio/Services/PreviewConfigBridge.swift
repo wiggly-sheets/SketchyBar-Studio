@@ -111,23 +111,23 @@ enum PreviewConfigBridge {
     /// item follow the table of the item. The daemon refuses the second
     /// add of an alias (`src/message.c:190-193`), so the item is the one
     /// of the first declaration and the properties of the later
-    /// declarations follow it.
-    private static func plan(fromResolved resolved: LuaConfigRunner.ResolvedConfig) -> BarRenderPlan {
+    /// declarations follow it. The type and the trailing argument of the
+    /// add command are the ones of the first declaration too, because the
+    /// daemon keeps the item of the first add.
+    static func plan(fromResolved resolved: LuaConfigRunner.ResolvedConfig) -> BarRenderPlan {
         var aliases: [String] = []
         var properties: [String: [BarRenderProperty]] = [:]
+        var kinds: [String: (type: String, argument: String?)] = [:]
         var warnings = [PreviewWarning.luaEntrypoint(resolved.entrypoint)]
         warnings += resolved.warnings
 
         for item in resolved.items {
-            guard item.type == "item" else {
-                // The preview only knows plain items. The other types need
-                // the window server or their own setup.
-                warnings.append(PreviewWarning.unsupportedType(item.type, alias: item.alias))
-                continue
-            }
-
             if properties[item.alias] == nil {
                 aliases.append(item.alias)
+                kinds[item.alias] = (item.type, item.argument)
+                warnings.append(contentsOf: PreviewWarning.itemType(item.type,
+                                                                     alias: item.alias,
+                                                                     argument: item.argument))
             } else {
                 warnings.append(PreviewWarning.duplicateAlias(item.alias))
             }
@@ -138,7 +138,10 @@ enum PreviewConfigBridge {
             defaults: resolved.defaults.map { property(of: $0) },
             bar: resolved.bar.map { property(of: $0) },
             items: aliases.map { alias in
-                BarRenderItemModel(alias: alias, properties: properties[alias] ?? [])
+                BarRenderItemModel(alias: alias,
+                                   properties: properties[alias] ?? [],
+                                   type: kinds[alias]?.type ?? "item",
+                                   argument: kinds[alias]?.argument ?? nil)
             },
             warnings: warnings
         )
@@ -212,8 +215,18 @@ enum PreviewConfigBridge {
         }
 
         for item in plan.items {
+            if item.type == "event" {
+                // The daemon registers a custom event and creates no item
+                // for it (`src/message.c:175-185`).
+                continue
+            }
+
             let position = Self.addPosition(of: item)
-            let code = SketchyBarPreviewC.addItem(preview, alias: item.alias, position: position)
+            let code = SketchyBarPreviewC.addItem(preview,
+                                                  alias: item.alias,
+                                                  type: item.type,
+                                                  position: position,
+                                                  argument: item.argument)
             if code == SketchyBarPreviewC.Code.itemExists {
                 // The daemon refuses the second add of an alias
                 // (`src/message.c:190-193`). The properties that follow
@@ -225,6 +238,14 @@ enum PreviewConfigBridge {
                 // (`src/message.c:202-208`), and so does the preview.
                 warnings.append("The item '\(item.alias)' was not added. \(Self.message(of: preview))")
                 continue
+            } else {
+                // The daemon says so when the type of the add command is
+                // unknown, and the item becomes a plain item
+                // (`src/message.c:196-200`).
+                let message = Self.message(of: preview)
+                if !message.isEmpty {
+                    warnings.append(message)
+                }
             }
 
             if code == SketchyBarPreviewC.Code.ok, let position = item.addPosition {
@@ -309,9 +330,92 @@ enum PreviewConfigBridge {
 /// The wording lives here, so the Lua path and the shell path say the
 /// same thing about the same problem.
 enum PreviewWarning {
-    /// An item type the preview cannot show.
+    /// An item type the parser path drops.
+    ///
+    /// The parsers of the app cannot read the type of an item, so the
+    /// parser path drops the item and the preview never shows it. The Lua
+    /// path reads the type and keeps the item. The wording of the type is
+    /// the same on both paths, and the difference between the paths is in
+    /// the sentence that follows it.
     static func unsupportedType(_ type: String, alias: String) -> String {
-        "The preview cannot show the '\(type)' item '\(alias)'."
+        let described = typeDescription(type, alias: alias, argument: nil)
+            ?? "The preview cannot show the '\(type)' item '\(alias)'."
+        return "\(described) \(pathSentence(type, parserPath: true))"
+    }
+
+    /// The warnings of the type of an item.
+    ///
+    /// The daemon has an item for every type but the event
+    /// (`src/message.c:175-185`), and the preview shows what it can show
+    /// of an item and says what it cannot.
+    ///
+    /// A type the daemon does not know is not a warning here: the daemon
+    /// makes the item a plain item and says so (`src/message.c:196-200`),
+    /// and so does the preview.
+    static func itemType(_ type: String, alias: String, argument: String?) -> [String] {
+        if type == "item" { return [] }
+        guard let described = typeDescription(type, alias: alias, argument: argument) else { return [] }
+        let sentence = pathSentence(type, parserPath: false)
+        return sentence.isEmpty ? [described] : ["\(described) \(sentence)"]
+    }
+
+    /// What a type of item shows, in the words that both paths share.
+    ///
+    /// The wording does not say what the preview does with the item, so
+    /// the same words are true on the path that keeps the item and on the
+    /// path that drops it.
+    private static func typeDescription(_ type: String, alias: String, argument: String?) -> String? {
+        switch type {
+        case "alias":
+            return "The 'alias' item '\(alias)' shows the picture of a menu bar item, which the preview cannot capture."
+        case "space":
+            return "The 'space' item '\(alias)' shows the picture of a space, which the preview cannot capture."
+        case "graph":
+            return "The 'graph' item '\(alias)' shows no values yet, because the values come from the script that pushes them."
+        case "slider":
+            return "The 'slider' item '\(alias)' shows no value yet, because the value comes from the script that pushes it."
+        case "bracket":
+            return "The 'bracket' item '\(alias)' draws a background around \(members(of: argument))."
+        case "event":
+            return "The 'event' item '\(alias)' is not shown on the bar, because SketchyBar registers the event and draws nothing for it."
+        default:
+            return nil
+        }
+    }
+
+    /// What the path does with an item of a type.
+    ///
+    /// The two paths differ: the parser path drops the item, and the Lua
+    /// path keeps it and shows what it can show of it. The difference is
+    /// in this sentence, so the wording of the type stays the same.
+    private static func pathSentence(_ type: String, parserPath: Bool) -> String {
+        // The daemon creates no item for an event, so nothing of it reaches
+        // the preview on either path.
+        if type == "event" { return "" }
+        if parserPath {
+            return "The parser of the app cannot read the type of this item, so the preview does not show it."
+        }
+        switch type {
+        case "alias", "space":
+            return "The preview shows it as a placeholder."
+        case "graph", "slider":
+            return "The preview lays it out with the width of the config."
+        case "bracket":
+            return "The preview groups the members and draws that background around them."
+        default:
+            return ""
+        }
+    }
+
+    /// The members of a bracket, the way a warning names them.
+    ///
+    /// A bracket draws a background around the items it groups
+    /// (`src/group.c:109-138`). The parser path does not read the members
+    /// of a bracket, so it names them without the list.
+    private static func members(of argument: String?) -> String {
+        let names = (argument ?? "").split(separator: " ").map(String.init)
+        guard !names.isEmpty else { return "the items it groups" }
+        return "the items " + names.map { "'\($0)'" }.joined(separator: ", ")
     }
 
     /// A value the preview cannot read.

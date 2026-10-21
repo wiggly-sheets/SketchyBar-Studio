@@ -216,11 +216,13 @@ SB_API const char* sb_preview_messages(sb_preview_t* preview);
    item keeps its place on the bar and an export of the item alone shows
    the box too. A width of the config wins over the placeholder.
 
-   The app warns about such an item before it reaches the preview: the
-   parsers of the app report the type the preview cannot show
-   (PreviewWarning.unsupportedType), and the app does not send it to the
-   preview. The type of sb_preview_add_item is there for the differential
-   test of stage 8.
+   The app warns about such an item before it reaches the preview. The
+   parser path of the app cannot read the type of an item, so it drops
+   the item and the preview never shows it
+   (PreviewWarning.unsupportedType). The Lua path reads the type and
+   sends it to the preview, so the item reaches the preview as a
+   placeholder. The type of sb_preview_add_item is there for the
+   differential test of stage 8.
 
    The contract of the messages.
 

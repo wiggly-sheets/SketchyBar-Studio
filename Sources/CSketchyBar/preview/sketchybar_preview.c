@@ -8,6 +8,7 @@
 #include "bar_manager.h"
 #include "alias.h"
 #include "graph.h"
+#include "group.h"
 #include "misc/helpers.h"
 #include "preview_internal.h"
 #include "ring.h"
@@ -57,6 +58,19 @@ static void preview_clear_messages(sb_preview_t* preview) {
   preview->messages = NULL;
 }
 
+/* Adds a message to the messages of the preview.
+
+   The daemon answers with one stream, so a message joins the ones that are
+   already there (src/message.c:468-478). */
+static void preview_add_message(sb_preview_t* preview, const char* message) {
+  size_t length = strlen(message);
+  size_t old_length = preview->messages ? strlen(preview->messages) : 0;
+  char* buffer = realloc(preview->messages, old_length + length + 1);
+  if (!buffer) return;
+  memcpy(buffer + old_length, message, length + 1);
+  preview->messages = buffer;
+}
+
 /* The vendored parsers report a rejected property by writing a message that
    starts with "[!]" into the reply stream (src/bar_item.c:1366,
    src/bar_item.c:1368). */
@@ -88,7 +102,8 @@ static void preview_apply_placeholder(struct bar_item* item) {
 
 /* The setup of the types that need one, exactly as the daemon does it when
    it reads an add command (src/message.c:218-256): the width of a graph
-   and of a slider, and the diameter of a ring.
+   and of a slider, the diameter of a ring, the owner and the name of an
+   alias, and the members of a bracket.
 
    The argument is the trailing argument of the add command. The daemon
    removes a ring whose diameter is not positive (src/message.c:236-248),
@@ -128,16 +143,83 @@ static bool preview_apply_add_argument(sb_preview_t* preview,
     ring_setup(&item->ring, (uint32_t)diameter);
   } else if (item->type == BAR_COMPONENT_ALIAS) {
     /* The daemon takes the owner and the name of an alias out of the name
-       of the item, split at a comma (src/message.c:241-253). */
-    char* name = preview_copy(alias);
-    if (!name) return false;
+       of the item, split at a comma, and it copies the two halves
+       (src/message.c:238-249).
 
-    struct key_value_pair pair = get_key_value_pair(name, ',');
+       The preview has to copy them too. get_key_value_pair returns
+       pointers into the buffer it splits (src/misc/helpers.h:126-147), and
+       alias_destroy frees the owner and the name of an alias one by one
+       (src/alias.c:302-308), so the two halves of one buffer would be
+       freed as if they were two buffers and the preview would abort. */
+    char* split = preview_copy(alias);
+    if (!split) return false;
+
+    struct key_value_pair pair = get_key_value_pair(split, ',');
     if (!pair.key || !pair.value) {
-      alias_setup(&item->alias, name, NULL);
+      /* No comma (or a comma at the end): the whole name is the owner and
+         the name of the alias is empty, like the daemon does. */
+      free(split);
+      char* owner = preview_copy(alias);
+      if (!owner) return false;
+      alias_setup(&item->alias, owner, NULL);
     } else {
-      alias_setup(&item->alias, pair.key, pair.value);
+      char* owner = preview_copy(pair.key);
+      char* name = preview_copy(pair.value);
+      free(split);
+      if (!owner || !name) {
+        free(owner);
+        free(name);
+        return false;
+      }
+      alias_setup(&item->alias, owner, name);
     }
+  } else if (item->type == BAR_COMPONENT_GROUP) {
+    /* The daemon reads the members of a bracket from the position token
+       (src/message.c:263), because a bracket has no position token of its
+       own. The bridge puts the member list in the argument of the add
+       command, so the preview reads the members from there.
+
+       The daemon adds the members to the group when it reads the add
+       command (src/message.c:262-306), and it removes the bracket when
+       the first member is not there (src/message.c:300-303). */
+    char* list = preview_copy(argument ? argument : "");
+    if (!list) return false;
+
+    bool first = true;
+    char* member = list;
+    while (*member) {
+      while (*member == ' ') member++;
+      if (!*member) break;
+
+      char* end = member;
+      while (*end && *end != ' ') end++;
+      bool last = (*end == '\0');
+      *end = '\0';
+
+      int index = bar_manager_get_item_index_for_name(&g_bar_manager, member);
+      if (index >= 0) {
+        group_add_member(item->group, g_bar_manager.bar_items[index]);
+        first = false;
+      } else {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "[?] Add (Group) %s: Failed to add member '%s', item not found\n",
+                 item->name ? item->name : alias,
+                 member              );
+        preview_add_message(preview, message);
+        if (first) {
+          /* The daemon removes the bracket when the first member is not
+             there (src/message.c:300-303). */
+          free(list);
+          return false;
+        }
+      }
+
+      if (last) break;
+      member = end + 1;
+    }
+
+    free(list);
   }
 
   return true;

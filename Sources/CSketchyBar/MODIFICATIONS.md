@@ -313,7 +313,7 @@ lives in `script/vendor_stage1.py`, so the script reproduces the committed
 | S6 | The height of the bar comes from the config, not from the display: it is the height of the background of the bar, 25 points by default (`src/bar_manager.c:51`). The height of the display is the height of the screen. | `preview/sketchybar_preview_render.c` (`preview_compose`) |
 | S7 | The menu bar of the virtual display moves the bar down (`src/bar.c:484-487`). The menu bar is set before the render, and the render lays the bar out again, so the vertical origin of the bar and the rectangles of the items follow it. | `shim/sketchybar_preview_display.c`, `preview/sketchybar_preview_render.c` |
 | S8 | An alias item and a space item show the content of the window server, which the preview does not have. They keep a box of 16 points, a width CHOSEN BY THIS PROJECT, and the render draws the box into the bitmap of the item itself, so the item keeps its place on the bar and an export of the item alone shows the box too. A width of the config wins over the placeholder. | `preview/sketchybar_preview.c` (`preview_apply_placeholder`), `preview/sketchybar_preview_render.c` (`preview_draw_placeholder`) |
-| S9 | The add of an item takes the four arguments of the add command of the daemon: the type, the position and the trailing argument (`src/message.c:180-256`). The preview can hold an alias or a space item, and it can lay out a graph, a slider or a ring. A type the daemon does not know leaves the item a plain item, and the answer says so. | `preview/sketchybar_preview.c` (`sb_preview_add_item`) |
+| S9 | The add of an item takes the four arguments of the add command of the daemon: the type, the position and the trailing argument (`src/message.c:180-256`). The preview can hold an alias or a space item, and it can lay out a graph, a slider or a ring. A bracket groups its members, the way the daemon does (`src/message.c:262-306`). A type the daemon does not know leaves the item a plain item, and the answer says so. | `preview/sketchybar_preview.c` (`sb_preview_add_item`) |
 | S10 | The frame of the bar is part of the API (`sb_preview_bar_frame`), so a consumer does not have to recompute the origin of the bar to map a rectangle of an item onto the image. | `preview/sketchybar_preview_render.c` (`sb_preview_bar_frame`) |
 | S11 | The items are drawn in the order of the windows of the daemon (`src/bar.c:82-111`), so an item that overlaps another one is drawn in the same order as on the screen. The shim keeps the order of every window. | `preview/sketchybar_preview_render.c` (`preview_window_depth`) |
 | S12 | The notch of the virtual display is a parameter of the display (`sb_preview_set_notch`), so a notched Mac can be reproduced. | `shim/sketchybar_preview_display.c`, the patch of `src/bar.c` above |
@@ -355,8 +355,9 @@ of the menu bar item, and a space is as wide as the captured space, so the
 preview cannot know it. The box is drawn into the bitmap of the item itself
 and not into the image of the bar, so the item keeps its place on the bar and
 an export of the item alone shows the box too. The app warns about such an
-item before it reaches the preview: the parsers of the app report the type
-the preview cannot show (`PreviewWarning.unsupportedType`), and the app does
-not send it to the preview. The type of `sb_preview_add_item` is there for
-the differential test of stage 8.
+item before it reaches the preview. The parser path of the app cannot read the
+type of an item, so it drops the item and the preview never shows it
+(`PreviewWarning.unsupportedType`). The Lua path reads the type and sends it
+to the preview, so the item reaches the preview as a placeholder. The type of
+`sb_preview_add_item` is there for the differential test of stage 8.
 
