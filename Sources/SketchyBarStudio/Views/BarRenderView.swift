@@ -58,12 +58,6 @@ struct BarRenderView: View {
                 .font(.caption)
                 .foregroundStyle(theme.muted)
 
-            if let reason = store.liveBarBlockedReason {
-                Label(reason, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-
             if store.liveBarHasSnapshot {
                 Label("The live bar was changed by this app. The Restore button in the toolbar puts it back.",
                       systemImage: "arrow.uturn.backward")
@@ -188,22 +182,32 @@ struct BarRenderView: View {
 
 /// The picker of the mode of the live bar.
 ///
-/// The picker is off when the preview does not show the live config of
-/// SketchyBar: the values of another config must never reach the bar of
-/// the user, and the help of the picker says which source is shown.
+/// The picker is always on: the mode is a setting, so the user must be
+/// able to go back to `Never` at any time, also when the preview does
+/// not show the live config of SketchyBar. The reason the push is off
+/// sits under the picker, and the store refuses the push anyway.
 struct LiveUpdateModePicker: View {
     @ObservedObject var store: SketchyBarStore
 
     var body: some View {
-        Picker("Live bar", selection: $store.liveUpdateMode) {
-            ForEach(LiveUpdateMode.allCases) { mode in
-                Text(mode.title).tag(mode)
+        VStack(alignment: .trailing, spacing: 2) {
+            Picker("Live bar", selection: $store.liveUpdateMode) {
+                ForEach(LiveUpdateMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 150)
+            .help(help)
+
+            if let reason = store.liveBarBlockedReason {
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 260, alignment: .trailing)
             }
         }
-        .labelsHidden()
-        .frame(width: 150)
-        .disabled(!store.isLiveBarSourceLive)
-        .help(help)
     }
 
     /// The help of the picker.

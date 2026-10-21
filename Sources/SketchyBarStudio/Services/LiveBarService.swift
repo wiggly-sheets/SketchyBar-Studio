@@ -98,8 +98,15 @@ struct LiveBarCommand: Equatable, Sendable {
     }
 
     /// The call that sets the properties of the bar.
+    ///
+    /// The daemon wants the plain name of a property of the bar: the
+    /// `bar.` prefix of the app is not a name the daemon knows, and the
+    /// daemon would ignore it (`src/message.c:449-463`,
+    /// `src/message.c:680-692`).
     static func setBar(properties: [LiveBarProperty]) -> LiveBarCommand {
-        LiveBarCommand(arguments: ["--bar"] + properties.map { "\($0.key)=\($0.value)" })
+        LiveBarCommand(arguments: ["--bar"] + properties.map {
+            "\(LiveBarService.barLeaf(of: $0.key))=\($0.value)"
+        })
     }
 }
 
@@ -265,7 +272,8 @@ private final class DataBox: @unchecked Sendable {
 /// newline of the other values are escaped (`src/misc/helpers.h:83-103`),
 /// and the refusal of the daemon is not JSON at all (`[!] …`,
 /// `src/message.c:512`). The reader takes the values it can read and
-/// leaves the rest alone.
+/// leaves the rest alone. A reply that a raw quote broke is refused as a
+/// whole, because the reader would read the rest of it wrong.
 enum LiveBarQuery {
     /// The values of a reply, keyed by their path, such as `label.value`.
     static func values(in reply: String) -> [String: String] {
@@ -293,9 +301,37 @@ enum LiveBarQuery {
         }
 
         mutating func read() -> [String: String] {
+            // The daemon writes the label and the icon raw, so a quote in
+            // a value ends the string early and the rest of the reply is
+            // read wrong. Such a reply has an odd count of quotes, and it
+            // is refused: a value that was cut short is never stored, so
+            // a Restore never writes back a value that was mis-read.
+            guard quotesAreBalanced else { return [:] }
             skipSpaces()
             _ = readValue()
             return values
+        }
+
+        /// True when every quote of the reply is closed.
+        ///
+        /// The daemon escapes the quote of the values it escapes
+        /// (`src/misc/helpers.h:83-103`), so a quote that follows a
+        /// backslash does not count.
+        private var quotesAreBalanced: Bool {
+            var count = 0
+            var escaped = false
+            for character in characters {
+                if escaped {
+                    escaped = false
+                    continue
+                }
+                if character == "\\" {
+                    escaped = true
+                    continue
+                }
+                if character == "\"" { count += 1 }
+            }
+            return count % 2 == 0
         }
 
         /// Reads a value: an object, an array, a string or a bare word.
@@ -482,15 +518,21 @@ struct LiveBarSnapshot: Codable, Equatable {
         properties.contains { $0.alias == alias && $0.key == key }
     }
 
-    /// The snapshot without the scripts.
+    /// The snapshot without the properties that must never reach the
+    /// daemon.
     ///
     /// The snapshot is written without a script, and it is read back
-    /// through this, so a script can never reach the file.
-    var withoutScripts: LiveBarSnapshot {
+    /// through this, so a script can never reach the file. A name the
+    /// daemon reads as a regular expression is taken out as well: the
+    /// daemon would set every item that matches it
+    /// (`src/message.c:628-631`), so a snapshot that was edited by hand
+    /// must not make the Restore touch every item of the bar.
+    var safeForRestore: LiveBarSnapshot {
         LiveBarSnapshot(
             createdAt: createdAt,
             properties: properties.filter {
                 !LiveBarService.neverPushedKeys.contains($0.key.lowercased())
+                    && !LiveBarService.isRegexAlias($0.alias)
             }
         )
     }
@@ -524,15 +566,17 @@ struct LiveBarSnapshotStore: Sendable {
 
     /// The snapshot on disk, when there is one.
     ///
-    /// The scripts are taken out of the snapshot on the way in, exactly as
+    /// The scripts and the names the daemon reads as a regular
+    /// expression are taken out of the snapshot on the way in, exactly as
     /// they are taken out on the way out: a snapshot that was edited by
-    /// hand must not make the daemon run a script on a Restore.
+    /// hand must not make the daemon run a script or set every item that
+    /// matches a name on a Restore.
     func load() -> LiveBarSnapshot? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let snapshot = try? decoder.decode(LiveBarSnapshot.self, from: data) else { return nil }
-        return snapshot.withoutScripts
+        return snapshot.safeForRestore
     }
 
     /// Writes the snapshot to disk.
@@ -550,7 +594,7 @@ struct LiveBarSnapshotStore: Sendable {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(snapshot.withoutScripts)
+        let data = try encoder.encode(snapshot.safeForRestore)
         try data.write(to: url, options: .atomic)
         try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
@@ -677,19 +721,17 @@ enum LiveBarService {
 
     /// The path of the live bar a property of the bar is read from.
     ///
-    /// The bar writes the properties of its background under `background`
-    /// (`src/bar_manager.c:1098-1117`).
+    /// The daemon writes the settings of the bar flat: the background of
+    /// the bar is written with the keys of the bar itself and not under a
+    /// `background` of its own (`src/bar_manager.c:1096-1119`,
+    /// `src/background.c:261-297`), so the path of a property of the bar
+    /// is its plain name. The item nests its background under its
+    /// geometry (`src/bar_item.c:1049`), so the path of an item is not
+    /// the same.
     static func liveBarPath(of key: String) -> String? {
         let name = barLeaf(of: key)
         guard barLeaves.contains(name) else { return nil }
-        switch name {
-        case "drawing", "color", "border_color", "border_width", "height",
-             "corner_radius", "padding_left", "padding_right", "x_offset",
-             "y_offset":
-            return "background.\(name)"
-        default:
-            return name
-        }
+        return name
     }
 
     /// True when the live value is the value of the config.
@@ -1341,32 +1383,55 @@ enum LiveBarPushRequest {
         case .barSettings: return true
         }
     }
+
+    /// True when the push carries the values of the items.
+    ///
+    /// The values of the items are the ones the live update mode pushes,
+    /// so they follow the mode. The settings of the bar are pushed by an
+    /// explicit action of the user, so the mode does not stop them.
+    var pushesItems: Bool {
+        if case .items = self { return true }
+        return false
+    }
 }
 
 /// A push that waits for the confirmation of the user.
 struct PendingLiveBarPush {
     /// What the push would change.
     let preview: LiveBarPushPreview
-    /// True when the push carries the structured values only.
-    let structuredOnly: Bool
+    /// What the push carries.
+    ///
+    /// The push runs the way the request says and not the way the
+    /// properties say: a push of the settings of the bar that changes
+    /// nothing is a push of the settings of the bar and not a push of the
+    /// items.
+    let request: LiveBarPushRequest
     /// The properties of the bar that change, with the value they have
     /// now. It is empty for a push of the values of the items.
     let barChanges: [LiveBarPropertyChange]
     /// The name of the config the push belongs to.
     let configName: String
+    /// The mode of the live bar when the push was prepared.
+    ///
+    /// A push of the items runs only in the mode it was prepared in, so
+    /// a mode that the user changed while the dialog was open stops the
+    /// push.
+    let mode: LiveUpdateMode
 
     init(preview: LiveBarPushPreview,
-         structuredOnly: Bool,
+         request: LiveBarPushRequest,
          barChanges: [LiveBarPropertyChange] = [],
-         configName: String = "") {
+         configName: String = "",
+         mode: LiveUpdateMode = .never) {
         self.preview = preview
-        self.structuredOnly = structuredOnly
+        self.request = request
         self.barChanges = barChanges
         self.configName = configName
+        self.mode = mode
     }
 
     /// True when the push changes the bar of the user itself.
-    var changesTheBar: Bool { !barChanges.isEmpty }
+    var changesTheBar: Bool { !request.pushesItems }
 
     /// The sentence of the confirmation.
     ///
@@ -1374,9 +1439,15 @@ struct PendingLiveBarPush {
     /// because it changes the bar the user looks at.
     var summary: String {
         guard changesTheBar else { return preview.summary }
-        var text = "The bar settings of \(configName) will change on your live SketchyBar: "
-        text += barChanges.map(\.text).joined(separator: ", ")
-        text += "."
+        var text = "The bar settings of \(configName)"
+        if barChanges.isEmpty {
+            text += " do not change on your live SketchyBar."
+        } else {
+            text += " will change on your live SketchyBar: "
+            text += barChanges.map(\.text).joined(separator: ", ")
+            text += "."
+        }
+        if !preview.notes.isEmpty { text += " " + preview.notes.joined(separator: " ") }
         return text
     }
 }

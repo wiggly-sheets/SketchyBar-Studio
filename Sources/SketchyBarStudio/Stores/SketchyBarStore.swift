@@ -232,6 +232,12 @@ final class SketchyBarStore: ObservableObject {
     /// the newest one is dropped: a push that is slower than the next one
     /// must not win over it.
     private var liveBarPushGeneration = 0
+    /// The number of the previews of the session.
+    ///
+    /// Every preview gets a number, and the preview of a request that is
+    /// not the newest one is dropped: the dialog must show the newest
+    /// values of the user.
+    private var liveBarPreviewGeneration = 0
     /// True while a push runs.
     private var liveBarPushIsRunning = false
     /// The push that waits for the running push to end.
@@ -1101,46 +1107,83 @@ final class SketchyBarStore: ObservableObject {
     }
 
     /// Works out what the push would change and asks the user about it.
+    ///
+    /// Every request gets a number, and the preview of a request that is
+    /// not the newest one is dropped: a preview that is slower than the
+    /// next one must not show the older values of the user.
     private func prepareLiveBarPush(_ request: LiveBarPushRequest) {
         let plan = liveBarPlan(structuredOnly: request.structuredOnly)
         let runner = liveBarRunner
+        liveBarPreviewGeneration &+= 1
+        let generation = liveBarPreviewGeneration
         Task.detached(priority: .userInitiated) { [weak self] in
             switch request {
             case .items:
                 let preview = LiveBarService.preview(of: plan, runner: runner)
-                await self?.finishLiveBarPreview(preview, request: request)
+                await self?.finishLiveBarPreview(preview,
+                                                 request: request,
+                                                 generation: generation)
             case .barSettings:
                 let changes = LiveBarService.barChanges(of: plan, runner: runner)
                 await self?.finishLiveBarPreview(LiveBarPushPreview(itemCount: 0,
                                                                      propertyCount: 0,
                                                                      barPropertyCount: changes.count),
                                                   request: request,
-                                                  barChanges: changes)
+                                                  barChanges: changes,
+                                                  generation: generation)
             }
         }
     }
 
     /// Takes over the preview of a push and asks the user about it.
+    ///
+    /// A preview that is not the newest one is dropped, so the dialog
+    /// shows the newest values of the user.
+    ///
+    /// The values of the items follow the mode of the live bar, so a
+    /// preview that was prepared while the mode was on is dropped when
+    /// the mode is off now.
     private func finishLiveBarPreview(_ preview: LiveBarPushPreview,
                                       request: LiveBarPushRequest,
-                                      barChanges: [LiveBarPropertyChange] = []) {
+                                      barChanges: [LiveBarPropertyChange] = [],
+                                      generation: Int) {
+        guard generation == liveBarPreviewGeneration else { return }
+        if request.pushesItems, liveUpdateMode == .never {
+            statusMessage = "The live bar update mode is 'Never', so the live bar is not changed."
+            return
+        }
         pendingLiveBarPush = PendingLiveBarPush(
             preview: preview,
-            structuredOnly: request.structuredOnly,
+            request: request,
             barChanges: barChanges,
-            configName: liveBarSourceName
+            configName: liveBarSourceName,
+            mode: liveUpdateMode
         )
     }
 
     /// Pushes the previewed bar to the live bar, after the user said yes.
+    ///
+    /// The push runs the way the request says: a push of the settings of
+    /// the bar stays a push of the settings of the bar, also when it
+    /// changes nothing.
+    ///
+    /// The values of the items follow the mode of the live bar: a mode
+    /// that is off now, or a mode that is not the one the push was
+    /// prepared in, stops the push.
     func confirmLiveBarPush() {
         guard let pending = pendingLiveBarPush else { return }
         pendingLiveBarPush = nil
-        if pending.barChanges.isEmpty {
-            performLiveBarPush(.items(structuredOnly: pending.structuredOnly))
-        } else {
-            performLiveBarPush(.barSettings)
+        if pending.request.pushesItems {
+            guard liveUpdateMode != .never else {
+                statusMessage = "The live bar update mode is 'Never', so the live bar is not changed."
+                return
+            }
+            guard liveUpdateMode == pending.mode else {
+                statusMessage = "The live bar update mode changed, so the live bar is not changed."
+                return
+            }
         }
+        performLiveBarPush(pending.request)
     }
 
     /// Drops the push the user was asked about.
@@ -1156,14 +1199,25 @@ final class SketchyBarStore: ObservableObject {
     /// an older push.
     private func performLiveBarPush(_ request: LiveBarPushRequest) {
         liveBarPushGeneration &+= 1
+        // A preview that is still running is older than this push, so it
+        // must not ask the user about the older values.
+        liveBarPreviewGeneration &+= 1
         queuedLiveBarPush = request
         startQueuedLiveBarPush()
     }
 
     /// Starts the push that waits, when no push runs.
+    ///
+    /// A push of the values of the items follows the mode of the live
+    /// bar, so a push that waits while the mode is turned off does not
+    /// run.
     private func startQueuedLiveBarPush() {
         guard !liveBarPushIsRunning, let request = queuedLiveBarPush else { return }
         queuedLiveBarPush = nil
+        if request.pushesItems, liveUpdateMode == .never {
+            statusMessage = "The live bar update mode is 'Never', so the live bar is not changed."
+            return
+        }
         liveBarPushIsRunning = true
         let generation = liveBarPushGeneration
         let plan = liveBarPlan(structuredOnly: request.structuredOnly)
@@ -1183,7 +1237,7 @@ final class SketchyBarStore: ObservableObject {
                                                          snapshotStore: snapshotStore,
                                                          runner: runner)
             }
-            await self?.finishLiveBarPush(outcome, generation: generation)
+            await self?.finishLiveBarPush(outcome, generation: generation, request: request)
         }
     }
 
@@ -1192,18 +1246,24 @@ final class SketchyBarStore: ObservableObject {
     /// The result of a push that is not the newest one is dropped: a
     /// newer push is already on its way, so the values of the older one
     /// would be the wrong ones.
-    private func finishLiveBarPush(_ outcome: LiveBarService.PushOutcome, generation: Int) {
+    private func finishLiveBarPush(_ outcome: LiveBarService.PushOutcome,
+                                   generation: Int,
+                                   request: LiveBarPushRequest) {
         liveBarPushIsRunning = false
         if generation == liveBarPushGeneration {
-            liveBarKnownValues = outcome.known
+            if request.pushesItems {
+                // The known values are the values of the items, so a push
+                // of the settings of the bar does not throw them away.
+                liveBarKnownValues = outcome.known
+                // A push that changed nothing does not count: the user is
+                // asked again before the next push.
+                if outcome.pushedItems > 0 || outcome.pushedProperties > 0 {
+                    hasPushedLiveBar = true
+                }
+            }
             liveBarHasSnapshot = liveBarSnapshotStore.exists
             liveBarMessage = outcome.message
             statusMessage = outcome.message
-            // A push that changed nothing does not count: the user is
-            // asked again before the next push.
-            if outcome.pushedItems > 0 || outcome.pushedProperties > 0 {
-                hasPushedLiveBar = true
-            }
         }
         // A request that came in while the push was running goes now.
         startQueuedLiveBarPush()

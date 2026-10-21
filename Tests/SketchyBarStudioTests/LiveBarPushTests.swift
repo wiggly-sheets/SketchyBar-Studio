@@ -272,6 +272,35 @@ final class LiveBarPushTests: XCTestCase {
         XCTAssertFalse(loaded.properties.contains { $0.key == "script" })
     }
 
+    /// A name the daemon reads as a regular expression never reaches the
+    /// daemon: the daemon would set every item that matches it.
+    func testANameThatLooksLikeARegexNeverReachesTheDaemonOnARestore() throws {
+        let root = try makeTestRoot()
+        let store = LiveBarSnapshotStore(appSupportRoot: root)
+
+        try store.save(LiveBarSnapshot(createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                                       properties: [
+                                           LiveBarSnapshot.Property(alias: "clock", key: "label", value: "09:00")
+                                       ]))
+
+        // The file on disk gets the name, the way a hand edit would.
+        var text = try String(contentsOf: store.url, encoding: .utf8)
+        text = text.replacingOccurrences(of: "\"alias\" : \"clock\"",
+                                         with: "\"alias\" : \"/clock/\"")
+        try text.write(to: store.url, atomically: true, encoding: .utf8)
+
+        let loaded = try XCTUnwrap(store.load())
+        XCTAssertTrue(loaded.properties.isEmpty)
+
+        // A snapshot that is written never holds the name either.
+        try store.save(LiveBarSnapshot(createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                                       properties: [
+                                           LiveBarSnapshot.Property(alias: "/clock/", key: "label", value: "09:00")
+                                       ]))
+        let written = try String(contentsOf: store.url, encoding: .utf8)
+        XCTAssertFalse(written.contains("/clock/"))
+    }
+
     // MARK: - The restore
 
     /// The restore builds the calls that put the snapshot back.
@@ -612,21 +641,21 @@ final class LiveBarPushTests: XCTestCase {
         let plan = BarRenderPlan(
             defaults: [],
             bar: [
-                BarRenderProperty(key: "bar.drawing", value: "true"),
-                BarRenderProperty(key: "bar.blur_radius", value: "15"),
-                BarRenderProperty(key: "bar.height", value: "30"),
-                BarRenderProperty(key: "bar.margin", value: "8"),
-                BarRenderProperty(key: "bar.color", value: "0xff000000"),
-                BarRenderProperty(key: "bar.topmost", value: "true")
+                BarRenderProperty(key: "drawing", value: "true"),
+                BarRenderProperty(key: "blur_radius", value: "15"),
+                BarRenderProperty(key: "height", value: "30"),
+                BarRenderProperty(key: "margin", value: "8"),
+                BarRenderProperty(key: "color", value: "0xff000000"),
+                BarRenderProperty(key: "topmost", value: "true")
             ],
             items: [],
             warnings: []
         )
 
         XCTAssertEqual(LiveBarService.liveBarProperties(of: plan).map(\.key),
-                       ["bar.drawing", "bar.blur_radius"])
+                       ["drawing", "blur_radius"])
         XCTAssertEqual(LiveBarService.destructiveBarProperties(of: plan).map(\.key),
-                       ["bar.height", "bar.margin", "bar.color", "bar.topmost"])
+                       ["height", "margin", "color", "topmost"])
     }
 
     /// The push of the automatic modes never sends a property that
@@ -637,20 +666,31 @@ final class LiveBarPushTests: XCTestCase {
         let plan = BarRenderPlan(
             defaults: [],
             bar: [
-                BarRenderProperty(key: "bar.height", value: "30"),
-                BarRenderProperty(key: "bar.drawing", value: "true")
+                BarRenderProperty(key: "height", value: "30"),
+                BarRenderProperty(key: "drawing", value: "true")
             ],
             items: [],
             warnings: []
         )
 
         let runner = FakeRunner()
-        runner.values = ["bar": ["background.height": "25", "background.drawing": "off"]]
+        // The daemon writes the settings of the bar flat, next to the
+        // keys of the bar itself (`src/bar_manager.c:1096-1119`).
+        runner.values = ["bar": ["height": "25", "drawing": "off"]]
 
         let outcome = LiveBarService.push(plan: plan, snapshotStore: store, runner: runner)
         XCTAssertEqual(outcome.pushedProperties, 1)
         let call = try XCTUnwrap(runner.calls.first)
-        XCTAssertEqual(call.arguments, ["--bar", "bar.drawing=true"])
+        XCTAssertEqual(call.arguments, ["--bar", "drawing=true"])
+    }
+
+    /// The name of a property of the bar reaches the daemon without the
+    /// `bar.` prefix, because the daemon does not know that prefix.
+    func testTheNameOfAPropertyOfTheBarReachesTheDaemonWithoutThePrefix() {
+        let command = LiveBarCommand.setBar(properties: [
+            LiveBarProperty(key: "bar.height", value: "30")
+        ])
+        XCTAssertEqual(command.arguments, ["--bar", "height=30"])
     }
 
     /// The settings of the bar are pushed only by the explicit action of
@@ -661,25 +701,25 @@ final class LiveBarPushTests: XCTestCase {
         let plan = BarRenderPlan(
             defaults: [],
             bar: [
-                BarRenderProperty(key: "bar.height", value: "30"),
-                BarRenderProperty(key: "bar.margin", value: "8")
+                BarRenderProperty(key: "height", value: "30"),
+                BarRenderProperty(key: "margin", value: "8")
             ],
             items: [],
             warnings: []
         )
 
         let runner = FakeRunner()
-        runner.values = ["bar": ["background.height": "25", "margin": "4"]]
+        runner.values = ["bar": ["height": "25", "margin": "4"]]
 
         let changes = LiveBarService.barChanges(of: plan, runner: runner)
-        XCTAssertEqual(changes.map(\.key), ["bar.height", "bar.margin"])
+        XCTAssertEqual(changes.map(\.key), ["height", "margin"])
         XCTAssertEqual(changes.map(\.oldValue), ["25", "4"])
         XCTAssertEqual(changes.map(\.newValue), ["30", "8"])
 
         let outcome = LiveBarService.pushBarSettings(plan: plan, snapshotStore: store, runner: runner)
         XCTAssertEqual(outcome.pushedProperties, 2)
         let call = try XCTUnwrap(runner.calls.first)
-        XCTAssertEqual(call.arguments, ["--bar", "bar.height=30", "bar.margin=8"])
+        XCTAssertEqual(call.arguments, ["--bar", "height=30", "margin=8"])
     }
 
     /// The position of an item is structure and not a value, so it is
@@ -803,6 +843,91 @@ final class LiveBarPushTests: XCTestCase {
 
         XCTAssertNil(store.pendingLiveBarPush)
         XCTAssertTrue(runner.calls.isEmpty)
+    }
+
+    /// The "Apply Bar Settings" with no change of the bar never pushes
+    /// the items: the action pushes the settings of the bar and nothing
+    /// else.
+    @MainActor
+    func testTheApplyBarSettingsWithNoChangeNeverPushesTheItems() async throws {
+        let defaults = try makeDefaults()
+        let runner = FakeRunner()
+        runner.values = ["bar": ["height": "25"], "clock": ["label.value": "09:00"]]
+        let store = try makeStore(defaults: defaults, runner: runner)
+
+        // The config of the test has no settings of the bar, so nothing
+        // changes.
+        store.requestLiveBarSettingsPush()
+        try await Task.sleep(nanoseconds: 500_000_000)
+        let pending = try XCTUnwrap(store.pendingLiveBarPush)
+        XCTAssertTrue(pending.barChanges.isEmpty)
+
+        store.confirmLiveBarPush()
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertTrue(runner.calls.isEmpty,
+                      "the daemon got \(runner.calls.map(\.arguments))")
+    }
+
+    /// The mode `Never` cannot be bypassed by a push that was prepared
+    /// while the mode was on.
+    ///
+    /// The preview of the push runs in the background, and the user can
+    /// turn the mode off while it runs. The push must not reach the live
+    /// bar then.
+    @MainActor
+    func testTheModeNeverIsNotBypassedByAPushThatWasPrepared() async throws {
+        let defaults = try makeDefaults()
+        let runner = FakeRunner()
+        runner.values = ["clock": ["label.value": "09:00"]]
+        // The query of the daemon takes a while, so the preview is still
+        // running when the user changes the mode.
+        runner.queryDelays = [2]
+        let store = try makeStore(defaults: defaults, runner: runner)
+        let valueID = try XCTUnwrap(store.files.first?.values.first { $0.keyPath == "label" }?.id)
+
+        store.liveUpdateMode = .whileEditing
+        store.update(valueID: valueID, draftValue: "changed")
+        // The debounce waits, and then the preview starts.
+        try await Task.sleep(nanoseconds: 800_000_000)
+        XCTAssertNil(store.pendingLiveBarPush)
+
+        // The user turns the mode off while the preview runs.
+        store.liveUpdateMode = .never
+        try await Task.sleep(nanoseconds: 2_500_000_000)
+
+        XCTAssertNil(store.pendingLiveBarPush,
+                     "the preview did not wait for the confirmation of the user")
+        XCTAssertTrue(runner.calls.isEmpty,
+                      "the daemon got \(runner.calls.map(\.arguments))")
+    }
+
+    /// A preview that is older than the newest one does not overwrite
+    /// it: the dialog must show the newest values of the user.
+    @MainActor
+    func testAnOlderPreviewDoesNotOverwriteANewerOne() async throws {
+        let defaults = try makeDefaults()
+        let runner = FakeRunner()
+        runner.values = ["clock": ["label.value": "09:00"]]
+        // The first query takes a while, so the first preview lands after
+        // the second one.
+        runner.queryDelays = [2, 0]
+        let store = try makeStore(defaults: defaults, runner: runner)
+
+        store.liveUpdateMode = .whileEditing
+        store.requestLiveBarPush(structuredOnly: true)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        store.requestLiveBarPush(structuredOnly: true)
+
+        // The second preview found a change. The live bar takes the value
+        // of the config while the first preview is still running.
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        runner.setValues(["label.value": "10:00"], for: "clock")
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+
+        let pending = try XCTUnwrap(store.pendingLiveBarPush)
+        XCTAssertEqual(pending.preview.propertyCount, 1,
+                       "the older preview won over the newer one")
     }
 
     /// A push that changed nothing does not use up the confirmation of the
@@ -993,6 +1118,18 @@ final class LiveBarPushTests: XCTestCase {
         XCTAssertEqual(values["icon.value"], "SF:Clock")
     }
 
+    /// A quote in a value followed by a comma breaks the reply: the
+    /// reader would read the value short and the rest of the reply wrong.
+    ///
+    /// Such a reply is refused as a whole, so the value that was cut
+    /// short is never stored and a Restore never writes it back.
+    func testTheQueryReaderRefusesAValueWithARawQuoteInIt() {
+        let reply = "{ \"label\": { \"value\": \"He said \", hi\" }, \"icon\": { \"value\": \"SF:Clock\" } }"
+        let values = LiveBarQuery.values(in: reply)
+        XCTAssertNil(values["label.value"])
+        XCTAssertNil(values["icon.value"])
+    }
+
     /// A newline in a value is a newline of the value, so the reader keeps
     /// it and reads the rest of the reply.
     func testTheQueryReaderKeepsANewlineInAValue() {
@@ -1119,8 +1256,20 @@ final class LiveBarPushTests: XCTestCase {
         private(set) var queries: [String] = []
         /// The time every call takes, in the order of the calls.
         var delays: [TimeInterval] = []
+        /// The time every query takes, in the order of the queries.
+        ///
+        /// A query that is slow stands for a daemon that needs a while,
+        /// so two previews can be in flight at the same time.
+        var queryDelays: [TimeInterval] = []
         /// The lock of the runner: a push runs in the background.
         private let lock = NSLock()
+
+        /// Sets the live values of an item.
+        func setValues(_ values: [String: String], for alias: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            self.values[alias] = values
+        }
 
         /// Forgets the items the runner was asked about.
         func forgetQueries() {
@@ -1140,13 +1289,21 @@ final class LiveBarPushTests: XCTestCase {
 
         func liveValues(of alias: String) -> [String: String]? {
             lock.lock()
-            defer { lock.unlock() }
+            let index = queries.count
             queries.append(alias)
-            if let reply = replies[alias] {
-                let values = LiveBarQuery.values(in: reply)
-                return values.isEmpty ? nil : values
+            lock.unlock()
+            if index < queryDelays.count {
+                Thread.sleep(forTimeInterval: queryDelays[index])
             }
-            return values[alias]
+            lock.lock()
+            let reply = replies[alias]
+            let known = values[alias]
+            lock.unlock()
+            if let reply {
+                let parsed = LiveBarQuery.values(in: reply)
+                return parsed.isEmpty ? nil : parsed
+            }
+            return known
         }
 
         func run(_ command: LiveBarCommand) -> LiveBarCommandResult {
