@@ -174,13 +174,16 @@ You can use the GUI for routine changes and keep the code preview open whenever 
 ```bash
 git clone https://github.com/wiggly-sheets/SketchyBar-Studio.git
 cd SketchyBar-Studio
+make help
 ./script/build_and_run.sh
 ```
+
+`make help` lists every build target.
 
 To build without launching:
 
 ```bash
-swift build
+make build
 ./script/build_and_run.sh --package
 ```
 
@@ -191,8 +194,27 @@ The packaged app is written to `dist/SketchyBarStudio.app`.
 To package a release-style app for both Apple Silicon and Intel Macs:
 
 ```bash
-./script/build_and_run.sh --universal-package
+make app-universal
 lipo -info dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
+```
+
+### Build the release artifacts
+
+To build the disk image and its checksum sidecar, give the version on the command line:
+
+```bash
+make release-artifacts VERSION=1.0.3
+```
+
+That writes `dist/SketchyBarStudio-1.0.3-universal.dmg` and the sidecar
+`dist/SketchyBarStudio-1.0.3-universal.dmg.sha256` next to it. The sidecar holds
+one line: the digest, two spaces and the bare file name.
+
+To prepare a release, which builds the artifacts and creates the tag without
+pushing anything:
+
+```bash
+make release VERSION=1.0.3
 ```
 
 ---

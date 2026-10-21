@@ -35,18 +35,17 @@ jobs:
           xcodebuild -version
 
       - name: Test
-        run: swift test
+        run: make test
 
       - name: Setup Node for create-dmg
         uses: actions/setup-node@v7.0.0
         with:
           node-version: "20"
 
-      - name: Build universal app bundle
+      - name: Build release artifacts
         env:
-          SKETCHYBAR_STUDIO_VERSION: ${{ steps.version.outputs.version }}
           SKETCHYBAR_STUDIO_BUILD: ${{ github.run_number }}
-        run: bash ./script/build_and_run.sh --universal-package
+        run: make release-artifacts VERSION=${{ steps.version.outputs.version }}
 
       - name: Verify universal binary and bundle version
         run: |
@@ -55,64 +54,30 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/SketchyBarStudio.app/Contents/Info.plist)" = "${{ steps.version.outputs.version }}"
           codesign --verify --deep --strict dist/SketchyBarStudio.app
 
-      - name: Build DMG with create-dmg
-        run: |
-          npx --yes create-dmg@8.1.0 --overwrite --no-code-sign --no-version-in-filename --dmg-title="SketchyBar Studio" dist/SketchyBarStudio.app dist
-          mv "dist/SketchyBar Studio.dmg" "dist/${{ steps.version.outputs.dmg_name }}"
+      - name: Write release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./scripts/release-notes.sh "$VERSION" > release-notes.md
 
-      - name: Generate checksum
-        id: checksum
+      - name: Append the checksum to the release notes
+        env:
+          DMG_NAME: ${{ steps.version.outputs.dmg_name }}
         run: |
-          SHA256="$(shasum -a 256 "dist/${{ steps.version.outputs.dmg_name }}" | awk '{print $1}')"
-          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
-          printf '%s  %s\n' "$SHA256" "${{ steps.version.outputs.dmg_name }}" > "dist/${{ steps.version.outputs.dmg_name }}.sha256"
+          {
+            echo ""
+            echo "DMG SHA-256:"
+            echo ""
+            echo '```'
+            cat "dist/$DMG_NAME.sha256"
+            echo '```'
+          } >> release-notes.md
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
           DMG_NAME: ${{ steps.version.outputs.dmg_name }}
-          SHA256: ${{ steps.checksum.outputs.sha256 }}
         run: |
-          cat > release-notes.md <<'EOF'
-          # SketchyBar Studio __VERSION__
-
-          ## Download
-
-          - Download the attached universal DMG for macOS.
-          - GitHub automatically provides source code archives for this tag.
-
-          ## Homebrew
-
-          ```bash
-          brew tap wiggly-sheets/homebrew-tap
-          brew trust wiggly-sheets/homebrew-tap
-          brew install --cask sketchybar-studio
-          ```
-
-          ## Notes
-
-          - Universal binary includes Apple Silicon and Intel slices.
-          - Build is ad-hoc signed but not Developer ID signed or notarized. macOS may require opening through System Settings > Privacy & Security, right-clicking Open, or removing quarantine with `xattr` if you trust the download source.
-
-          DMG SHA-256:
-
-          ```
-          __SHA256__  __DMG_NAME__
-          ```
-          EOF
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          path = Path("release-notes.md")
-          text = path.read_text()
-          text = text.replace("__VERSION__", os.environ["VERSION"])
-          text = text.replace("__SHA256__", os.environ["SHA256"])
-          text = text.replace("__DMG_NAME__", os.environ["DMG_NAME"])
-          path.write_text(text)
-          PY
-
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "dist/$DMG_NAME" "dist/$DMG_NAME.sha256" --clobber
             gh release edit "$GITHUB_REF_NAME" --title "SketchyBar Studio $VERSION" --notes-file release-notes.md
