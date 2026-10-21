@@ -122,6 +122,11 @@ SB_API int sb_preview_test_item_width(sb_preview_t* preview, const char* alias);
    unknown. */
 SB_API int sb_preview_test_item_padding_left(sb_preview_t* preview, const char* alias);
 
+/* The serialized form of an item, the same text `sketchybar --query <item>`
+   answers with. The caller owns the string and releases it with free().
+   It is NULL when no item has that alias. */
+SB_API char* sb_preview_test_item_serialize(sb_preview_t* preview, const char* alias);
+
 /* The environment the child of the script runner receives, one "KEY=VALUE"
    per line. The caller owns the string and releases it with free(). */
 SB_API char* sb_preview_test_child_environment(void);

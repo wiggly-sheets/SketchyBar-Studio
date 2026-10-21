@@ -16,34 +16,12 @@ enum SbarLuaItemParser {
         var items: [StructuredItem] = []
 
         for call in result.calls where call.path == ["sbar", "add"] {
-            guard let table = call.arguments.compactMap({ argument -> LuaTable? in
-                if case .table(let table) = argument { return table }
-                return nil
-            }).first else { continue }
-
             guard let alias = Self.alias(of: call) else { continue }
-
-            let values = table.entries.compactMap { entry -> StructuredItemValue? in
-                guard !entry.path.isEmpty else { return nil }
-                guard Self.isEditable(kind: entry.kind) else { return nil }
-                return StructuredItemValue(
-                    alias: alias.alias,
-                    keyPath: entry.path.joined(separator: "."),
-                    rawValue: entry.text,
-                    valueStartOffset: entry.valueRange.start,
-                    valueEndOffset: entry.valueRange.end
-                )
-            }
-
-            // Every value of the table is claimed, also the ones that are
-            // not a single literal. Without the claim, the plain scan
-            // matches the leading literal of an expression, such as the
-            // `"popup."` of `"popup." .. name`.
-            let excludedRanges = table.entries
-                .filter { !Self.isEditable(kind: $0.kind) }
-                .map(\.valueRange)
-
-            items.append(StructuredItem(alias: alias.alias, values: values, excludedRanges: excludedRanges))
+            guard let item = Self.declaration(of: call,
+                                              kind: .item,
+                                              alias: alias.alias,
+                                              keyPath: { $0 }) else { continue }
+            items.append(item)
         }
 
         return items
@@ -58,31 +36,31 @@ enum SbarLuaItemParser {
         let result = LuaTableParser.parse(source: source)
 
         for call in result.calls where call.path == ["sbar", "bar"] {
-            guard let table = call.arguments.compactMap({ argument -> LuaTable? in
-                if case .table(let table) = argument { return table }
-                return nil
-            }).first else { continue }
+            return Self.declaration(of: call,
+                                    kind: .bar,
+                                    alias: "bar",
+                                    keyPath: SketchyBarOptionCatalog.barKeyPath)
+        }
 
-            let values = table.entries.compactMap { entry -> StructuredItemValue? in
-                guard !entry.path.isEmpty else { return nil }
-                guard Self.isEditable(kind: entry.kind) else { return nil }
-                return StructuredItemValue(
-                    alias: "bar",
-                    keyPath: SketchyBarOptionCatalog.barKeyPath(for: entry.path.joined(separator: ".")),
-                    rawValue: entry.text,
-                    valueStartOffset: entry.valueRange.start,
-                    valueEndOffset: entry.valueRange.end
-                )
-            }
+        return nil
+    }
 
-            // Every value of the table is claimed, also the ones that are
-            // not a single literal, so the plain scan does not match a
-            // literal inside an expression.
-            let excludedRanges = table.entries
-                .filter { !Self.isEditable(kind: $0.kind) }
-                .map(\.valueRange)
+    /// The default item declaration of a Lua file.
+    ///
+    /// `sbar.default({…})` holds the properties of the default item: the
+    /// item every new item inherits from. The values of the table are
+    /// qualified key paths, the same as the values of an item table, so
+    /// `icon = { font = { size = 11 } }` is the property
+    /// `icon.font.size` of the default item. The declaration is nil when the
+    /// file has no default.
+    static func defaults(in source: String) -> StructuredItem? {
+        let result = LuaTableParser.parse(source: source)
 
-            return StructuredItem(alias: "bar", values: values, excludedRanges: excludedRanges)
+        for call in result.calls where call.path == ["sbar", "default"] {
+            return Self.declaration(of: call,
+                                    kind: .defaultItem,
+                                    alias: "default",
+                                    keyPath: { $0 })
         }
 
         return nil
@@ -103,6 +81,41 @@ enum SbarLuaItemParser {
         }
 
         return nil
+    }
+
+    /// The declaration of a call: the values of its table with the key path
+    /// of every value.
+    private static func declaration(of call: LuaCall,
+                                    kind: StructuredItemKind,
+                                    alias: String,
+                                    keyPath: (String) -> String) -> StructuredItem? {
+        guard let table = call.arguments.compactMap({ argument -> LuaTable? in
+            if case .table(let table) = argument { return table }
+            return nil
+        }).first else { return nil }
+
+        let values = table.entries.compactMap { entry -> StructuredItemValue? in
+            guard !entry.path.isEmpty else { return nil }
+            guard Self.isEditable(kind: entry.kind) else { return nil }
+            return StructuredItemValue(
+                alias: alias,
+                keyPath: keyPath(entry.path.joined(separator: ".")),
+                rawValue: entry.text,
+                value: Self.value(of: entry),
+                valueStartOffset: entry.valueRange.start,
+                valueEndOffset: entry.valueRange.end
+            )
+        }
+
+        // Every value of the table is claimed, also the ones that are
+        // not a single literal. Without the claim, the plain scan
+        // matches the leading literal of an expression, such as the
+        // `"popup."` of `"popup." .. name`.
+        let excludedRanges = table.entries
+            .filter { !Self.isEditable(kind: $0.kind) }
+            .map(\.valueRange)
+
+        return StructuredItem(kind: kind, alias: alias, values: values, excludedRanges: excludedRanges)
     }
 
     /// True when the call holds a table, which every item call does.
@@ -142,6 +155,54 @@ enum SbarLuaItemParser {
         // SbarLua also accepts an item without a name, such as
         // `sbar.add("item", { position = "right" })`.
         return alias ?? ItemAlias(alias: "", argumentIndex: -1)
+    }
+
+    /// The value of a literal.
+    ///
+    /// A string in Lua is the text between its quotes, so the quotes are
+    /// not part of the value and the escapes of the string are resolved.
+    /// Every other literal is its own text.
+    private static func value(of entry: LuaTableEntry) -> String {
+        guard entry.kind == .string else { return entry.text }
+        let text = entry.text
+        guard text.count >= 2 else { return text }
+        let quote = text.first!
+        guard quote == "\"" || quote == "'", text.last == quote else { return text }
+        return resolved(String(text.dropFirst().dropLast()))
+    }
+
+    /// The text of a string with the escapes of Lua resolved.
+    private static func resolved(_ text: String) -> String {
+        var result = ""
+        var index = text.startIndex
+
+        while index < text.endIndex {
+            let character = text[index]
+            guard character == "\\" else {
+                result.append(character)
+                index = text.index(after: index)
+                continue
+            }
+            let next = text.index(after: index)
+            guard next < text.endIndex else {
+                result.append(character)
+                break
+            }
+            switch text[next] {
+            case "n": result.append("\n")
+            case "t": result.append("\t")
+            case "r": result.append("\r")
+            case "\"": result.append("\"")
+            case "'": result.append("'")
+            case "\\": result.append("\\")
+            default:
+                result.append(character)
+                result.append(text[next])
+            }
+            index = text.index(after: next)
+        }
+
+        return result
     }
 
     /// True when the kind of a value is a single literal that the user can

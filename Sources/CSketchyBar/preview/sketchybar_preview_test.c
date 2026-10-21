@@ -27,6 +27,23 @@ int sb_preview_test_item_padding_left(sb_preview_t* preview, const char* alias) 
   return (int) item->background.padding_left;
 }
 
+char* sb_preview_test_item_serialize(sb_preview_t* preview, const char* alias) {
+  if (!preview) return NULL;
+  struct bar_item* item = preview_find_item(alias);
+  if (!item) return NULL;
+
+  /* The same text the daemon answers with for `sketchybar --query <item>`
+     (src/bar_item.c:965). */
+  char* buffer = NULL;
+  size_t length = 0;
+  FILE* rsp = open_memstream(&buffer, &length);
+  if (!rsp) return NULL;
+
+  bar_item_serialize(item, rsp);
+  fclose(rsp);
+  return buffer;
+}
+
 char* sb_preview_test_child_environment(void) {
   char** environment = preview_build_environment(NULL);
   if (!environment) return NULL;
