@@ -76,7 +76,7 @@ The bridge names every value it cannot read, so the user learns what the preview
 * A value that is built by an expression, such as `colors.red`, needs a Lua interpreter. The parser path keeps the value SketchyBar has by default and names the value: "The value of 'icon.color' is built by an expression, so the preview shows the value SketchyBar has by default, not the value of the config." The Lua path of Stage 3b reads the value instead.
 * An alias that is built by an expression, such as `"menu." .. i`, cannot be shown: "The alias of an item is built by an expression, so the preview cannot show the item. SketchyBar shows it under the name of the expression."
 * An item without a name is named by SbarLua: "The item has no name. SketchyBar gives it a generated name (item_0, item_1, ...), so the preview cannot show it."
-* An item type the preview cannot show, such as a graph or a bracket: "The preview cannot show the 'graph' item 'cpu'."
+* An item type the parser path cannot read, such as a graph or a bracket: "The 'graph' item 'cpu' shows no values yet, because the values come from the script that pushes them. The parser of the app cannot read the type of this item, so the preview does not show it." The Lua path reads the type and sends it to the preview, so the item reaches the preview and the wording of the type is the same: "The 'graph' item 'cpu' shows no values yet, because the values come from the script that pushes them. The preview lays it out with the width of the config."
 
 ## Files
 

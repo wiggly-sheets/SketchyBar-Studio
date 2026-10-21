@@ -20,13 +20,20 @@ struct BarRenderItemModel: Hashable {
     ///
     /// The type is the first argument of the add command of the daemon
     /// (`src/message.c:196`). The daemon knows `item`, `alias`, `space`,
-    /// `graph`, `slider` and `bracket`, and it creates no item at all for
-    /// an `event` (`src/message.c:175-185`).
+    /// `graph`, `slider`, `ring` and `bracket`
+    /// (`src/misc/defines.h:205-211`), and it creates no item at all for
+    /// an `event` (`src/message.c:175-185`). SbarLua knows `item`, `alias`,
+    /// `space`, `event`, `slider`, `graph` and `bracket` (`add`,
+    /// `src/sketchybar.c` of SbarLua): there is no ring in SbarLua.
     let type: String
     /// The trailing argument of the add command.
     ///
     /// The daemon reads it after the position (`src/message.c:218-256`):
-    /// the width of a graph and of a slider, and the members of a bracket.
+    /// the width of a graph and of a slider, and the diameter of a ring.
+    /// A bracket has no such argument: the daemon reads the members of a
+    /// bracket from the position token itself (`src/message.c:263`). The
+    /// bridge puts the member list of a bracket in the argument, so the
+    /// preview reads the members from there.
     let argument: String?
 
     init(alias: String,

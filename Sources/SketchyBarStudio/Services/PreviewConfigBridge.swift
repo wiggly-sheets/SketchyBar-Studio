@@ -114,7 +114,7 @@ enum PreviewConfigBridge {
     /// declarations follow it. The type and the trailing argument of the
     /// add command are the ones of the first declaration too, because the
     /// daemon keeps the item of the first add.
-    private static func plan(fromResolved resolved: LuaConfigRunner.ResolvedConfig) -> BarRenderPlan {
+    static func plan(fromResolved resolved: LuaConfigRunner.ResolvedConfig) -> BarRenderPlan {
         var aliases: [String] = []
         var properties: [String: [BarRenderProperty]] = [:]
         var kinds: [String: (type: String, argument: String?)] = [:]
@@ -330,9 +330,17 @@ enum PreviewConfigBridge {
 /// The wording lives here, so the Lua path and the shell path say the
 /// same thing about the same problem.
 enum PreviewWarning {
-    /// An item type the preview cannot show.
+    /// An item type the parser path drops.
+    ///
+    /// The parsers of the app cannot read the type of an item, so the
+    /// parser path drops the item and the preview never shows it. The Lua
+    /// path reads the type and keeps the item. The wording of the type is
+    /// the same on both paths, and the difference between the paths is in
+    /// the sentence that follows it.
     static func unsupportedType(_ type: String, alias: String) -> String {
-        "The preview cannot show the '\(type)' item '\(alias)'."
+        let described = typeDescription(type, alias: alias, argument: nil)
+            ?? "The preview cannot show the '\(type)' item '\(alias)'."
+        return "\(described) \(pathSentence(type, parserPath: true))"
     }
 
     /// The warnings of the type of an item.
@@ -345,39 +353,69 @@ enum PreviewWarning {
     /// makes the item a plain item and says so (`src/message.c:196-200`),
     /// and so does the preview.
     static func itemType(_ type: String, alias: String, argument: String?) -> [String] {
+        if type == "item" { return [] }
+        guard let described = typeDescription(type, alias: alias, argument: argument) else { return [] }
+        let sentence = pathSentence(type, parserPath: false)
+        return sentence.isEmpty ? [described] : ["\(described) \(sentence)"]
+    }
+
+    /// What a type of item shows, in the words that both paths share.
+    ///
+    /// The wording does not say what the preview does with the item, so
+    /// the same words are true on the path that keeps the item and on the
+    /// path that drops it.
+    private static func typeDescription(_ type: String, alias: String, argument: String?) -> String? {
         switch type {
-        case "item":
-            return []
         case "alias":
-            return ["The 'alias' item '\(alias)' shows the picture of a menu bar item, which the preview cannot capture, so the preview shows it as a placeholder."]
+            return "The 'alias' item '\(alias)' shows the picture of a menu bar item, which the preview cannot capture."
         case "space":
-            return ["The 'space' item '\(alias)' shows the picture of a space, which the preview cannot capture, so the preview shows it as a placeholder."]
+            return "The 'space' item '\(alias)' shows the picture of a space, which the preview cannot capture."
         case "graph":
-            return ["The 'graph' item '\(alias)' is laid out with the width of the config, but it shows no values yet. The values come from the script that pushes them."]
+            return "The 'graph' item '\(alias)' shows no values yet, because the values come from the script that pushes them."
         case "slider":
-            return ["The 'slider' item '\(alias)' is laid out with the width of the config, but it shows no value yet. The value comes from the script that pushes it."]
+            return "The 'slider' item '\(alias)' shows no value yet, because the value comes from the script that pushes it."
         case "bracket":
-            return [bracket(alias: alias, argument: argument)]
+            return "The 'bracket' item '\(alias)' draws a background around \(members(of: argument))."
         case "event":
-            return ["The 'event' item '\(alias)' is not shown on the bar. SketchyBar registers the event and draws nothing for it."]
+            return "The 'event' item '\(alias)' is not shown on the bar, because SketchyBar registers the event and draws nothing for it."
         default:
-            return []
+            return nil
         }
     }
 
-    /// A bracket and the items it groups.
+    /// What the path does with an item of a type.
+    ///
+    /// The two paths differ: the parser path drops the item, and the Lua
+    /// path keeps it and shows what it can show of it. The difference is
+    /// in this sentence, so the wording of the type stays the same.
+    private static func pathSentence(_ type: String, parserPath: Bool) -> String {
+        // The daemon creates no item for an event, so nothing of it reaches
+        // the preview on either path.
+        if type == "event" { return "" }
+        if parserPath {
+            return "The parser of the app cannot read the type of this item, so the preview does not show it."
+        }
+        switch type {
+        case "alias", "space":
+            return "The preview shows it as a placeholder."
+        case "graph", "slider":
+            return "The preview lays it out with the width of the config."
+        case "bracket":
+            return "The preview groups the members and draws that background around them."
+        default:
+            return ""
+        }
+    }
+
+    /// The members of a bracket, the way a warning names them.
     ///
     /// A bracket draws a background around the items it groups
-    /// (`src/group.c:109-138`). The vendored preview has no call that adds
-    /// a member to a group, so the members of a bracket are not grouped
-    /// yet and the background of the bracket is not drawn.
-    private static func bracket(alias: String, argument: String?) -> String {
-        let members = (argument ?? "").split(separator: " ").map(String.init)
-        guard !members.isEmpty else {
-            return "The 'bracket' item '\(alias)' draws a background around the items it groups. The preview keeps the bracket, but it does not draw that background yet."
-        }
-        let list = members.map { "'\($0)'" }.joined(separator: ", ")
-        return "The 'bracket' item '\(alias)' draws a background around the items \(list). The preview keeps the bracket, but it does not draw that background yet."
+    /// (`src/group.c:109-138`). The parser path does not read the members
+    /// of a bracket, so it names them without the list.
+    private static func members(of argument: String?) -> String {
+        let names = (argument ?? "").split(separator: " ").map(String.init)
+        guard !names.isEmpty else { return "the items it groups" }
+        return "the items " + names.map { "'\($0)'" }.joined(separator: ", ")
     }
 
     /// A value the preview cannot read.

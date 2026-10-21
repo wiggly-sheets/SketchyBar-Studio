@@ -25,6 +25,13 @@ sbar.add("alias", "menu", {
 	position = "left",
 })
 
+-- The name of an alias holds the owner and the name of the menu bar item,
+-- split at a comma. The daemon copies the two halves and frees them one
+-- by one, so the preview has to do the same.
+sbar.add("alias", "Spotify,Now Playing", {
+	position = "left",
+})
+
 sbar.add("bracket", "group", { "clock", "cpu" }, {
 	position = "right",
 })

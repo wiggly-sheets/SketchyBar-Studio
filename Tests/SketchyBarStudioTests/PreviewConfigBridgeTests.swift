@@ -540,7 +540,8 @@ final class PreviewConfigBridgeTests: XCTestCase {
 
         XCTAssertTrue(plan.items.isEmpty)
         XCTAssertEqual(plan.warnings.count, 1)
-        XCTAssertTrue(plan.warnings[0].contains("The preview cannot show the 'graph' item 'cpu'."))
+        XCTAssertTrue(plan.warnings[0].contains("The 'graph' item 'cpu' shows no values yet"))
+        XCTAssertTrue(plan.warnings[0].contains("The parser of the app cannot read the type of this item"))
     }
 
     func testTheShellConfigAddsSeveralItems() {

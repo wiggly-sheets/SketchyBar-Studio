@@ -55,6 +55,20 @@ final class PreviewItemTypeTests: XCTestCase {
         return text[start.upperBound..<end.lowerBound].split(separator: ",").count
     }
 
+    /// The members of a serialized bracket.
+    ///
+    /// The serialization writes the members of a bracket in the "bracket"
+    /// array (`src/bar_item.c:1087-1090`).
+    private func bracketMembers(of text: String) -> [String]? {
+        guard let start = text.range(of: "\"bracket\": [") else { return nil }
+        guard let end = text.range(of: "]", range: start.upperBound..<text.endIndex) else { return nil }
+        return text[start.upperBound..<end.lowerBound]
+            .components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) }
+    }
+
     // MARK: - The types of the items
 
     /// A graph reaches the tree with its type and with the width the
@@ -74,11 +88,14 @@ final class PreviewItemTypeTests: XCTestCase {
         XCTAssertEqual(samples(of: text), 42)
     }
 
-    /// A bracket reaches the tree with its members.
+    /// A bracket reaches the tree with its member list.
     ///
-    /// The daemon reads the members of a bracket after the position of the
-    /// add command (`src/message.c:262-306`).
-    func testABracketReachesTheTreeWithItsMembers() throws {
+    /// The daemon reads the members of a bracket from the position of the
+    /// add command (`src/message.c:262-306`), because a bracket has no
+    /// position of its own. The bridge puts the member list in the
+    /// argument of the add command, so the preview reads the members from
+    /// there.
+    func testABracketReachesTheTreeWithItsMemberList() throws {
         let plan = self.plan(of: "lua-item-types")
 
         let bracket = try XCTUnwrap(item(plan, "group"))
@@ -87,6 +104,44 @@ final class PreviewItemTypeTests: XCTestCase {
 
         let text = try XCTUnwrap(serialization(of: plan, alias: "group"))
         XCTAssertTrue(text.contains("\"type\": \"bracket\""))
+        XCTAssertEqual(bracketMembers(of: text), ["clock", "cpu"],
+                       "the members of the bracket must be in the tree")
+    }
+
+    /// A bracket whose member is not there follows the daemon.
+    ///
+    /// The daemon answers "[?] Add (Group) %s: Failed to add member '%s',
+    /// item not found", and it removes the bracket when the FIRST member
+    /// is not there (`src/message.c:300-303`).
+    func testABracketWithAMissingMemberFollowsTheDaemon() throws {
+        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
+        defer { SketchyBarPreviewC.destroy(handle) }
+
+        XCTAssertEqual(SketchyBarPreviewC.addItem(handle,
+                                                  alias: "group",
+                                                  type: "bracket",
+                                                  position: "right",
+                                                  argument: "clock cpu"),
+                       SketchyBarPreviewC.Code.propertyRejected,
+                       "the bracket must be removed when its first member is not there")
+        XCTAssertNil(BarPreviewTestAccessors.itemSerialization(handle, alias: "group"))
+        XCTAssertTrue(SketchyBarPreviewC.messages(handle)
+            .contains("Failed to add member 'clock', item not found"))
+
+        XCTAssertEqual(SketchyBarPreviewC.addItem(handle,
+                                                  alias: "clock",
+                                                  type: "item",
+                                                  position: "right"),
+                       SketchyBarPreviewC.Code.ok)
+        XCTAssertEqual(SketchyBarPreviewC.addItem(handle,
+                                                  alias: "group",
+                                                  type: "bracket",
+                                                  position: "right",
+                                                  argument: "clock nope"),
+                       SketchyBarPreviewC.Code.ok,
+                       "the bracket must stay when a later member is not there")
+        XCTAssertTrue(SketchyBarPreviewC.messages(handle)
+            .contains("Failed to add member 'nope', item not found"))
     }
 
     /// A space and an alias reach the tree, and the preview shows them as
@@ -113,6 +168,22 @@ final class PreviewItemTypeTests: XCTestCase {
         XCTAssertTrue(plan.warnings.contains {
             $0.contains("'alias' item 'menu'") && $0.contains("placeholder")
         }, "the alias must be reported as a placeholder")
+    }
+
+    /// An alias whose name holds a comma does not break the preview.
+    ///
+    /// The daemon copies the two halves of the name of an alias and frees
+    /// them one by one (`src/message.c:238-249`, `src/alias.c:302-308`).
+    /// The preview has to copy them too, or it aborts with
+    /// "pointer being freed was not allocated" when it is destroyed.
+    func testAnAliasWithACommaIsSafeWhenThePreviewIsDestroyed() throws {
+        let plan = self.plan(of: "lua-item-types")
+
+        XCTAssertEqual(item(plan, "Spotify,Now Playing")?.type, "alias")
+
+        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
+        defer { SketchyBarPreviewC.destroy(handle) }
+        PreviewConfigBridge.apply(plan, to: handle)
     }
 
     /// An event reaches the tree of the plan, and the preview does not
@@ -171,40 +242,50 @@ final class PreviewItemTypeTests: XCTestCase {
     /// The real config of the user, read only.
     ///
     /// The test is skipped when the config is not on this machine, so the
-    /// suite does not depend on it. The counts of the plan and the counts
-    /// of the resolver have to be the same, because the plan keeps every
-    /// item the resolver read.
+    /// suite does not depend on it. The config is resolved once, and every
+    /// declaration of the run must reach the plan with the type of the
+    /// first declaration of its alias, because the daemon refuses the
+    /// second add of an alias (`src/message.c:190-193`).
     func testTheRealConfigOfTheUserIsCountedByType() throws {
         let root = URL(fileURLWithPath: "/Users/Zeb/dotfiles/sketchybar")
         guard FileManager.default.fileExists(atPath: root.path) else {
             throw XCTSkip("the real config of the user is not on this machine")
         }
 
-        let finished = expectation(description: "the config of the user is resolved")
-        var plan = BarRenderPlan(defaults: [], bar: [], items: [], warnings: [])
-        var resolved: [String: Int] = [:]
-        DispatchQueue.global().async {
-            plan = PreviewConfigBridge.plan(forLuaConfigRoot: root)
-            var counts: [String: Int] = [:]
-            if let entrypoint = LuaConfigRunner.entrypoint(in: root),
-               let run = try? LuaConfigRunner.resolve(configRoot: root, entrypoint: entrypoint) {
-                for item in run.items {
-                    counts[item.type, default: 0] += 1
-                }
-            }
-            resolved = counts
-            finished.fulfill()
+        let entrypoint = try XCTUnwrap(LuaConfigRunner.entrypoint(in: root))
+        let resolved = try LuaConfigRunner.resolve(configRoot: root, entrypoint: entrypoint)
+        let plan = PreviewConfigBridge.plan(fromResolved: resolved)
+
+        // The type of the first declaration of every alias: the daemon
+        // keeps the item of the first add (`src/message.c:190-193`), so
+        // the plan keeps that type too.
+        var firstType: [String: String] = [:]
+        for item in resolved.items where firstType[item.alias] == nil {
+            firstType[item.alias] = item.type
         }
-        wait(for: [finished], timeout: 30)
+
+        // Every declaration of the run must be in the plan.
+        for item in resolved.items {
+            let planned = plan.items.first { $0.alias == item.alias }
+            XCTAssertNotNil(planned, "the plan must keep the item '\(item.alias)'")
+            XCTAssertEqual(planned?.type,
+                           firstType[item.alias],
+                           "the plan must keep the type of the first declaration of '\(item.alias)'")
+        }
 
         var byType: [String: Int] = [:]
         for item in plan.items {
             byType[item.type, default: 0] += 1
         }
 
+        var expected: [String: Int] = [:]
+        for type in firstType.values {
+            expected[type, default: 0] += 1
+        }
+
         print("item-types: the items of the config by type: \(byType.sorted { $0.key < $1.key })")
 
         XCTAssertFalse(byType.isEmpty, "the config of the user must have items")
-        XCTAssertEqual(byType, resolved, "the plan must keep every item of the resolver")
+        XCTAssertEqual(byType, expected, "the plan must keep every item of the resolver")
     }
 }
