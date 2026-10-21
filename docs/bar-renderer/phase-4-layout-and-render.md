@@ -1,5 +1,7 @@
 # Stage 4 — Layout and offscreen render to a `CGImage`
 
+**Status: done (2026-10-20).** The layout and the offscreen render are merged with this stage. The next stage is Stage 5.
+
 ## Goal
 
 The vendored SketchyBar lays out and paints a bar into a bitmap, with no window server, no permission prompt and no live SketchyBar. The item rectangles it computes are the layout the rest of the feature depends on.
