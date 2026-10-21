@@ -13,7 +13,13 @@ Requirements:
 Build:
 
 ```bash
-swift build
+make build
+```
+
+Test:
+
+```bash
+make test
 ```
 
 Run:
@@ -21,6 +27,9 @@ Run:
 ```bash
 ./script/build_and_run.sh
 ```
+
+`make help` lists every build target. The release targets take the version on the
+command line, for example `make release-artifacts VERSION=1.0.3`.
 
 ## Pull Requests
 

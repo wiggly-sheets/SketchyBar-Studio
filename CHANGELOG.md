@@ -35,6 +35,8 @@ This project follows a human-readable changelog style and aims to use semantic v
 - A shell value keeps the quoting it has in the file. A double quoted value keeps its `$` and backtick live, a single quoted value stays single quoted and literal, and an unquoted value stays unquoted when it is a safe word.
 - The shell scanner only offers values that are SketchyBar options. Function locals such as `local result=5` and loop counters are no longer listed as editable options, while `export FOO=bar` still is.
 - A `sketchybarrc` that holds Lua code is read as Lua. Its `require(...)` lines are loader references, so the files they load can be switched off and ordered.
+- The build and the release run through a Makefile now. `make help` lists the targets, `make build` builds the package, `make test` runs the test suite, `make app-universal` builds the universal bundle, `make dmg-universal` builds the disk image, and `make release-artifacts VERSION=x.y.z` writes the disk image and its checksum sidecar next to it. `make release VERSION=x.y.z` builds the artifacts and creates the tag without pushing anything.
+- The release workflow uses the same targets, and the release notes come from the section of this changelog for the released version. A release without such a section fails.
 
 ### Fixed
 
