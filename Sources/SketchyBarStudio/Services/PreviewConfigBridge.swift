@@ -111,23 +111,23 @@ enum PreviewConfigBridge {
     /// item follow the table of the item. The daemon refuses the second
     /// add of an alias (`src/message.c:190-193`), so the item is the one
     /// of the first declaration and the properties of the later
-    /// declarations follow it.
+    /// declarations follow it. The type and the trailing argument of the
+    /// add command are the ones of the first declaration too, because the
+    /// daemon keeps the item of the first add.
     private static func plan(fromResolved resolved: LuaConfigRunner.ResolvedConfig) -> BarRenderPlan {
         var aliases: [String] = []
         var properties: [String: [BarRenderProperty]] = [:]
+        var kinds: [String: (type: String, argument: String?)] = [:]
         var warnings = [PreviewWarning.luaEntrypoint(resolved.entrypoint)]
         warnings += resolved.warnings
 
         for item in resolved.items {
-            guard item.type == "item" else {
-                // The preview only knows plain items. The other types need
-                // the window server or their own setup.
-                warnings.append(PreviewWarning.unsupportedType(item.type, alias: item.alias))
-                continue
-            }
-
             if properties[item.alias] == nil {
                 aliases.append(item.alias)
+                kinds[item.alias] = (item.type, item.argument)
+                warnings.append(contentsOf: PreviewWarning.itemType(item.type,
+                                                                     alias: item.alias,
+                                                                     argument: item.argument))
             } else {
                 warnings.append(PreviewWarning.duplicateAlias(item.alias))
             }
@@ -138,7 +138,10 @@ enum PreviewConfigBridge {
             defaults: resolved.defaults.map { property(of: $0) },
             bar: resolved.bar.map { property(of: $0) },
             items: aliases.map { alias in
-                BarRenderItemModel(alias: alias, properties: properties[alias] ?? [])
+                BarRenderItemModel(alias: alias,
+                                   properties: properties[alias] ?? [],
+                                   type: kinds[alias]?.type ?? "item",
+                                   argument: kinds[alias]?.argument ?? nil)
             },
             warnings: warnings
         )
@@ -212,8 +215,18 @@ enum PreviewConfigBridge {
         }
 
         for item in plan.items {
+            if item.type == "event" {
+                // The daemon registers a custom event and creates no item
+                // for it (`src/message.c:175-185`).
+                continue
+            }
+
             let position = Self.addPosition(of: item)
-            let code = SketchyBarPreviewC.addItem(preview, alias: item.alias, position: position)
+            let code = SketchyBarPreviewC.addItem(preview,
+                                                  alias: item.alias,
+                                                  type: item.type,
+                                                  position: position,
+                                                  argument: item.argument)
             if code == SketchyBarPreviewC.Code.itemExists {
                 // The daemon refuses the second add of an alias
                 // (`src/message.c:190-193`). The properties that follow
@@ -225,6 +238,14 @@ enum PreviewConfigBridge {
                 // (`src/message.c:202-208`), and so does the preview.
                 warnings.append("The item '\(item.alias)' was not added. \(Self.message(of: preview))")
                 continue
+            } else {
+                // The daemon says so when the type of the add command is
+                // unknown, and the item becomes a plain item
+                // (`src/message.c:196-200`).
+                let message = Self.message(of: preview)
+                if !message.isEmpty {
+                    warnings.append(message)
+                }
             }
 
             if code == SketchyBarPreviewC.Code.ok, let position = item.addPosition {
@@ -312,6 +333,51 @@ enum PreviewWarning {
     /// An item type the preview cannot show.
     static func unsupportedType(_ type: String, alias: String) -> String {
         "The preview cannot show the '\(type)' item '\(alias)'."
+    }
+
+    /// The warnings of the type of an item.
+    ///
+    /// The daemon has an item for every type but the event
+    /// (`src/message.c:175-185`), and the preview shows what it can show
+    /// of an item and says what it cannot.
+    ///
+    /// A type the daemon does not know is not a warning here: the daemon
+    /// makes the item a plain item and says so (`src/message.c:196-200`),
+    /// and so does the preview.
+    static func itemType(_ type: String, alias: String, argument: String?) -> [String] {
+        switch type {
+        case "item":
+            return []
+        case "alias":
+            return ["The 'alias' item '\(alias)' shows the picture of a menu bar item, which the preview cannot capture, so the preview shows it as a placeholder."]
+        case "space":
+            return ["The 'space' item '\(alias)' shows the picture of a space, which the preview cannot capture, so the preview shows it as a placeholder."]
+        case "graph":
+            return ["The 'graph' item '\(alias)' is laid out with the width of the config, but it shows no values yet. The values come from the script that pushes them."]
+        case "slider":
+            return ["The 'slider' item '\(alias)' is laid out with the width of the config, but it shows no value yet. The value comes from the script that pushes it."]
+        case "bracket":
+            return [bracket(alias: alias, argument: argument)]
+        case "event":
+            return ["The 'event' item '\(alias)' is not shown on the bar. SketchyBar registers the event and draws nothing for it."]
+        default:
+            return []
+        }
+    }
+
+    /// A bracket and the items it groups.
+    ///
+    /// A bracket draws a background around the items it groups
+    /// (`src/group.c:109-138`). The vendored preview has no call that adds
+    /// a member to a group, so the members of a bracket are not grouped
+    /// yet and the background of the bracket is not drawn.
+    private static func bracket(alias: String, argument: String?) -> String {
+        let members = (argument ?? "").split(separator: " ").map(String.init)
+        guard !members.isEmpty else {
+            return "The 'bracket' item '\(alias)' draws a background around the items it groups. The preview keeps the bracket, but it does not draw that background yet."
+        }
+        let list = members.map { "'\($0)'" }.joined(separator: ", ")
+        return "The 'bracket' item '\(alias)' draws a background around the items \(list). The preview keeps the bracket, but it does not draw that background yet."
     }
 
     /// A value the preview cannot read.
