@@ -8,6 +8,7 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ### Added
 
+- The `CSketchyBar` target vendors a subset of the SketchyBar C code as a headless preview core. It exports `sb_preview_create` and `sb_preview_destroy`. The upstream commit that was vendored is recorded in `Sources/CSketchyBar/UPSTREAM.md`, the upstream licence is in `Sources/CSketchyBar/LICENSE.md`, and every change made to the vendored code is listed in `Sources/CSketchyBar/MODIFICATIONS.md`.
 - A NOTICE file names the upstream projects whose code the app will vendor, states that the vendored code is modified, and points at where the complete source of a release can be found.
 
 ### Changed
