@@ -59,6 +59,19 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: ./scripts/release-notes.sh "$VERSION" > release-notes.md
 
+      - name: Append the checksum to the release notes
+        env:
+          DMG_NAME: ${{ steps.version.outputs.dmg_name }}
+        run: |
+          {
+            echo ""
+            echo "DMG SHA-256:"
+            echo ""
+            echo '```'
+            cat "dist/$DMG_NAME.sha256"
+            echo '```'
+          } >> release-notes.md
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

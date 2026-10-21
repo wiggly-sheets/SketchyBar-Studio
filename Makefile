@@ -45,7 +45,7 @@ help:
 		'  app-universal          Build the universal bundle into dist/SketchyBarStudio.app.' \
 		'  dmg-universal          Build the universal disk image into dist/.' \
 		'  release-artifacts      Build the disk image and write its checksum sidecar.' \
-		'  release VERSION=x.y.z  Build the artifacts, tag v<x.y.z> locally, print the push command.' \
+		'  release VERSION=x.y.z  Build the artifacts, tag v<x.y.z> locally, print the push commands.' \
 		'  clean                  Remove .build/ and dist/.' \
 		'' \
 		'Notes' \
@@ -108,8 +108,8 @@ release:
 	$(MAKE) -C "$(ROOT)" release-artifacts VERSION=$(VERSION)
 	git -C "$(ROOT)" tag -a "v$(VERSION)" -m "$(APP_TITLE) $(VERSION)"
 	@echo ""
-	@echo "Tagged v$(VERSION). Push it with:"
-	@echo "  git push origin HEAD"
+	@echo "Tagged v$(VERSION). The target pushed nothing. Push the branch and the tag with:"
+	@echo "  git push origin master"
 	@echo "  git push origin v$(VERSION)"
 
 ## clean — remove everything the build produces
