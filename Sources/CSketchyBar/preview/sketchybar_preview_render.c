@@ -39,6 +39,17 @@ static void preview_layout(void) {
   g_bar_manager.bar_needs_update = true;
 
   bar_manager_refresh(&g_bar_manager, true);
+
+  /* The draw tells which items are on a bar (src/bar.c:169), and the
+     daemon reads that state when it updates an item
+     (src/bar_item.c:115, :135-137). The preview rebuilds its item tree,
+     so the state goes into the registry of the shim and comes back into
+     the item of the next tree. */
+  for (uint32_t i = 0; i < g_bar_manager.bar_item_count; i++) {
+    struct bar_item* item = g_bar_manager.bar_items[i];
+    if (!item || !item->name) continue;
+    preview_item_shown_store(item->name, bar_item_is_shown(item));
+  }
 }
 
 /* Puts the bitmap of one window into the image of the bar. The origin is

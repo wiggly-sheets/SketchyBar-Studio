@@ -7,6 +7,7 @@
 #include "bar_item.h"
 #include "bar_manager.h"
 #include "alias.h"
+#include "display.h"
 #include "graph.h"
 #include "group.h"
 #include "misc/helpers.h"
@@ -424,4 +425,110 @@ int sb_preview_set_notch(sb_preview_t* preview, int hasNotch) {
 const char* sb_preview_messages(sb_preview_t* preview) {
   if (!preview) return "";
   return preview->messages ? preview->messages : "";
+}
+
+/* --- The scripts of the items --------------------------------------------- */
+
+/* The answer of a run of the scripts, in the codes of the public API. */
+static int preview_script_status_code(void) {
+  switch (preview_script_status()) {
+    case PREVIEW_SCRIPT_OUTCOME_TIMEOUT: return SB_ERR_SCRIPT_TIMEOUT;
+    case PREVIEW_SCRIPT_OUTCOME_FAILED: return SB_ERR_SCRIPT_FAILED;
+    default: return SB_OK;
+  }
+}
+
+int sb_preview_set_script_environment(const char* shim_directory,
+                                       const char* sink_path,
+                                       const char* log_directory) {
+  if (!shim_directory || !sink_path || !log_directory) return SB_ERR_INVALID_ARGUMENT;
+
+  preview_set_script_environment(shim_directory, sink_path, log_directory);
+  return SB_OK;
+}
+
+int sb_preview_run_item_scripts(sb_preview_t* preview) {
+  if (!preview) return SB_ERR_INVALID_ARGUMENT;
+
+  for (uint32_t i = 0; i < g_bar_manager.bar_item_count; i++) {
+    struct bar_item* item = g_bar_manager.bar_items[i];
+    if (!item || !item->script || !item->script[0]) continue;
+    if (!item->name) continue;
+
+    /* The report of the script names the item it belongs to. */
+    preview_set_current_script(item->name);
+
+    /* The state of the item: the daemon keeps its items for as long as
+       the config lives, so the counter of the item and the fact that it
+       was on a bar survive there (src/bar_item.c:126-133). The preview
+       rebuilds its item tree, so the state comes from the registry of
+       the shim and goes back into it. */
+    item->counter = preview_item_counter_for(item->name);
+    if (preview_item_shown_for(item->name)) {
+      bar_item_append_associated_bar(item, display_active_display_adid());
+    }
+
+    /* The daemon runs the script of an item from its clock, with the
+       routine of the item and nothing else (src/bar_manager.c:554):
+       bar_item_update(bar_item, NULL, false, NULL).
+
+       The gate of the daemon decides whether the script runs at all:
+       `updates = false` never runs it, an item without `update_freq`
+       runs it only on an event, and `updates = when_shown` runs it only
+       while the item is on a bar (src/bar_item.c:127-139).
+
+       The child gets the environment of the item itself: the name of the
+       item, the variables of the item and the sender (src/bar_item.c:142-161).
+       The preview does not have to build that environment. */
+    bar_item_update(item, NULL, false, NULL);
+
+    preview_item_counter_store(item->name, item->counter);
+  }
+
+  preview_wait_for_scripts(PREVIEW_SCRIPT_TIMEOUT * 1000);
+  return preview_script_status_code();
+}
+
+int sb_preview_run_scripts(const char* const* aliases,
+                            const char* const* scripts,
+                            size_t count) {
+  if (!aliases || !scripts) return SB_ERR_INVALID_ARGUMENT;
+
+  char** alias_buffer = calloc(count ? count : 1, sizeof(char*));
+  char** script_buffer = calloc(count ? count : 1, sizeof(char*));
+  if (!alias_buffer || !script_buffer) {
+    free(alias_buffer);
+    free(script_buffer);
+    return SB_ERR_OUT_OF_MEMORY;
+  }
+
+  for (size_t i = 0; i < count; i++) {
+    alias_buffer[i] = (char*)aliases[i];
+    script_buffer[i] = (char*)scripts[i];
+  }
+
+  bool started = preview_run_scripts(alias_buffer, script_buffer, count);
+
+  free(alias_buffer);
+  free(script_buffer);
+
+  /* One wait for the whole batch: the batch has one deadline, so N
+     scripts that hang cost one timeout and not N of them. */
+  preview_wait_for_scripts(PREVIEW_SCRIPT_TIMEOUT * 1000);
+  if (!started && preview_script_status() == PREVIEW_SCRIPT_OUTCOME_OK) {
+    return SB_ERR_SCRIPT_FAILED;
+  }
+  return preview_script_status_code();
+}
+
+const char* sb_preview_item_script(sb_preview_t* preview, const char* alias) {
+  if (!preview || !alias) return NULL;
+
+  struct bar_item* item = preview_find_item(alias);
+  if (!item || !item->script) return NULL;
+  return item->script;
+}
+
+const char* sb_preview_script_messages(void) {
+  return preview_script_messages();
 }

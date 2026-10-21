@@ -19,6 +19,10 @@ enum SketchyBarPreviewC {
         static let itemNotFound: Int32 = 3
         static let itemExists: Int32 = 4
         static let propertyRejected: Int32 = 5
+        /// A script of an item ran longer than the timeout of the preview.
+        static let scriptTimeout: Int32 = 6
+        /// A script of an item failed.
+        static let scriptFailed: Int32 = 7
     }
 
     /// Creates a preview handle. Returns nil when the core cannot start.
@@ -204,6 +208,82 @@ enum SketchyBarPreviewC {
     static func messages(_ handle: OpaquePointer?) -> String {
         guard let handle else { return "" }
         guard let text = sb_preview_messages(handle) else { return "" }
+        return String(cString: text)
+    }
+
+    /// Sets the environment of the scripts of the preview.
+    ///
+    /// The shim directory comes first on the `PATH` of the child of a script,
+    /// so a script that calls `sketchybar` reaches the shim and not the live
+    /// bar. The sink path is the file the shim writes to, and the log
+    /// directory holds the standard error of every script.
+    @discardableResult
+    static func setScriptEnvironment(shimDirectory: String,
+                                     sinkPath: String,
+                                     logDirectory: String) -> Int32 {
+        withCStrings(shimDirectory, sinkPath, logDirectory) { shim, sink, log in
+            sb_preview_set_script_environment(shim, sink, log)
+        }
+    }
+
+    /// Runs the scripts of every item of the preview that has one.
+    ///
+    /// The call waits for the children. The answer is `Code.ok` when every
+    /// script ran, `Code.scriptTimeout` when a script ran too long, and
+    /// `Code.scriptFailed` when a script failed. The messages of the run
+    /// say which item failed and why.
+    static func runItemScripts(_ handle: OpaquePointer?) -> Int32 {
+        sb_preview_run_item_scripts(handle)
+    }
+
+    /// Runs several scripts, by their text, the way the daemon runs the
+    /// script of an item.
+    ///
+    /// Every child is forked first and the call waits for all of them
+    /// once, so the whole batch has one deadline.
+    static func runScripts(aliases: [String], scripts: [String]) -> Int32 {
+        guard !aliases.isEmpty, aliases.count == scripts.count else {
+            return Code.invalidArgument
+        }
+
+        var aliasCopies: [UnsafeMutablePointer<CChar>] = []
+        var scriptCopies: [UnsafeMutablePointer<CChar>] = []
+        defer {
+            for pointer in aliasCopies { free(pointer) }
+            for pointer in scriptCopies { free(pointer) }
+        }
+
+        for text in aliases {
+            guard let copy = strdup(text) else { return Code.outOfMemory }
+            aliasCopies.append(copy)
+        }
+        for text in scripts {
+            guard let copy = strdup(text) else { return Code.outOfMemory }
+            scriptCopies.append(copy)
+        }
+
+        let aliasPointers = aliasCopies.map { Optional(UnsafePointer($0)) }
+        let scriptPointers = scriptCopies.map { Optional(UnsafePointer($0)) }
+        return sb_preview_run_scripts(aliasPointers, scriptPointers, aliasPointers.count)
+    }
+
+    /// The script of the item with that alias, or nil when the item has
+    /// none.
+    ///
+    /// The script can be one the config does not set: a space item gets the
+    /// script of the daemon (`src/bar_item.c:428-431`).
+    static func itemScript(_ handle: OpaquePointer?, alias: String) -> String? {
+        guard let handle else { return nil }
+        return alias.withCString { aliasPointer in
+            guard let script = sb_preview_item_script(handle, aliasPointer) else { return nil }
+            return String(cString: script)
+        }
+    }
+
+    /// The messages of the last run of the scripts, one per line. The
+    /// pointer belongs to the runner and must not be freed.
+    static func scriptMessages() -> String {
+        guard let text = sb_preview_script_messages() else { return "" }
         return String(cString: text)
     }
 

@@ -77,6 +77,20 @@ Known limit: the shim intercepts a `sketchybar` that is resolved through `PATH`.
 
 The acceptance criterion of this stage is therefore about the `PATH` case, not about an absolute path.
 
+### What is intercepted and what is not
+
+The scrub of the `PATH` only touches the `PATH` the child inherits. Three cases reach the daemon anyway, and the preview cannot see them:
+
+| Case | What happens | What the preview does |
+| --- | --- | --- |
+| A script calls `sketchybar` and the child resolves it through the `PATH` | The shim is the first `sketchybar` of the `PATH`, so the call lands in the sink of the preview. | Nothing to report. |
+| A script calls `/opt/homebrew/bin/sketchybar` | The call is not intercepted: it reaches the live bar. | The preview warns, because the text of the script names the binary with a path. |
+| A script sets its own `PATH` (`PATH=/opt/homebrew/bin:$PATH sketchybar …`) | The script puts the real binary in front of the shim. The call can reach the live bar. | The preview warns, because the text of the script names the binary and sets the `PATH`. |
+| A script calls a wrapper (`~/bin/sb`), and the wrapper calls the binary | The wrapper is not the shim, so the call can reach the live bar. | Nothing: the text of the script does not name the binary. This is a residual limit. |
+| A script runs `env -i sketchybar …` | `env -i` drops the environment, so the child gets the default `PATH` of `env`, which the scrub did not touch. The call can reach the live bar. | Nothing: the text of the script does not name the binary. This is a residual limit. |
+
+The preview does not claim that the live bar cannot be reached. It says what it cannot intercept.
+
 ## Files
 
 **Create.** `Sources/SketchyBarStudio/Services/PreviewScriptShim.swift`, `Sources/SketchyBarStudio/Services/PreviewScriptRunner.swift`, `Tests/SketchyBarStudioTests/PreviewScriptShimTests.swift`, `Tests/SketchyBarStudioTests/PreviewIsolationTests.swift`.
@@ -85,6 +99,51 @@ The acceptance criterion of this stage is therefore about the `PATH` case, not a
 
 **Do not touch.** `Sources/SketchyBarStudio/Views/**`, `Sources/SketchyBarStudio/Stores/**`, `dist/`, and any file under a user config root.
 
+## How the scripts run
+
+The scripts of the items run the way the daemon runs them, and the preview does not have a second rule for them.
+
+The daemon runs the script of an item from its clock, with the routine of the item and nothing else (`src/bar_manager.c:554`): `bar_item_update(item, NULL, false, NULL)`. That call decides three things:
+
+* whether the script runs at all: `updates = false` never runs it, an item without `update_freq` runs it only on an event, and `updates = when_shown` runs it only while the item is on a bar (`src/bar_item.c:127-139`);
+* when the script runs: the counter of the item decides (`src/bar_item.c:132-133`), so an item with `update_freq = 60` runs its script every 60 seconds;
+* what the child of the script sees: the environment of the item itself, with the name of the item, the variables of the item and the sender (`src/bar_item.c:142-161`).
+
+The preview uses that call, so an item that the daemon would not update shows no live value in the preview either. **An item without `update_freq` shows no live value: that is the truth of the daemon, not a defect of the preview.**
+
+The preview rebuilds its item tree on every render and on every tick of the timer, so the counter of an item and the fact that it was on a bar are kept between the trees (`shim/sketchybar_preview_state.c`). The cadence of the daemon therefore survives the rebuild.
+
+There are two routes, and they keep their results apart (`Sources/SketchyBarStudio/Services/PreviewScriptRunner.swift`):
+
+* the **render route** runs the scripts of the items through the vendored core, so the child gets the environment of the item itself. The timer uses this route, once per tick, and the render reuses the result;
+* the **timer route** runs the scripts by their text, for a caller that has no tree of items. The child gets the name of the item and the sender only.
+
+The result of the timer route never replaces the result of the render route. The two routes do not run the same scripts in the same environment, and the render shows the values of the render route.
+
+The key of the values holds the scripts of the vendored core, not the scripts of the config: a space item gets the script of the daemon (`src/bar_item.c:428-431`), and the item is cached under its own script.
+
+## The deviations of this stage
+
+The stage has three deviations from its own acceptance criteria. They are deliberate, and they are listed here so that a later stage knows what it inherits.
+
+### The timer does not stop with the pane
+
+The acceptance criterion of the stage is "the timer stops when the preview pane is hidden". The stage does not touch `Sources/SketchyBarStudio/Views/**`, and the pane cannot tell the service that it is hidden.
+
+The substitute is the idle timeout of the runner: the timer stops when no render was requested for ten seconds (`PreviewScriptRunner.idleTimeout`). The cost of the substitute: the timer keeps forking the scripts of the user for up to ten seconds after the pane is hidden, and any keystroke anywhere in the editor keeps it alive at one hertz.
+
+`BarRendererService.stopLiveValues()` stops the timer on demand. A stage that may change the views calls it when the pane is hidden.
+
+The timer cannot outlive the preview harmfully: `sb_preview_run_script` takes no handle and never touches the model of the preview, and the two routes serialise on the lock of the runner.
+
+### The sink escapes the newlines
+
+The sink holds one line per property, so a value that holds a newline breaks the line. The shim escapes the backslashes and the newlines, and the preview unescapes them again (`PreviewScriptShim.unescaped`). The transport of SketchyBar is NUL separated and keeps such a value whole (`src/misc/helpers.h:247-263`), so the preview keeps it and the sink does not. That is the deviation from the tab separated contract of the stage.
+
+### The residual limits of the isolation
+
+The table above lists the cases the preview cannot intercept: a script that sets its own `PATH`, a wrapper script and `env -i`. The preview warns about the first one and says nothing about the other two.
+
 ## Acceptance criteria
 
 * A script that does `sketchybar --set clock label="12:00"` changes the label in the preview.
@@ -92,7 +151,7 @@ The acceptance criterion of this stage is therefore about the `PATH` case, not a
 * A script that resolves `sketchybar` through `PATH` cannot change the live bar. Checkable with `sketchybar --query clock` before and after: the value is unchanged. These tests need a running daemon; they are skipped when `sketchybar --query bar` fails.
 * A script that sleeps for longer than the timeout is killed, and the preview reports the timeout.
 * A script that calls `sketchybar --something-unsupported` produces a warning and no change to the live bar.
-* The timer stops when the preview pane is hidden.
+* The timer stops when the preview pane is hidden. **Deviation:** the pane cannot tell the service that it is hidden without a change in the views, so the timer stops after ten idle seconds instead. See "The deviations of this stage".
 * The shim never invokes the real `sketchybar` binary: the child process path resolves to the shim, and the shim exits with 64 for any command it does not handle.
 * The child `PATH` does not contain the directory of the real `sketchybar` binary.
 * The preview warns when a script references an absolute `sketchybar` path.
@@ -102,7 +161,21 @@ The acceptance criterion of this stage is therefore about the `PATH` case, not a
 
 `PreviewScriptShimTests.swift` (unit tests for argument parsing and the sink format, including a test for the `-m --set` form) and `PreviewIsolationTests.swift` (the "no live-bar mutation without consent" test). The shared strategy is in [testing.md](testing.md).
 
-A soak test runs the live-value loop — create a preview, run the item scripts, read the sink, re-render, destroy — a few hundred times, and asserts that the file-descriptor count and the resident memory do not grow. It is the live-value counterpart of the Stage 2 soak test.
+A soak test runs the live-value loop — create a preview, run the item scripts, read the sink, re-render, destroy — a few hundred times, and asserts that the file-descriptor count and the resident memory do not grow. It is the live-value counterpart of the Stage 2 soak test. The loop runs both routes of the runner, inside an autorelease pool, so the numbers mean something: the pool and the routes are the path of the app.
+
+The tests of the scripts of the items:
+
+| Test | What it holds |
+| --- | --- |
+| `testTheScriptOfAnItemSetsItsLabelInThePreview` | The script of an item sets its label in the preview. |
+| `testAnItemThatDoesNotUpdateNeverRunsItsScript` | The gate of the daemon: `updates = false` never runs the script. |
+| `testAnItemWithoutAnUpdateFrequencyShowsNoLiveValue` | The truth of the daemon: an item without `update_freq` shows no live value. |
+| `testTheTwoRoutesDoNotRunTheScriptsInTheSameEnvironment` | The render route gives the child the variables of the item, the timer route does not, and the timer never replaces the result of the render. |
+| `testTheBatchOfScriptsHasOneDeadline` | A batch of scripts that hang costs one timeout and not one per script. |
+| `testAScriptThatSetsItsOwnPathIsAWarning` | A script that sets its own `PATH` is a warning. |
+| `testAMentionInACommentIsNoWarning` | A mention inside a comment is not a warning. |
+| `testTheChildOfAScriptHasNoDirectoryWithABinaryOnItsPath` | The child of a script has no directory with a binary on its `PATH`. The test builds that directory, so the assertion always means something. |
+| `testTheScriptsOfThePreviewCannotChangeTheLiveBar` | The live bar of the user is untouched. It needs a running daemon and is skipped when there is none, so the claim of the isolation is **unproven on a machine without the daemon**. |
 
 ## Risks and unknowns
 

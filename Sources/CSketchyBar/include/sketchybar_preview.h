@@ -2,6 +2,7 @@
 #define SKETCHYBAR_PREVIEW_H
 
 #include <CoreGraphics/CoreGraphics.h>
+#include <stddef.h>
 
 /* The target builds with -fvisibility=hidden (makefile:1), so the exports
    need an explicit default visibility. */
@@ -16,6 +17,8 @@
 #define SB_ERR_ITEM_NOT_FOUND     3  /* no item of the preview has that alias */
 #define SB_ERR_ITEM_EXISTS        4  /* an item with that alias already exists*/
 #define SB_ERR_PROPERTY_REJECTED  5  /* the vendored parser rejected the key  */
+#define SB_ERR_SCRIPT_TIMEOUT     6  /* a script of an item ran too long      */
+#define SB_ERR_SCRIPT_FAILED      7  /* a script of an item failed             */
 
 /* The preview of one bar. The handle owns the model of the vendored core
    while it is alive: the items, the default item and the bar properties.
@@ -180,6 +183,87 @@ SB_API int sb_preview_bar_frame(sb_preview_t* preview, CGRect* outFrame);
    owned by the preview: it stays valid until the next call that can produce
    a message, and until sb_preview_destroy. The caller must not free it. */
 SB_API const char* sb_preview_messages(sb_preview_t* preview);
+
+/* The environment of the scripts of the preview.
+
+   The scripts of the items run inside the preview, in a child process, the
+   way the daemon runs them (src/bar_item.c:166-168). A script that calls
+   `sketchybar` must never reach the live bar of the user, so the child gets
+   a PATH whose first entry is the directory of the shim, and the shim
+   writes to the sink file instead of talking to the daemon.
+
+   The shim directory is the directory that holds the shim, the sink path is
+   the file the shim writes to, and the log directory is the directory that
+   holds the standard error of every script. All three are in a directory of
+   their own, and the preview removes that directory when the render is
+   done.
+
+   The setting is global, because the runner of the scripts is global: the
+   children of the scripts are tracked in one place. The call comes before
+   the call that runs the scripts. */
+SB_API int sb_preview_set_script_environment(const char* shim_directory,
+                                              const char* sink_path,
+                                              const char* log_directory);
+
+/* Runs the script of every item of the preview that has one.
+
+   The scripts run the way the daemon runs them: the routine of the item
+   and nothing else (src/bar_manager.c:554), which is
+   bar_item_update(item, NULL, false, NULL). The gate of the daemon
+   decides whether a script runs at all: `updates = false` never runs it,
+   an item without `update_freq` runs it only on an event, and
+   `updates = when_shown` runs it only while the item is on a bar
+   (src/bar_item.c:127-139).
+
+   The child gets the environment of the item itself: the name of the
+   item, the variables of the item and the sender (src/bar_item.c:142-161).
+   The environment of the child is the environment of the shim, so the
+   calls the script makes reach the shim.
+
+   The call waits for the children. A script that runs longer than the
+   timeout of the preview is stopped, and the answer is
+   SB_ERR_SCRIPT_TIMEOUT. A script that fails answers
+   SB_ERR_SCRIPT_FAILED. The messages of the run say which item failed and
+   why: sb_preview_script_messages has them.
+
+   The counter of an item decides when its script runs, exactly as in the
+   daemon (src/bar_item.c:132-133). The preview rebuilds its item tree on
+   every render, so the counter of an item is kept between the trees.
+
+   The messages of the run are separate from the messages of the properties,
+   because the properties of an item are read after the scripts ran, and
+   that read clears the messages of the properties. */
+SB_API int sb_preview_run_item_scripts(sb_preview_t* preview);
+
+/* Runs several scripts, by their text, the way the daemon runs the script
+   of an item.
+
+   The aliases and the scripts hold one entry per script, and the count is
+   the number of the entries. Every child is forked first and the call
+   waits for all of them once, so the whole batch has one deadline: N
+   scripts that hang cost one timeout and not N of them.
+
+   The scripts of this route run with the name of the item and the sender
+   only. The route that runs the scripts of the items themselves,
+   sb_preview_run_item_scripts, gives the child the environment of the
+   item.
+
+   The call answers the same codes as sb_preview_run_item_scripts. */
+SB_API int sb_preview_run_scripts(const char* const* aliases,
+                                   const char* const* scripts,
+                                   size_t count);
+
+/* The script of the item with that alias, or NULL when the item has none.
+
+   The script can be one the config does not set: a space item gets the
+   script of the daemon (src/bar_item.c:428-431). The pointer belongs to
+   the item of the preview and must not be freed. */
+SB_API const char* sb_preview_item_script(sb_preview_t* preview, const char* alias);
+
+/* The messages of the last run of the scripts, one per line. The returned
+   pointer belongs to the runner: it stays valid until the next run of the
+   scripts. The caller must not free it. */
+SB_API const char* sb_preview_script_messages(void);
 
 /* The contract of the defaults.
 

@@ -12,6 +12,17 @@ import XCTest
 final class BarRenderPaneTests: XCTestCase {
     // MARK: - The fixtures
 
+    /// The timer of the scripts of the items stops when the tests are done.
+    ///
+    /// The timer of the preview runs the scripts of the items in the
+    /// background, and the vendored core holds one preview at a time: a
+    /// timer that runs while another test holds a preview would make that
+    /// test fail. The timer is the only background work of the app, so it
+    /// stops here.
+    override func tearDown() async throws {
+        await BarRendererService.shared.stopLiveValues()
+    }
+
     /// A config with two items, one on each side of the bar.
     ///
     /// The item on the left has a red background, so a test can tell a

@@ -382,6 +382,52 @@ final class FileSafetyTests: XCTestCase {
         )
     }
 
+    /// The live-value cycle of the preview changes nothing on the disk.
+    ///
+    /// The cycle is the one of the preview: read the config, run the
+    /// scripts of the items, read what they set and render the bar. The
+    /// scripts run in a child process and write into a sink file of their
+    /// own, so nothing of the config of the user is touched.
+    func testTheLiveValueCycleOfThePreviewChangesNothingOnDisk() throws {
+        let testRoot = try makeTestRoot()
+        let configRoot = testRoot.appendingPathComponent("config")
+        try write("""
+        sbar.add("item", "clock", {
+            position = "right",
+            label = "before",
+            script = "sketchybar --set clock label=12:00",
+        })
+        """, to: configRoot.appendingPathComponent("items/clock.lua"))
+        try write("user scratch\n", to: configRoot.appendingPathComponent("backups/sketchybarrc"))
+
+        let before = try snapshot(of: configRoot)
+
+        let plan = PreviewConfigBridge.plan(forConfigRoot: configRoot)
+        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
+        defer { SketchyBarPreviewC.destroy(handle) }
+        PreviewConfigBridge.apply(plan, to: handle)
+
+        let scripts = plan.items.compactMap { item -> PreviewScriptRunner.Script? in
+            guard let script = item.properties.first(where: { $0.key == "script" })?.value else { return nil }
+            return PreviewScriptRunner.Script(alias: item.alias, script: script)
+        }
+        let runner = PreviewScriptRunner()
+        let outcome = runner.values(for: scripts, in: handle)
+        for assignment in outcome.assignments {
+            SketchyBarPreviewC.setItem(handle,
+                                       alias: assignment.alias,
+                                       key: assignment.key,
+                                       value: assignment.value)
+        }
+        _ = SketchyBarPreviewC.render(handle)
+
+        XCTAssertEqual(before, try snapshot(of: configRoot))
+        XCTAssertEqual(
+            try String(contentsOf: configRoot.appendingPathComponent("backups/sketchybarrc"), encoding: .utf8),
+            "user scratch\n"
+        )
+    }
+
     /// The bytes and the modification date of every file under a folder.
     private func snapshot(of root: URL) throws -> [String: FileState] {
         guard let enumerator = FileManager.default.enumerator(
