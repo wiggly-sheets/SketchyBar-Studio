@@ -2,6 +2,7 @@
 #define SKETCHYBAR_PREVIEW_SHIM_H
 
 #include <CoreGraphics/CoreGraphics.h>
+#include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -120,9 +121,25 @@ void preview_set_script_environment(const char* shim_directory,
    forks, so the report of a script knows the item it belongs to. */
 void preview_set_current_script(const char* alias);
 
-/* Runs one script the way the daemon runs the script of an item: the same
-   child, the same environment, the same timeout. */
-bool preview_run_script(const char* alias, const char* script);
+/* Runs several scripts the way the daemon runs the script of an item: the
+   same child, the same environment, the same timeout. Every child is
+   forked first and the wait happens once, so the whole batch has one
+   deadline and not one deadline per script.
+
+   The arrays hold one alias and one script per entry, and the count is
+   the number of entries. */
+bool preview_run_scripts(char** aliases, char** scripts, size_t count);
+
+/* The state of the items between two runs of the scripts. The item tree
+   of the preview is rebuilt on every render and on every tick of the
+   timer, so the counter of an item and the fact that it was on a bar are
+   kept here and given back to the item when the tree is built again. The
+   daemon keeps them in the item, which lives as long as the config
+   (src/bar_item.c:126-133). */
+uint32_t preview_item_counter_for(const char* alias);
+bool preview_item_shown_for(const char* alias);
+void preview_item_counter_store(const char* alias, uint32_t counter);
+void preview_item_shown_store(const char* alias, bool shown);
 
 /* Waits for the children of the scripts and reports what happened. */
 void preview_wait_for_scripts(int timeout_milliseconds);

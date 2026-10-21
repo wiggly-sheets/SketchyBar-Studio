@@ -78,6 +78,11 @@ static char* g_preview_current_alias = NULL;
 /* The number of the scripts that were forked. It names the log files. */
 static unsigned g_preview_script_index = 0;
 
+/* The number of the children that could not be forked. The preview says
+   so, because a script that does not start is a script that does not run.
+   The count is read and cleared by the wait, which runs after the forks. */
+static unsigned g_preview_fork_failures = 0;
+
 /* The messages of the last run of the scripts and its outcome. */
 static char* g_preview_script_messages = NULL;
 static int g_preview_script_status = PREVIEW_SCRIPT_OUTCOME_OK;
@@ -227,7 +232,13 @@ static bool preview_path_add(char** path,
 
 /* Whether a directory holds a file called "sketchybar".
    A directory that holds one is removed from the PATH of the child, so a
-   script that resolves the binary by name cannot reach the real daemon. */
+   script that resolves the binary by name cannot reach the real daemon.
+
+   Only a regular file counts: a directory or a socket called
+   "sketchybar" cannot be run, so the entry stays on the PATH. A stat that
+   fails with anything else than "no such file" means that the preview
+   cannot tell, and the conservative answer is that the directory holds a
+   binary: the entry is removed then. */
 static bool preview_directory_holds_binary(const char* directory) {
   if (!directory || !*directory) return false;
 
@@ -236,7 +247,8 @@ static bool preview_directory_holds_binary(const char* directory) {
   if (length < 0 || length >= (int)sizeof(path)) return true;
 
   struct stat buffer;
-  return stat(path, &buffer) == 0;
+  if (stat(path, &buffer) != 0) return errno != ENOENT;
+  return S_ISREG(buffer.st_mode);
 }
 
 /* Whether the PATH holds that directory as one of its entries. */
@@ -450,7 +462,9 @@ static void preview_add_message(const char* format, ...) {
   va_end(args);
 }
 
-/* The text of a file, or NULL when the file cannot be read. */
+/* The text of a file, or NULL when the file cannot be read.
+   The whole file is read: a log that is cut in the middle of a line loses
+   the message of the script. */
 static char* preview_read_file(const char* path) {
   if (!path) return NULL;
 
@@ -465,10 +479,18 @@ static char* preview_read_file(const char* path) {
     return NULL;
   }
 
-  while (length + 512 < capacity) {
-    size_t read = fread(text + length, 1, 512, file);
+  while (true) {
+    if (length + 1 >= capacity) {
+      size_t grown = capacity * 2;
+      char* bigger = realloc(text, grown);
+      if (!bigger) break;
+      text = bigger;
+      capacity = grown;
+    }
+
+    size_t read = fread(text + length, 1, capacity - length - 1, file);
     length += read;
-    if (read < 512) break;
+    if (read == 0) break;
   }
 
   fclose(file);
@@ -578,60 +600,98 @@ void preview_wait_for_scripts(int timeout_milliseconds) {
                           alias,
                           PREVIEW_SCRIPT_TIMEOUT         );
       if (g_preview_script_status == PREVIEW_SCRIPT_OUTCOME_OK) g_preview_script_status = PREVIEW_SCRIPT_OUTCOME_TIMEOUT;
-      continue;
+    } else {
+      int code = WIFEXITED(child->status) ? WEXITSTATUS(child->status) : -1;
+      if (code != 0) {
+        preview_add_message("The script of the item '%s' failed with the code %d.\n",
+                            alias,
+                            code                          );
+        if (g_preview_script_status == PREVIEW_SCRIPT_OUTCOME_OK) g_preview_script_status = PREVIEW_SCRIPT_OUTCOME_FAILED;
+      }
     }
 
-    int code = WIFEXITED(child->status) ? WEXITSTATUS(child->status) : -1;
-    if (code == 0) continue;
-
-    preview_add_message("The script of the item '%s' failed with the code %d.\n",
-                        alias,
-                        code                          );
-    if (g_preview_script_status == PREVIEW_SCRIPT_OUTCOME_OK) g_preview_script_status = PREVIEW_SCRIPT_OUTCOME_FAILED;
-
-    /* The script wrote to its standard error: the shim reports a command it
-       does not handle there, and the preview shows the report. */
+    /* The script wrote to its standard error or to its standard output:
+       the shim reports a command it does not handle there, and a script
+       that succeeds but complains says so there too. The message is read
+       whatever the exit code is, so a complaint of a script that succeeded
+       is not lost. */
     char* text = preview_read_file(child->log_path);
     if (text) {
-      preview_add_message("%s", text);
+      if (*text) preview_add_message("%s", text);
       free(text);
     }
+  }
+
+  /* The children that could not be forked: the script did not run at all,
+     and the preview says so instead of showing a bar without the value. */
+  unsigned failures = g_preview_fork_failures;
+  g_preview_fork_failures = 0;
+  if (failures > 0) {
+    preview_add_message("%u script(s) of the items could not be started.\n", failures);
+    if (g_preview_script_status == PREVIEW_SCRIPT_OUTCOME_OK) g_preview_script_status = PREVIEW_SCRIPT_OUTCOME_FAILED;
   }
 
   preview_free_children();
 }
 
-/* Runs one script the way the daemon runs the script of an item: the same
-   child, the same environment, the same timeout. The alias is the name of
-   the item and the script is the text of the script. */
-bool preview_run_script(const char* alias, const char* script) {
-  if (!alias || !script) return false;
+/* Runs several scripts the way the daemon runs the script of an item: the
+   same child, the same environment, the same timeout.
 
-  preview_set_current_script(alias);
+   Every child is forked first and the wait happens once, in the caller:
+   the whole batch has one deadline, so N scripts that hang cost one
+   timeout and not N of them. */
+bool preview_run_scripts(char** aliases, char** scripts, size_t count) {
+  if (!aliases || !scripts) return false;
 
-  struct env_vars env_vars;
-  env_vars_init(&env_vars);
-  env_vars_set(&env_vars, string_copy("NAME"), string_copy((char*)alias));
-  env_vars_set(&env_vars, string_copy("SENDER"), string_copy("routine"));
+  bool started = true;
+  for (size_t i = 0; i < count; i++) {
+    const char* alias = aliases[i];
+    const char* script = scripts[i];
+    if (!alias || !script) continue;
 
-  bool started = fork_exec((char*)script, &env_vars);
-  env_vars_destroy(&env_vars);
+    preview_set_current_script(alias);
+
+    struct env_vars env_vars;
+    env_vars_init(&env_vars);
+    env_vars_set(&env_vars, string_copy("NAME"), string_copy((char*)alias));
+    env_vars_set(&env_vars, string_copy("SENDER"), string_copy("routine"));
+
+    bool forked = fork_exec((char*)script, &env_vars);
+    env_vars_destroy(&env_vars);
+    if (!forked) started = false;
+  }
+
   return started;
 }
 
 /* --- The child of the script ---------------------------------------------- */
 
-static void preview_exec(char* command, struct env_vars* env_vars) {
-  char** environment = preview_build_environment(env_vars);
-  if (!environment) return;
-
-  char* arguments[] = { "/usr/bin/env", "sh", "-c", command, NULL };
-  execve(arguments[0], arguments, environment);
-}
-
 bool sync_exec(char* command, struct env_vars* env_vars) {
-  preview_exec(command, env_vars);
-  return false;
+  /* The daemon runs the command in the current process and replaces it
+     (src/misc/helpers.h:441-447). The preview must never replace the app,
+     so the command runs in a child and the parent waits for it. */
+  if (!command) return false;
+
+  char** environment = preview_build_environment(env_vars);
+  if (!environment) return false;
+
+  pid_t pid = fork();
+  if (pid == -1) {
+    preview_free_environment(environment);
+    return false;
+  }
+  if (pid == 0) {
+    char* arguments[] = { "/usr/bin/env", "sh", "-c", command, NULL };
+    execve(arguments[0], arguments, environment);
+    _exit(127);
+  }
+
+  preview_free_environment(environment);
+
+  int status = 0;
+  while (waitpid(pid, &status, 0) == -1 && errno == EINTR) {}
+
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
 
 bool fork_exec(char* command, struct env_vars* env_vars) {
@@ -643,9 +703,10 @@ bool fork_exec(char* command, struct env_vars* env_vars) {
   char** environment = preview_build_environment(env_vars);
   if (!environment) return false;
 
-  /* The log of the script: the child writes its standard error there, so
-     the preview can show what the script complained about. The file is
-     opened in the parent, because the child must not open files. */
+  /* The log of the script: the child writes its standard error and its
+     standard output there, so the preview can show what the script said.
+     The file is opened in the parent, because the child must not open
+     files. */
   char log_path[PREVIEW_PATH_MAX];
   int log_fd = -1;
   log_path[0] = '\0';
@@ -663,6 +724,7 @@ bool fork_exec(char* command, struct env_vars* env_vars) {
   if (pid == -1) {
     preview_free_environment(environment);
     if (log_fd >= 0) close(log_fd);
+    g_preview_fork_failures++;
     return false;
   }
   if (pid != 0) {
@@ -674,6 +736,7 @@ bool fork_exec(char* command, struct env_vars* env_vars) {
 
   if (log_fd >= 0) {
     dup2(log_fd, STDERR_FILENO);
+    dup2(log_fd, STDOUT_FILENO);
     if (log_fd > STDERR_FILENO) close(log_fd);
   }
 

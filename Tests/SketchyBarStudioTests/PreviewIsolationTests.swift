@@ -38,6 +38,43 @@ final class PreviewIsolationTests: XCTestCase {
         }
     }
 
+    /// The child of a script does not get a directory that holds a file
+    /// called `sketchybar` on its PATH.
+    ///
+    /// The test builds that directory itself, so the assertion always means
+    /// something: the directories of the PATH of the test process may hold
+    /// no binary at all, and then the loop above proves nothing.
+    func testTheChildOfAScriptHasNoDirectoryWithABinaryOnItsPath() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PreviewIsolation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let binary = directory.appendingPathComponent(PreviewScriptShim.executableName)
+        try "#!/bin/sh\nexit 0\n".write(to: binary, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+
+        // The directory is on the PATH of the app while the environment of
+        // the child is built.
+        let original = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        setenv("PATH", "\(directory.path):\(original)", 1)
+        defer { setenv("PATH", original, 1) }
+
+        let installation = try PreviewScriptShim.Installation()
+        defer { installation.remove() }
+
+        SketchyBarPreviewC.setScriptEnvironment(shimDirectory: installation.directory.path,
+                                                sinkPath: installation.sinkURL.path,
+                                                logDirectory: installation.logDirectory.path)
+
+        let entries = pathEntries(in: BarPreviewTestAccessors.childEnvironment())
+
+        XCTAssertFalse(entries.contains(directory.path),
+                       "the child must not have the directory of a sketchybar binary on its PATH: \(entries)")
+        XCTAssertEqual(entries.first, installation.directory.path,
+                       "the shim has to come first on the PATH of the child")
+    }
+
     // MARK: - The live bar
 
     /// A script of the preview that resolves `sketchybar` through the PATH
@@ -126,22 +163,43 @@ final class PreviewIsolationTests: XCTestCase {
     }
 
     /// One cycle of the live-value loop.
+    ///
+    /// The cycle is the path of the app: the render route runs the scripts
+    /// of the items of the preview, the timer route runs the scripts by
+    /// their text, and the tick of the timer builds a tree of its own and
+    /// runs the routine of the items. Every route runs the scripts in a
+    /// child process and builds a tree of the vendored core, so the loop
+    /// covers the children of the scripts, the log files, the sink and the
+    /// tree of the preview.
     private func runLiveValueCycle() {
         autoreleasepool {
+            let script = "sketchybar --set clock label=12:00"
+            let scripts = [PreviewScriptRunner.Script(alias: "clock", script: script)]
+            let plan = BarRenderPlan(
+                defaults: [],
+                bar: [],
+                items: [BarRenderItemModel(alias: "clock",
+                                           properties: [BarRenderProperty(key: "script", value: script),
+                                                       BarRenderProperty(key: "update_freq", value: "1")])],
+                warnings: []
+            )
+
             guard let handle = SketchyBarPreviewC.create() else { return }
-            defer { SketchyBarPreviewC.destroy(handle) }
 
             SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25)
             SketchyBarPreviewC.addItem(handle, alias: "clock", position: "left")
-
-            let script = "sketchybar --set clock label=12:00"
             SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
+            // The daemon runs the script of an item from its clock, so the
+            // item asks for an update frequency (src/bar_item.c:127-133).
+            SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
 
             // A runner of its own for every cycle, so the scripts run again
             // and the loop covers the whole path.
             let runner = PreviewScriptRunner()
-            let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
-                                        in: handle)
+            runner.noteRequest(scripts: scripts)
+
+            // The render route: the scripts of the items of the preview.
+            let outcome = runner.values(for: scripts, in: handle)
             for assignment in outcome.assignments {
                 SketchyBarPreviewC.setItem(handle, alias: "clock",
                                            key: assignment.key,
@@ -149,6 +207,14 @@ final class PreviewIsolationTests: XCTestCase {
             }
 
             _ = SketchyBarPreviewC.render(handle)
+            SketchyBarPreviewC.destroy(handle)
+
+            // The timer route: the scripts by their text.
+            _ = runner.runCurrentScripts()
+
+            // The tick of the timer: a tree of its own and the routine of
+            // the items, the way the daemon runs them.
+            _ = runner.runItems(of: plan, widthPoints: 480, heightPoints: 25)
         }
     }
 

@@ -226,7 +226,7 @@ enum SketchyBarPreviewC {
         }
     }
 
-    /// Runs the script of every item of the preview that has one.
+    /// Runs the scripts of every item of the preview that has one.
     ///
     /// The call waits for the children. The answer is `Code.ok` when every
     /// script ran, `Code.scriptTimeout` when a script ran too long, and
@@ -236,11 +236,47 @@ enum SketchyBarPreviewC {
         sb_preview_run_item_scripts(handle)
     }
 
-    /// Runs one script, by its text, the way the daemon runs the script of
-    /// an item.
-    static func runScript(alias: String, script: String) -> Int32 {
-        withCStrings(alias, script) { aliasPointer, scriptPointer in
-            sb_preview_run_script(aliasPointer, scriptPointer)
+    /// Runs several scripts, by their text, the way the daemon runs the
+    /// script of an item.
+    ///
+    /// Every child is forked first and the call waits for all of them
+    /// once, so the whole batch has one deadline.
+    static func runScripts(aliases: [String], scripts: [String]) -> Int32 {
+        guard !aliases.isEmpty, aliases.count == scripts.count else {
+            return Code.invalidArgument
+        }
+
+        var aliasCopies: [UnsafeMutablePointer<CChar>] = []
+        var scriptCopies: [UnsafeMutablePointer<CChar>] = []
+        defer {
+            for pointer in aliasCopies { free(pointer) }
+            for pointer in scriptCopies { free(pointer) }
+        }
+
+        for text in aliases {
+            guard let copy = strdup(text) else { return Code.outOfMemory }
+            aliasCopies.append(copy)
+        }
+        for text in scripts {
+            guard let copy = strdup(text) else { return Code.outOfMemory }
+            scriptCopies.append(copy)
+        }
+
+        let aliasPointers = aliasCopies.map { Optional(UnsafePointer($0)) }
+        let scriptPointers = scriptCopies.map { Optional(UnsafePointer($0)) }
+        return sb_preview_run_scripts(aliasPointers, scriptPointers, aliasPointers.count)
+    }
+
+    /// The script of the item with that alias, or nil when the item has
+    /// none.
+    ///
+    /// The script can be one the config does not set: a space item gets the
+    /// script of the daemon (`src/bar_item.c:428-431`).
+    static func itemScript(_ handle: OpaquePointer?, alias: String) -> String? {
+        guard let handle else { return nil }
+        return alias.withCString { aliasPointer in
+            guard let script = sb_preview_item_script(handle, aliasPointer) else { return nil }
+            return String(cString: script)
         }
     }
 

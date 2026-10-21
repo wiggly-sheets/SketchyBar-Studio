@@ -159,6 +159,15 @@ actor BarRendererService {
     /// it is hidden without a change in the views.
     private var liveValuesTimer: DispatchSourceTimer?
 
+    /// The tree of the last render: the plan of the items.
+    ///
+    /// The timer runs the scripts of these items, so it needs the plan.
+    private var livePlan: BarRenderPlan?
+
+    /// The display of the last render: the tree of the timer is built for
+    /// it, so the items have the same place on the bar.
+    private var liveDisplay: (width: Double, height: Double)?
+
     /// The core has one preview at a time, so there is one service.
     private init() {}
 
@@ -168,6 +177,10 @@ actor BarRendererService {
     /// core, which lays the bar out and paints it into a bitmap. The
     /// warnings of the config and of the vendored code come back with the
     /// image.
+    ///
+    /// The body runs inside an autorelease pool: the render allocates the
+    /// objects of Foundation and of the vendored code, and a preview that
+    /// stays open would grow without bound without the pool.
     func render(_ request: BarRenderRequest) throws -> BarRenderResult {
         // The size of the display is checked before the core is touched.
         // A width that is not a number, or a width that is too big, would
@@ -175,67 +188,62 @@ actor BarRendererService {
         // allocated.
         try Self.checkDisplay(request)
 
-        guard let handle = SketchyBarPreviewC.create() else {
-            throw BarRenderError.previewUnavailable
-        }
-        defer { SketchyBarPreviewC.destroy(handle) }
+        return try autoreleasepool {
+            guard let handle = SketchyBarPreviewC.create() else {
+                throw BarRenderError.previewUnavailable
+            }
+            defer { SketchyBarPreviewC.destroy(handle) }
 
-        // The virtual display comes first: the call rebuilds the bar, so
-        // its frame follows the new display (`src/bar.c:516-522`).
-        try setDisplay(handle, request: request)
+            // The virtual display comes first: the call rebuilds the bar, so
+            // its frame follows the new display (`src/bar.c:516-522`).
+            try setDisplay(handle, request: request)
 
-        let plan = Self.plan(for: request.files)
-        // The defaults of the plan come before its items, so every item
-        // inherits them the way it does in SketchyBar.
-        var warnings = request.warnings
-        warnings += PreviewConfigBridge.apply(plan, to: handle)
+            let plan = Self.plan(for: request.files)
+            // The defaults of the plan come before its items, so every item
+            // inherits them the way it does in SketchyBar.
+            var warnings = request.warnings
+            warnings += PreviewConfigBridge.apply(plan, to: handle)
 
-        // The scripts of the items run inside the preview, so the bar shows
-        // the values they produce. The scripts reach the shim and not the
-        // live bar of the user.
-        let scripts = Self.scripts(of: plan)
-        runner.noteRequest(scripts: scripts)
-        let outcome = runner.values(for: scripts, in: handle)
-        warnings += outcome.warnings
-        for assignment in outcome.assignments {
-            warnings += Self.apply(assignment, to: handle)
-        }
+            // The scripts of the items run inside the preview, so the bar shows
+            // the values they produce. The scripts reach the shim and not the
+            // live bar of the user.
+            //
+            // The scripts are the ones the vendored core knows: a space item
+            // gets the script of the daemon (`src/bar_item.c:428-431`), and
+            // the key of the values holds it.
+            let scripts = PreviewScriptRunner.scripts(of: plan, in: handle)
+            runner.noteRequest(scripts: scripts)
+            let outcome = runner.values(for: scripts, in: handle)
+            warnings += outcome.warnings
+            for assignment in outcome.assignments {
+                warnings += Self.apply(assignment, to: handle)
+            }
 
-        guard let image = SketchyBarPreviewC.render(handle) else {
-            throw BarRenderError.renderFailed("The bar could not be rendered.")
-        }
+            guard let image = SketchyBarPreviewC.render(handle) else {
+                throw BarRenderError.renderFailed("The bar could not be rendered.")
+            }
 
-        let frame = SketchyBarPreviewC.barFrame(handle)
-        var rects: [String: CGRect] = [:]
-        var barRects: [String: CGRect] = [:]
-        for item in plan.items {
-            guard let rect = SketchyBarPreviewC.itemRect(handle, alias: item.alias) else { continue }
-            rects[item.alias] = rect
-            barRects[item.alias] = Self.barRelative(rect, in: frame)
-        }
+            let frame = SketchyBarPreviewC.barFrame(handle)
+            var rects: [String: CGRect] = [:]
+            var barRects: [String: CGRect] = [:]
+            for item in plan.items {
+                guard let rect = SketchyBarPreviewC.itemRect(handle, alias: item.alias) else { continue }
+                rects[item.alias] = rect
+                barRects[item.alias] = Self.barRelative(rect, in: frame)
+            }
 
-        startLiveValuesTimer()
+            livePlan = plan
+            liveDisplay = (request.displayWidthPoints, request.displayHeightPoints)
+            startLiveValuesTimer()
 
-        return BarRenderResult(
-            image: image,
-            pixelSize: CGSize(width: image.width, height: image.height),
-            itemRects: rects,
-            barRelativeRects: barRects,
-            barFrame: frame,
-            warnings: warnings
-        )
-    }
-
-    /// The scripts of the items of a plan.
-    ///
-    /// The script of an item is the `script` property of the item, the
-    /// property the daemon reads with `bar_item_set_script`
-    /// (`src/bar_item.c:1248`).
-    private static func scripts(of plan: BarRenderPlan) -> [PreviewScriptRunner.Script] {
-        plan.items.compactMap { item in
-            guard let script = item.properties.first(where: { $0.key == "script" })?.value,
-                  !script.isEmpty else { return nil }
-            return PreviewScriptRunner.Script(alias: item.alias, script: script)
+            return BarRenderResult(
+                image: image,
+                pixelSize: CGSize(width: image.width, height: image.height),
+                itemRects: rects,
+                barRelativeRects: barRects,
+                barFrame: frame,
+                warnings: warnings
+            )
         }
     }
 
@@ -273,20 +281,64 @@ actor BarRendererService {
                        repeating: Self.liveValuesInterval)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            guard !runner.isIdle else {
-                Task { await self.stopLiveValuesTimer() }
-                return
-            }
-            _ = runner.runCurrentScripts()
+            // A tick that is already running is not started again, so the
+            // timer does not pile up ticks when a script hangs.
+            guard runner.claimTick() else { return }
+            Task { await self.tickLiveValues() }
         }
         timer.resume()
         liveValuesTimer = timer
+    }
+
+    /// One tick of the timer: the routine of the items, the way the daemon
+    /// runs it.
+    ///
+    /// The daemon runs the script of an item from its clock, with the
+    /// routine of the item and nothing else (`src/bar_manager.c:554`). The
+    /// counter of the item decides when its script runs, so the routine
+    /// runs once per tick of the timer and not once per render.
+    ///
+    /// The tick builds a tree of its own, because the vendored core keeps
+    /// one tree at a time and the render uses it. The counter of every item
+    /// is kept between the trees, so the cadence of the daemon survives.
+    private func tickLiveValues() {
+        defer { runner.releaseTick() }
+
+        guard !runner.isIdle else {
+            stopLiveValuesTimer()
+            return
+        }
+        guard let plan = livePlan, let display = liveDisplay else { return }
+
+        // A config without a script has nothing to run: the tick skips it
+        // instead of building a tree and a directory for nothing.
+        guard plan.items.contains(where: { item in
+            item.properties.contains { $0.key == "script" && !$0.value.isEmpty }
+        }) else { return }
+
+        autoreleasepool {
+            _ = runner.runItems(of: plan,
+                                widthPoints: display.width,
+                                heightPoints: display.height)
+        }
     }
 
     /// Stops the timer of the scripts of the items.
     private func stopLiveValuesTimer() {
         liveValuesTimer?.cancel()
         liveValuesTimer = nil
+    }
+
+    /// Stops the timer of the scripts of the items.
+    ///
+    /// The pane of the preview cannot tell the service that it is hidden
+    /// without a change in the views, so the timer stops when the requests
+    /// stop. A stage that may change the views calls this when the pane is
+    /// hidden.
+    func stopLiveValues() {
+        stopLiveValuesTimer()
+        livePlan = nil
+        liveDisplay = nil
     }
 
     /// The values the scripts of the items produced.

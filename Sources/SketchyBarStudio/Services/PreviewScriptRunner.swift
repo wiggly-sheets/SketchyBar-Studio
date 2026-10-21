@@ -11,6 +11,16 @@ import Foundation
 /// binary is not on the `PATH` at all. A script of the preview therefore
 /// cannot change the live bar of the user.
 ///
+/// There are two routes, and they keep their results apart:
+///
+/// * the render route runs the scripts of the items of a preview through
+///   the vendored core, so the child gets the environment of the item
+///   itself: its name, its variables and the sender
+///   (`src/bar_item.c:142-161`). The gate of the daemon decides whether a
+///   script runs at all (`src/bar_item.c:127-139`).
+/// * the timer route runs the scripts by their text, for a caller that has
+///   no tree of items. The child gets the name of the item and the sender.
+///
 /// The runner keeps one run at a time, because the vendored core keeps the
 /// children of the scripts in one place.
 final class PreviewScriptRunner: @unchecked Sendable {
@@ -67,8 +77,19 @@ final class PreviewScriptRunner: @unchecked Sendable {
     /// The time of the last request.
     private var lastRequest: Date?
 
-    /// The last run of the scripts.
-    private var lastRun: Run?
+    /// The last run of the render route.
+    ///
+    /// The render route is the one that runs the scripts of the items
+    /// through the vendored core. The timer route keeps its own result, so
+    /// the result of the timer never replaces the result of the render:
+    /// the two routes do not run the same scripts in the same environment.
+    private var lastRenderRun: Run?
+
+    /// The last run of the timer route.
+    private var lastTimerRun: Run?
+
+    /// Whether a tick of the timer is running.
+    private var tickInProgress = false
 
     /// Records the scripts of a request, so the timer can run them again.
     func noteRequest(scripts: [Script]) {
@@ -86,46 +107,137 @@ final class PreviewScriptRunner: @unchecked Sendable {
         return Date().timeIntervalSince(lastRequest) >= Self.idleTimeout
     }
 
-    /// The values of the items: the ones of the last run when they are
-    /// fresh, or a new run of the scripts of the items.
+    /// Claims the tick of the timer.
     ///
-    /// The fresh run uses the scripts the vendored core knows: the script of
-    /// the item, with the variables of the item, its name and the sender
-    /// (`src/bar_item.c:114-171`).
+    /// The timer fires every second and a tick can take longer than that
+    /// when a script hangs, so the timer asks for the tick and skips it
+    /// when one is already running.
+    func claimTick() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !tickInProgress else { return false }
+        tickInProgress = true
+        return true
+    }
+
+    /// Releases the tick of the timer.
+    func releaseTick() {
+        lock.lock()
+        defer { lock.unlock() }
+        tickInProgress = false
+    }
+
+    // MARK: - The render route
+
+    /// The values of the items: the ones of the last run of the render
+    /// route when they are fresh, or a new run of the scripts of the items.
+    ///
+    /// The fresh run uses the scripts the vendored core knows: the script
+    /// of the item, with the variables of the item, its name and the sender
+    /// (`src/bar_item.c:114-171`). The result of the timer route is never
+    /// used here: the two routes do not run the same scripts in the same
+    /// environment.
     func values(for scripts: [Script], in handle: OpaquePointer?) -> Outcome {
         lock.lock()
         defer { lock.unlock() }
 
-        if let lastRun,
-           lastRun.scripts == scripts,
-           Date().timeIntervalSince(lastRun.date) < Self.valuesLifetime {
-            return lastRun.outcome
+        if let lastRenderRun,
+           lastRenderRun.scripts == scripts,
+           Date().timeIntervalSince(lastRenderRun.date) < Self.valuesLifetime {
+            return lastRenderRun.outcome
         }
 
         let outcome = Self.runItems(of: handle, scripts: scripts)
-        lastRun = Run(scripts: scripts, outcome: outcome, date: Date())
+        lastRenderRun = Run(scripts: scripts, outcome: outcome, date: Date())
         return outcome
     }
 
+    /// Runs the scripts of the items of a plan, on a tree of its own.
+    ///
+    /// The timer of the preview uses this: the daemon runs the script of an
+    /// item from its clock, with the routine of the item and nothing else
+    /// (`src/bar_manager.c:554`). The counter of the item decides when its
+    /// script runs (`src/bar_item.c:132-133`), so the routine runs once
+    /// per tick of the timer and not once per render.
+    func runItems(of plan: BarRenderPlan,
+                  widthPoints: Double,
+                  heightPoints: Double) -> Outcome {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let handle = SketchyBarPreviewC.create() else {
+            return Outcome(assignments: [],
+                           warnings: ["The scripts of the items could not run, because the preview core could not start."])
+        }
+        defer { SketchyBarPreviewC.destroy(handle) }
+
+        SketchyBarPreviewC.setDisplay(handle, widthPoints: widthPoints, heightPoints: heightPoints)
+        // The warnings of the plan are the warnings of the render: the
+        // timer does not add them a second time.
+        _ = PreviewConfigBridge.apply(plan, to: handle)
+
+        let scripts = Self.scripts(of: plan, in: handle)
+        guard !scripts.isEmpty else {
+            let outcome = Outcome(assignments: [], warnings: [])
+            lastRenderRun = Run(scripts: scripts, outcome: outcome, date: Date())
+            return outcome
+        }
+
+        let outcome = Self.runItems(of: handle, scripts: scripts)
+        lastRenderRun = Run(scripts: scripts, outcome: outcome, date: Date())
+        return outcome
+    }
+
+    /// The values of the last run of the render route.
+    var lastOutcome: Outcome? {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastRenderRun?.outcome
+    }
+
+    // MARK: - The timer route
+
     /// Runs the scripts of the last request again, by their text.
     ///
-    /// The timer of the preview uses this: the timer has no preview of its
+    /// The timer of the preview used this: the timer has no preview of its
     /// own, so it runs the scripts the way the daemon runs them, with the
-    /// name of the item and the sender.
+    /// name of the item and the sender. The whole batch is forked at once
+    /// and the wait happens once, so the batch has one deadline and not one
+    /// deadline per script.
     func runCurrentScripts() -> Outcome {
         lock.lock()
         defer { lock.unlock() }
 
+        guard !scripts.isEmpty else {
+            return Outcome(assignments: [], warnings: [])
+        }
+
         let outcome = Self.runScripts(scripts)
-        lastRun = Run(scripts: scripts, outcome: outcome, date: Date())
+        lastTimerRun = Run(scripts: scripts, outcome: outcome, date: Date())
         return outcome
     }
 
-    /// The values of the last run of the scripts.
-    var lastOutcome: Outcome? {
+    /// The values of the last run of the timer route.
+    var lastTimerOutcome: Outcome? {
         lock.lock()
         defer { lock.unlock() }
-        return lastRun?.outcome
+        return lastTimerRun?.outcome
+    }
+
+    // MARK: - The scripts of a tree
+
+    /// The scripts of the items of a plan, as the vendored core knows them.
+    ///
+    /// The core can hold a script the config does not set: a space item
+    /// gets the script of the daemon (`src/bar_item.c:428-431`). The key of
+    /// the values holds the scripts of the core, so a space item is cached
+    /// under its own script.
+    static func scripts(of plan: BarRenderPlan, in handle: OpaquePointer?) -> [Script] {
+        plan.items.compactMap { item in
+            guard let script = SketchyBarPreviewC.itemScript(handle, alias: item.alias),
+                  !script.isEmpty else { return nil }
+            return Script(alias: item.alias, script: script)
+        }
     }
 
     // MARK: - The runs
@@ -158,13 +270,14 @@ final class PreviewScriptRunner: @unchecked Sendable {
                                                 sinkPath: installation.sinkURL.path,
                                                 logDirectory: installation.logDirectory.path)
 
-        var collected: [String] = []
-        for script in scripts {
-            let code = SketchyBarPreviewC.runScript(alias: script.alias, script: script.script)
-            collected += runWarnings(of: code, scripts: [script])
-        }
+        // Every script is forked at once and the wait happens once: the
+        // batch has one deadline, so N scripts that hang cost one timeout
+        // and not N of them.
+        let code = SketchyBarPreviewC.runScripts(aliases: scripts.map(\.alias),
+                                                  scripts: scripts.map(\.script))
 
-        return Outcome(assignments: installation.assignments(), warnings: collected)
+        return Outcome(assignments: installation.assignments(),
+                       warnings: runWarnings(of: code, scripts: scripts))
     }
 
     /// What one run produced: the messages of the run, the warnings of the
@@ -194,8 +307,12 @@ final class PreviewScriptRunner: @unchecked Sendable {
             warnings.append(PreviewScriptWarning.failed(code: code))
         }
 
-        for script in scripts where PreviewScriptShim.callsBinaryByAbsolutePath(script.script) {
-            warnings.append(PreviewScriptWarning.absolutePath(script.alias))
+        for script in scripts {
+            if PreviewScriptShim.callsBinaryByAbsolutePath(script.script) {
+                warnings.append(PreviewScriptWarning.absolutePath(script.alias))
+            } else if PreviewScriptShim.overridesPath(script.script) {
+                warnings.append(PreviewScriptWarning.pathOverride(script.alias))
+            }
         }
 
         return warnings
@@ -211,6 +328,16 @@ enum PreviewScriptWarning {
     /// was not intercepted.
     static func absolutePath(_ alias: String) -> String {
         "The script of the item '\(alias)' calls the sketchybar binary by its absolute path, so the preview cannot intercept it and the call reaches the live bar."
+    }
+
+    /// A script that sets its own PATH.
+    ///
+    /// The shim is the first `sketchybar` of the PATH of the child, so a
+    /// script that puts another directory in front of it can reach the real
+    /// binary. The preview cannot see what the script does with the PATH,
+    /// so it warns about it.
+    static func pathOverride(_ alias: String) -> String {
+        "The script of the item '\(alias)' sets its own PATH, so the preview cannot intercept a call of the sketchybar binary and the call can reach the live bar."
     }
 
     /// A script that failed without a message of its own.

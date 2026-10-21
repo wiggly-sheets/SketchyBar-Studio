@@ -292,15 +292,32 @@ scripts of the items of the preview.
   signal terminates the child, and the disposition of the signal is set
   again in the child, so a process that ignores the alarm does not pass
   that on to the script.
-* The standard error of every script goes into a log file of its own, in
-  the directory of the logs. The file is opened in the parent, because the
-  child of a forked process must not call `open`.
+* The standard error and the standard output of every script go into a log
+  file of its own, in the directory of the logs. The file is opened in the
+  parent, because the child of a forked process must not call `open`.
 * The children of the scripts are tracked and reaped. The daemon ignores
   `SIGCHLD` (`src/sketchybar.c:139`), and the preview waits for its
   children, so the app collects no zombie.
 * A script that runs longer than the timeout is reported: the child dies
   with `SIGALRM`, and the parent kills the children that are still running
   when the deadline is over.
+* The route that runs the scripts by their text forks every script of the
+  batch at once and waits once, so the batch has one deadline: N scripts
+  that hang cost one timeout and not N of them.
+* `sync_exec` runs the command in a child and waits for it. The daemon
+  replaces its own process with the command (`src/misc/helpers.h:441-447`),
+  and the preview must never replace the app.
+* A child that cannot be forked is counted and reported: the script did not
+  run at all, and the preview says so.
+
+## `shim/sketchybar_preview_state.c`
+
+The state of the items between two runs of the scripts: the counter of every
+item and the fact that it was on a bar. The daemon keeps that state in the
+item, which lives as long as the config (`src/bar_item.c:126-133`). The
+preview rebuilds its item tree on every render and on every tick of the
+timer, so the state lives here and goes back into the item when the tree is
+built again.
 
 ## `shim/preview_shim.h`
 
@@ -316,9 +333,14 @@ The API of the scripts of the preview:
   path of the sink and the directory of the logs. The setting is global,
   because the runner of the scripts is global.
 * `sb_preview_run_item_scripts` runs the script of every item of the
-  preview that has one, the way the daemon runs it (`src/bar_item.c:114-171`).
-* `sb_preview_run_script` runs one script by its text, for the timer of the
-  preview, which has no preview of its own.
+  preview that has one, the way the daemon runs it: the routine of the item
+  and nothing else (`src/bar_manager.c:554`).
+* `sb_preview_run_scripts` runs several scripts by their text, for a caller
+  that has no tree of items. The whole batch is forked at once and the wait
+  happens once.
+* `sb_preview_item_script` answers the script of an item, which can be one
+  the config does not set: a space item gets the script of the daemon
+  (`src/bar_item.c:428-431`).
 * `sb_preview_script_messages` answers the messages of the last run.
 * The codes `SB_ERR_SCRIPT_TIMEOUT` and `SB_ERR_SCRIPT_FAILED` are new.
   The codes that were there stay the same.
@@ -422,14 +444,16 @@ of the user.
 
 | # | Decision | Where |
 | --- | --- | --- |
-| L1 | The child of a script gets a `PATH` whose first entry is the directory of the shim, and the directory of the real `sketchybar` is removed from it. `/bin` and `/usr/bin` stay on it, because the shell of the child is resolved through the `PATH`. | `shim/sketchybar_preview_fork.c` (`preview_build_path`) |
-| L2 | The shim writes into a sink file, and the path of the sink comes from the environment of the child. The shim, the sink and the logs live in a directory of their own, and the preview removes that directory when the run is done. | `Sources/SketchyBarStudio/Services/PreviewScriptShim.swift` |
+| L1 | The child of a script gets a `PATH` whose first entry is the directory of the shim, and the directory of the real `sketchybar` is removed from it. `/bin` and `/usr/bin` stay on it, because the shell of the child is resolved through the `PATH`. A directory that holds a file called `sketchybar` counts only when that file is a regular file, and a directory the preview cannot read counts as one. | `shim/sketchybar_preview_fork.c` (`preview_build_path`, `preview_directory_holds_binary`) |
+| L2 | The shim writes into a sink file, and the path of the sink comes from the environment of the child. The shim, the sink and the logs live in a directory of their own with the mode 0700, and the preview removes that directory when the run is done. | `Sources/SketchyBarStudio/Services/PreviewScriptShim.swift` |
 | L3 | A script of the preview has three seconds, not the sixty of the daemon. The value is a decision of this project. | `src/misc/helpers.h` (`PREVIEW_SCRIPT_TIMEOUT`), patched by `script/vendor_stage1.py` |
-| L4 | The children of the scripts are tracked and reaped, and the standard error of every script goes into a log file of its own. A script that fails is a warning of the preview, with the report of the script. | `shim/sketchybar_preview_fork.c` (`preview_wait_for_scripts`) |
-| L5 | The scripts of the items run through `bar_item_update`, the way the daemon runs them, so the child gets the variables of the item, its name and the sender. | `preview/sketchybar_preview.c` (`sb_preview_run_item_scripts`) |
-| L6 | The timer of the preview has no preview of its own: it runs the scripts by their text, with the same runner and the same environment. | `preview/sketchybar_preview.c` (`sb_preview_run_script`) |
+| L4 | The children of the scripts are tracked and reaped, and the standard error and the standard output of every script go into a log file of its own. The log is read whatever the exit code of the script is, so a script that succeeds but complains does not lose its message. A script that fails is a warning of the preview, with the report of the script. | `shim/sketchybar_preview_fork.c` (`preview_wait_for_scripts`) |
+| L5 | The scripts of the items run through the routine of the daemon, `bar_item_update(item, NULL, false, NULL)` (`src/bar_manager.c:554`), so the gate of the daemon decides whether a script runs and the child gets the environment of the item itself: its name, its variables and the sender. | `preview/sketchybar_preview.c` (`sb_preview_run_item_scripts`) |
+| L6 | The counter of an item and the fact that it was on a bar are kept between the trees, because the preview rebuilds its item tree on every render and on every tick. The cadence of the daemon therefore survives the rebuild. | `shim/sketchybar_preview_state.c` |
 | L7 | The messages of a run of the scripts are separate from the messages of the properties, because the properties of an item are read after the scripts ran, and that read clears the messages of the properties. | `include/sketchybar_preview.h` |
-| L8 | A script that calls the binary of the daemon by its absolute path is not intercepted: it reaches the live bar. The preview warns about it, and the warning is the only thing the preview can do about it. | `Sources/SketchyBarStudio/Services/PreviewScriptRunner.swift` (`PreviewScriptWarning.absolutePath`) |
+| L8 | A script that calls the binary of the daemon by its absolute path is not intercepted: it reaches the live bar. A script that sets its own `PATH` can put the real binary in front of the shim. The preview warns about both, and the warning is the only thing the preview can do about them. | `Sources/SketchyBarStudio/Services/PreviewScriptRunner.swift` (`PreviewScriptWarning.absolutePath`, `PreviewScriptWarning.pathOverride`) |
+| L9 | The route that runs the scripts by their text forks every script at once and waits once, so the batch has one deadline and not one deadline per script. | `shim/sketchybar_preview_fork.c` (`preview_run_scripts`), `preview/sketchybar_preview.c` (`sb_preview_run_scripts`) |
+| L10 | `sync_exec` does not run the command in the process of the app: the daemon replaces its own process with the command, and the preview must not replace the app. The command runs in a child and the parent waits for it. | `shim/sketchybar_preview_fork.c` (`sync_exec`) |
 
 ### L1 in detail
 
@@ -442,9 +466,43 @@ The directories that hold a file called `sketchybar` are removed from the
 script that calls `sketchybar` by name cannot reach the real daemon
 through it.
 
+Only a regular file counts: a directory or a socket called `sketchybar`
+cannot be run, so the entry stays on the `PATH`. A directory the preview
+cannot read counts as one, because "cannot tell" must not mean "the daemon
+is reachable".
+
 The limit of the mitigation is a script that calls the binary by its
 absolute path: `/opt/homebrew/bin/sketchybar --set ...` reaches the daemon
 and changes the live bar. The preview warns about such a script, so the
 user knows that it was not intercepted.
+
+### L5 and L6 in detail
+
+The daemon runs the script of an item from its clock, with the routine of
+the item and nothing else (`src/bar_manager.c:554`):
+
+```c
+bar_item_update(bar_item, NULL, forced, NULL);
+```
+
+That call is the whole rule of the daemon, and the preview uses it:
+
+* `updates = false` never runs the script, an item without `update_freq`
+  runs it only on an event, and `updates = when_shown` runs it only while
+  the item is on a bar (`src/bar_item.c:127-139`). The preview runs the
+  scripts the daemon runs, and no others.
+* the counter of the item decides when the script runs
+  (`src/bar_item.c:132-133`), so an item with `update_freq = 60` runs its
+  script every 60 seconds.
+* the child gets the environment of the item itself: the name of the item,
+  the variables of the item and the sender (`src/bar_item.c:142-161`). The
+  preview does not build that environment.
+
+The daemon keeps its items for as long as the config lives, so the counter
+of an item and the fact that it was on a bar survive there. The preview
+rebuilds its item tree on every render and on every tick of the timer, so
+both live in the registry of `shim/sketchybar_preview_state.c` and go back
+into the item when the tree is built again. The key of the registry is the
+alias of the item, which is the name of the item.
 
 

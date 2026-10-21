@@ -156,6 +156,11 @@ final class PreviewScriptShimTests: XCTestCase {
 
         let script = "sketchybar --set clock label=\"12:00\""
         SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
+        // The daemon runs the script of an item from its clock, and the
+        // counter of the item decides when it runs (src/bar_item.c:132-133).
+        // An item without an update frequency runs its script only on an
+        // event, so the item of this test asks for one.
+        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
 
         let runner = PreviewScriptRunner()
         let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
@@ -189,6 +194,7 @@ final class PreviewScriptShimTests: XCTestCase {
 
         let script = "sketchybar -m --set clock label=\"12:00\""
         SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
+        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
 
         let runner = PreviewScriptRunner()
         let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
@@ -209,6 +215,7 @@ final class PreviewScriptShimTests: XCTestCase {
 
         let script = "sketchybar --set clock label=\"Hello World\""
         SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
+        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
 
         let runner = PreviewScriptRunner()
         let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
@@ -236,6 +243,7 @@ final class PreviewScriptShimTests: XCTestCase {
 
         let script = "sketchybar --set \"$NAME\" label=\"$SENDER\""
         SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
+        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
 
         let runner = PreviewScriptRunner()
         let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
@@ -254,6 +262,7 @@ final class PreviewScriptShimTests: XCTestCase {
 
         let script = "sleep 60"
         SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
+        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
 
         let runner = PreviewScriptRunner()
         let started = Date()
@@ -261,7 +270,10 @@ final class PreviewScriptShimTests: XCTestCase {
                                     in: handle)
         let elapsed = Date().timeIntervalSince(started)
 
-        XCTAssertLessThan(elapsed, 10, "the script must be stopped, not waited for")
+        // The bound of the preview: the alarm of the child stops the script
+        // after three seconds and the parent kills it half a second later
+        // (PREVIEW_SCRIPT_TIMEOUT and PREVIEW_SCRIPT_MARGIN_MS).
+        XCTAssertLessThan(elapsed, 4, "the script must be stopped, not waited for")
         XCTAssertTrue(outcome.warnings.contains { $0.contains("did not finish") },
                       "\(outcome.warnings)")
     }
@@ -275,6 +287,7 @@ final class PreviewScriptShimTests: XCTestCase {
 
         let script = "sketchybar --query bar"
         SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
+        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
 
         let runner = PreviewScriptRunner()
         let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
@@ -297,12 +310,157 @@ final class PreviewScriptShimTests: XCTestCase {
 
         let script = "/opt/homebrew/bin/sketchybar --set clock label=12:00"
         SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
+        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
 
         let runner = PreviewScriptRunner()
         let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
                                     in: handle)
 
         XCTAssertTrue(outcome.warnings.contains { $0.contains("absolute path") }, "\(outcome.warnings)")
+    }
+
+    /// A script that sets its own PATH can put the real binary in front of
+    /// the shim, and the preview warns about it.
+    ///
+    /// The shim is the first `sketchybar` of the PATH of the child, so a
+    /// script that sets the PATH itself is not intercepted. The preview
+    /// cannot see what the script does with the PATH, so it says so.
+    func testAScriptThatSetsItsOwnPathIsAWarning() throws {
+        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
+        defer { SketchyBarPreviewC.destroy(handle) }
+        SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25)
+        SketchyBarPreviewC.addItem(handle, alias: "clock", position: "left")
+
+        let script = "PATH=/opt/homebrew/bin:$PATH sketchybar --set clock label=12:00"
+        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
+        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
+
+        let runner = PreviewScriptRunner()
+        let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
+                                    in: handle)
+
+        XCTAssertTrue(outcome.warnings.contains { $0.contains("its own PATH") }, "\(outcome.warnings)")
+    }
+
+    /// A line that is a comment is not run, so it is not a warning.
+    func testAMentionInACommentIsNoWarning() {
+        XCTAssertFalse(PreviewScriptShim.callsBinaryByAbsolutePath("# /opt/homebrew/bin/sketchybar --set"))
+        XCTAssertFalse(PreviewScriptShim.overridesPath("# PATH=/opt/homebrew/bin sketchybar --set"))
+        XCTAssertTrue(PreviewScriptShim.callsBinaryByAbsolutePath("/opt/homebrew/bin/sketchybar --set"))
+        XCTAssertTrue(PreviewScriptShim.overridesPath("PATH=/opt/homebrew/bin:$PATH sketchybar --set"))
+    }
+
+    /// An item that does not update never runs its script.
+    ///
+    /// The daemon runs the script of an item from its clock, and the gate
+    /// of the daemon decides whether it runs: `updates = false` never runs
+    /// it (src/bar_item.c:127-130). The preview uses the same call, so the
+    /// script of such an item does not run in the preview either.
+    func testAnItemThatDoesNotUpdateNeverRunsItsScript() throws {
+        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
+        defer { SketchyBarPreviewC.destroy(handle) }
+        SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25)
+        SketchyBarPreviewC.addItem(handle, alias: "clock", position: "left")
+
+        let script = "sketchybar --set clock label=12:00"
+        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
+        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
+        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "updates", value: "false")
+
+        let runner = PreviewScriptRunner()
+        let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
+                                    in: handle)
+
+        XCTAssertEqual(outcome.assignments, [],
+                       "the script of an item that does not update must not run")
+    }
+
+    /// An item without an update frequency runs its script only on an
+    /// event, so it shows no live value.
+    ///
+    /// That is the truth of the daemon (src/bar_item.c:127-130): the
+    /// preview does not run the scripts the daemon would not run either.
+    func testAnItemWithoutAnUpdateFrequencyShowsNoLiveValue() throws {
+        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
+        defer { SketchyBarPreviewC.destroy(handle) }
+        SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25)
+        SketchyBarPreviewC.addItem(handle, alias: "clock", position: "left")
+
+        let script = "sketchybar --set clock label=12:00"
+        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
+
+        let runner = PreviewScriptRunner()
+        let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
+                                    in: handle)
+
+        XCTAssertEqual(outcome.assignments, [],
+                       "the script of an item without an update frequency must not run")
+    }
+
+    /// The two routes do not run the scripts in the same environment.
+    ///
+    /// The render route runs the scripts of the items, so the child gets the
+    /// environment of the item itself: its name, its variables and the
+    /// sender (src/bar_item.c:142-161). The timer route runs the scripts
+    /// by their text, so the child gets the name of the item and the
+    /// sender only.
+    ///
+    /// The item of the test is a space item, because a space item is the
+    /// only item the daemon gives more variables than its name
+    /// (src/bar_item.c:78, :92, :437). The item asks for updates, because
+    /// the daemon does not update a space item (src/bar_item.c:434-435).
+    func testTheTwoRoutesDoNotRunTheScriptsInTheSameEnvironment() throws {
+        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
+        defer { SketchyBarPreviewC.destroy(handle) }
+        SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25)
+        SketchyBarPreviewC.addItem(handle, alias: "space", type: "space", position: "left")
+
+        let script = "sketchybar --set \"$NAME\" label=\"$SELECTED\""
+        SketchyBarPreviewC.setItem(handle, alias: "space", key: "script", value: script)
+        SketchyBarPreviewC.setItem(handle, alias: "space", key: "update_freq", value: "1")
+        SketchyBarPreviewC.setItem(handle, alias: "space", key: "updates", value: "true")
+
+        let runner = PreviewScriptRunner()
+        let scripts = [PreviewScriptRunner.Script(alias: "space", script: script)]
+
+        let render = runner.values(for: scripts, in: handle)
+        XCTAssertEqual(render.assignments.map(\.value), ["false"],
+                       "the render route gives the child the variables of the item")
+
+        // The timer route runs the scripts by their text: the child of that
+        // route knows the name of the item and the sender only.
+        runner.noteRequest(scripts: scripts)
+        let timer = runner.runCurrentScripts()
+        XCTAssertEqual(timer.assignments.map(\.value), [""],
+                       "the timer route does not know the variables of the item")
+
+        // The result of the timer never replaces the result of the render.
+        let again = runner.values(for: scripts, in: handle)
+        XCTAssertEqual(again.assignments.map(\.value), ["false"],
+                       "the timer must not replace the result of the render")
+    }
+
+    /// A batch of scripts that hang costs one timeout of the batch and not
+    /// one timeout per script.
+    ///
+    /// Every script of the batch is forked at once and the wait happens
+    /// once, so the batch has one deadline (PREVIEW_SCRIPT_TIMEOUT and
+    /// PREVIEW_SCRIPT_MARGIN_MS).
+    func testTheBatchOfScriptsHasOneDeadline() throws {
+        let runner = PreviewScriptRunner()
+        let scripts = (0..<4).map { index in
+            PreviewScriptRunner.Script(alias: "item\(index)", script: "sleep 60")
+        }
+        runner.noteRequest(scripts: scripts)
+
+        let started = Date()
+        let outcome = runner.runCurrentScripts()
+        let elapsed = Date().timeIntervalSince(started)
+
+        XCTAssertLessThan(elapsed, 5,
+                          "the batch has one deadline, not one per script")
+        XCTAssertTrue(outcome.warnings.contains { $0.contains("did not finish") },
+                      "\(outcome.warnings)")
     }
 
     // MARK: - The helpers
