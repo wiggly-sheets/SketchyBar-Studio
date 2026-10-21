@@ -44,6 +44,7 @@ struct preview_display {
   double scale;            /* the scale of the backing bitmap */
   bool menu_bar_visible;   /* the menu bar of the display */
   double menu_bar_height;  /* points */
+  bool has_notch;          /* the display is built-in and has a notch */
 };
 
 /* Sets the geometry of the virtual display. The scale is ignored: the
@@ -51,11 +52,25 @@ struct preview_display {
    touched: the caller sets it after the display. */
 void preview_display_configure(double width, double height, double scale);
 
+/* Puts the virtual display back to its default: the default frame, no
+   menu bar and no notch. The preview calls it when a preview is created,
+   so the display of the preview before it does not leak into it. */
+void preview_display_reset(void);
+
 /* Sets the menu bar of the virtual display. The daemon reads the menu bar
    of the display to push the bar down (src/bar.c:458-459, src/bar.c:478-479);
    the preview models it so that the bar of the preview has the same
    vertical origin as the bar of the machine. */
 void preview_display_set_menu_bar(double height, bool visible);
+
+/* Sets whether the virtual display is the built-in display of the machine.
+   The daemon asks CoreGraphics (src/bar.c:201, src/bar.c:438), and the
+   answer decides whether the notch of the bar applies. The preview has no
+   window server, so the answer is a parameter of the virtual display. */
+void preview_display_set_notch(bool has_notch);
+
+/* Whether the virtual display has the notch of a built-in display. */
+bool preview_display_has_notch(void);
 
 /* The geometry of the virtual display. */
 const struct preview_display* preview_display_config(void);

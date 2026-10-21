@@ -1,10 +1,12 @@
+import AppKit
+import CoreGraphics
 import CSketchyBar
 
 /// The thin Swift wrapper of the vendored SketchyBar preview core.
 ///
 /// Stage 2 drives the headless item tree: the handle, the bar properties,
-/// the default item and the items of the preview. The rendered image and the
-/// item rectangles arrive in stage 4.
+/// the default item and the items of the preview. Stage 4 renders the bar
+/// into a bitmap and reads the rectangles of the items.
 ///
 /// The error codes of the C API live in `include/sketchybar_preview.h`.
 enum SketchyBarPreviewC {
@@ -49,10 +51,35 @@ enum SketchyBarPreviewC {
     }
 
     /// Adds an item with an alias. The alias is the name of the item.
+    ///
+    /// The four arguments are the four arguments of the add command of the
+    /// daemon, `add <type> <alias> <position> [<argument>]`
+    /// (`src/message.c:180-256`).
+    ///
+    /// The type is the type of the add command of the daemon, e.g. "item",
+    /// "alias" or "space" (`src/message.c:196`). A type the daemon does
+    /// not know leaves the item a plain item.
+    ///
+    /// The position is the position of the add command, e.g. "left". The
+    /// daemon removes an item whose add position is missing or illegal
+    /// (`src/message.c:202-208`), and so does the preview.
+    ///
+    /// The argument is the trailing argument of the add command: the width
+    /// of a graph and of a slider, and the diameter of a ring
+    /// (`src/message.c:218-256`).
     @discardableResult
-    static func addItem(_ handle: OpaquePointer?, alias: String) -> Int32 {
-        withCStrings(alias) { aliasPointer in
-            sb_preview_add_item(handle, aliasPointer)
+    static func addItem(_ handle: OpaquePointer?,
+                        alias: String,
+                        type: String = "item",
+                        position: String,
+                        argument: String? = nil) -> Int32 {
+        withCStrings(alias, type, position) { aliasPointer, typePointer, positionPointer in
+            if let argument {
+                return withCStrings(argument) { argumentPointer in
+                    sb_preview_add_item(handle, aliasPointer, typePointer, positionPointer, argumentPointer)
+                }
+            }
+            return sb_preview_add_item(handle, aliasPointer, typePointer, positionPointer, nil)
         }
     }
 
@@ -64,19 +91,112 @@ enum SketchyBarPreviewC {
         }
     }
 
-    /// Sets the virtual display the bar is laid out for. The width and the
-    /// height are in points, the scale is the scale of the backing bitmap.
+    /// Sets the virtual display the bar is laid out for.
+    ///
+    /// The width and the height are in points. A nil width is the width of
+    /// the target display, in points: the default belongs here, because the
+    /// display is a property of the machine and not of the vendored core
+    /// (see `include/sketchybar_preview.h`). A width that is not nil is the
+    /// override, and it changes the width of the bar.
+    ///
+    /// The scale is the scale of the backing bitmap. The core keeps the
+    /// fixed scale of 2.0 of SketchyBar and ignores the argument, so the
+    /// scale of the display never changes the size of the image.
     @discardableResult
-    static func setDisplay(_ handle: OpaquePointer?, widthPoints: Double, heightPoints: Double, scale: Double = 2.0) -> Int32 {
-        sb_preview_set_display(handle, widthPoints, heightPoints, scale)
+    static func setDisplay(_ handle: OpaquePointer?,
+                           widthPoints: Double? = nil,
+                           heightPoints: Double? = nil,
+                           scale: Double = 2.0,
+                           screen: NSScreen? = nil) -> Int32 {
+        let display = screen ?? NSScreen.main
+        let width = widthPoints ?? defaultDisplayWidth(for: display)
+        let height = heightPoints ?? defaultDisplayHeight(for: display)
+        return sb_preview_set_display(handle, width, height, scale)
+    }
+
+    /// The width of the virtual display when the caller gives none, in
+    /// points: the width of the target display.
+    static func defaultDisplayWidth(for screen: NSScreen? = nil) -> Double {
+        Double((screen ?? NSScreen.main)?.frame.width ?? 1440)
+    }
+
+    /// The height of the virtual display when the caller gives none, in
+    /// points: the height of the target display. The height of the display
+    /// is not the height of the bar: the bar takes its height from the
+    /// config.
+    static func defaultDisplayHeight(for screen: NSScreen? = nil) -> Double {
+        Double((screen ?? NSScreen.main)?.frame.height ?? 900)
     }
 
     /// Sets the height of the menu bar above the bar, in points. Zero means
     /// there is no menu bar and the bar starts at the top of the display.
-    /// The call comes after `setDisplay`.
+    /// The call comes after `setDisplay` and before the render: the menu
+    /// bar moves the bar down.
     @discardableResult
     static func setMenuBar(_ handle: OpaquePointer?, heightPoints: Double) -> Int32 {
         sb_preview_set_menu_bar(handle, heightPoints)
+    }
+
+    /// Sets whether the virtual display is the built-in display of the
+    /// machine, and so has the notch of a notched Mac.
+    ///
+    /// The daemon asks CoreGraphics, and the answer decides whether the
+    /// notch of the bar applies (`src/bar.c:201`, `src/bar.c:438`). The
+    /// preview has no window server, so the answer is a parameter of the
+    /// virtual display. The width, the offset and the height of the notch
+    /// are the bar properties `notch_width`, `notch_offset` and
+    /// `notch_display_height`, exactly as in the daemon.
+    @discardableResult
+    static func setNotch(_ handle: OpaquePointer?, hasNotch: Bool) -> Int32 {
+        sb_preview_set_notch(handle, hasNotch ? 1 : 0)
+    }
+
+    /// Renders the bar into a bitmap.
+    ///
+    /// The image is the frame of the bar, in points, at the fixed backing
+    /// scale of 2.0, and its origin is the origin of the bar in the
+    /// coordinate system of the virtual display. Swift owns the image and
+    /// releases it when the value goes away, so the caller must not call
+    /// `sb_preview_release_image` on it: that function belongs to the
+    /// callers of the C API.
+    static func render(_ handle: OpaquePointer?) -> CGImage? {
+        guard let handle else { return nil }
+        return sb_preview_render(handle)?.takeRetainedValue()
+    }
+
+    /// The origin and size of one item, in points, after the layout.
+    ///
+    /// The rectangle is the frame of the window of the item in the
+    /// coordinate system of the virtual display, the same value as the
+    /// `bounding_rects` of `sketchybar --query <item>`. It is nil when no
+    /// item has that alias.
+    static func itemRect(_ handle: OpaquePointer?, alias: String) -> CGRect? {
+        guard let handle else { return nil }
+        var rect = CGRect.zero
+        let code = alias.withCString { aliasPointer in
+            sb_preview_item_rect(handle, aliasPointer, &rect)
+        }
+        guard code == Code.ok else { return nil }
+        return rect
+    }
+
+    /// The origin and size of the window of the bar, in points.
+    ///
+    /// The rectangle is the frame of the bar in the coordinate system of
+    /// the virtual display, so it is in the same space as the rectangle
+    /// of an item. The image of `render` is that rectangle: the origin of
+    /// the image is the origin of the bar.
+    ///
+    /// The mapping of a rectangle onto the image is
+    /// `image_x = rect.origin.x - frame.origin.x` and
+    /// `image_y = rect.origin.y - frame.origin.y`, and the pixel is the
+    /// point times 2.
+    static func barFrame(_ handle: OpaquePointer?) -> CGRect? {
+        guard let handle else { return nil }
+        var frame = CGRect.zero
+        let code = sb_preview_bar_frame(handle, &frame)
+        guard code == Code.ok else { return nil }
+        return frame
     }
 
     /// The messages the vendored code produced, one per line. The pointer

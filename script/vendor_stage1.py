@@ -368,18 +368,20 @@ patch(
 # The daemon asks CoreGraphics whether the display is built-in, because the
 # notch of a built-in display is part of its layout. The preview has no
 # window server, and the id of its virtual display is 1, which is the id of
-# the built-in display of a real Mac: the answer would depend on the machine.
-# The preview has no notch.
+# the built-in display of a real Mac: the answer would depend on the
+# machine. The notch of the virtual display is a parameter of the preview
+# (sb_preview_set_notch).
 patch(
     "bar.c",
     """static void bar_calculate_bounds_top_bottom(struct bar* bar) {
   bool is_builtin = CGDisplayIsBuiltin(bar->did);
 """,
     """static void bar_calculate_bounds_top_bottom(struct bar* bar) {
-  /* The preview has no built-in display: the id of the virtual display is
+  /* The preview has no window server: the id of the virtual display is
      1, which is the id of the built-in display of a real Mac, so the answer
-     would depend on the machine. The preview has no notch. */
-  bool is_builtin = false;
+     of CoreGraphics would depend on the machine. The notch of the virtual
+     display is a parameter of the preview. */
+  bool is_builtin = preview_display_has_notch();
 """,
 )
 
@@ -389,10 +391,11 @@ patch(
   bool is_builtin = CGDisplayIsBuiltin(bar->did);
 """,
     """static CGRect bar_get_frame(struct bar *bar) {
-  /* The preview has no built-in display: the id of the virtual display is
+  /* The preview has no window server: the id of the virtual display is
      1, which is the id of the built-in display of a real Mac, so the answer
-     would depend on the machine. The preview has no notch. */
-  bool is_builtin = false;
+     of CoreGraphics would depend on the machine. The notch of the virtual
+     display is a parameter of the preview. */
+  bool is_builtin = preview_display_has_notch();
 """,
 )
 

@@ -124,14 +124,18 @@ enum PreviewConfigBridge {
         }
 
         for item in plan.items {
-            let code = SketchyBarPreviewC.addItem(preview, alias: item.alias)
+            let position = Self.addPosition(of: item)
+            let code = SketchyBarPreviewC.addItem(preview, alias: item.alias, position: position)
             if code == SketchyBarPreviewC.Code.itemExists {
                 // The daemon refuses the second add of an alias
                 // (`src/message.c:190-193`). The properties that follow
                 // still apply to the item, so they are sent.
                 warnings.append(PreviewWarning.duplicateAlias(item.alias))
             } else if code != SketchyBarPreviewC.Code.ok {
-                warnings.append("The item '\(item.alias)' was not added. The preview refused the item.")
+                // The daemon creates the item and removes it again when the
+                // position of the add command is illegal
+                // (`src/message.c:202-208`), and so does the preview.
+                warnings.append("The item '\(item.alias)' was not added. \(Self.message(of: preview))")
                 continue
             }
 
@@ -148,6 +152,25 @@ enum PreviewConfigBridge {
         }
 
         return warnings
+    }
+
+    /// The position of the add command of an item.
+    ///
+    /// The shell style carries the position in the add command
+    /// (`sketchybar --add item x right`), and the SbarLua style carries it
+    /// in the table of the item (`sbar.add("item", "x", { position = "right" })`).
+    /// The daemon removes an item whose add position is missing or illegal
+    /// (`src/message.c:202-208`), so the position of the add command is
+    /// always sent. The last value of the position wins, like every other
+    /// property of an item.
+    ///
+    /// A config of the SbarLua style can leave the position out. The daemon
+    /// removes such an item, but the preview shows it at the position of the
+    /// default item, which is the position the preview has always given it.
+    private static func addPosition(of item: BarRenderItemModel) -> String {
+        if let position = item.addPosition { return position }
+        if let position = item.properties.last(where: { $0.key == "position" })?.value { return position }
+        return "left"
     }
 
     /// One property of a parsed value.

@@ -8,6 +8,12 @@
 #include "bar_manager.h"
 #include "preview_shim.h"
 
+/* The size of the placeholder of the items that need the window server, in
+   points. An alias item shows a captured menu bar item and a space item
+   shows a captured space. The preview has no window server, so the item
+   keeps a box of this size instead of the content it cannot show. */
+#define PREVIEW_PLACEHOLDER_SIZE 16
+
 /* The state of the preview. The vendored core keeps its model in the global
    bar manager of the shim, so the preview owns that global for the lifetime
    of the handle and the handle itself only holds the messages. */

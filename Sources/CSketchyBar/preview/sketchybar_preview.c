@@ -6,8 +6,12 @@
 
 #include "bar_item.h"
 #include "bar_manager.h"
+#include "alias.h"
+#include "graph.h"
 #include "misc/helpers.h"
 #include "preview_internal.h"
+#include "ring.h"
+#include "slider.h"
 
 /* The preview API. The item tree is the tree of the vendored core: the
    items live in the global bar manager of the shim, the default item is
@@ -68,6 +72,77 @@ static bool preview_messages_have_error(const char* messages) {
   return false;
 }
 
+/* The placeholder of the items that need the window server.
+
+   An alias item draws a captured menu bar item (src/alias.c:206-223) and a
+   space item draws a captured space (src/image.c:67-76). The preview has
+   no window server, so the item keeps a box of a fixed size. A width of
+   the config wins over the placeholder. */
+static void preview_apply_placeholder(struct bar_item* item) {
+  if (item->has_const_width) return;
+  if (item->type != BAR_COMPONENT_ALIAS && item->type != BAR_COMPONENT_SPACE) return;
+
+  item->custom_width = PREVIEW_PLACEHOLDER_SIZE;
+  item->has_const_width = true;
+}
+
+/* The setup of the types that need one, exactly as the daemon does it when
+   it reads an add command (src/message.c:218-256): the width of a graph
+   and of a slider, and the diameter of a ring.
+
+   The argument is the trailing argument of the add command. The daemon
+   removes a ring whose diameter is not positive (src/message.c:236-248),
+   and so does the preview. */
+static bool preview_apply_add_argument(sb_preview_t* preview,
+                                       struct bar_item* item,
+                                       const char* argument,
+                                       const char* alias) {
+  if (item->type == BAR_COMPONENT_GRAPH) {
+    uint32_t width = argument ? (uint32_t)strtoul(argument, NULL, 0) : 0;
+    if (width == 0) {
+      /* The daemon draws a graph of no width and divides by the width of
+         the graph (src/graph.c:24), so it crashes. The preview refuses the
+         item instead, so the process of the app survives. */
+      char message[256];
+      snprintf(message, sizeof(message),
+               "[!] Add %s: A graph needs a width\n",
+               alias             );
+      preview_clear_messages(preview);
+      preview->messages = preview_copy(message);
+      return false;
+    }
+    graph_setup(&item->graph, width);
+  } else if (item->type == BAR_COMPONENT_SLIDER) {
+    slider_setup(&item->slider, argument ? (uint32_t)strtoul(argument, NULL, 0) : 0);
+  } else if (item->type == BAR_COMPONENT_RING) {
+    int diameter = argument ? (int)strtol(argument, NULL, 0) : 0;
+    if (diameter <= 0) {
+      char message[256];
+      snprintf(message, sizeof(message),
+               "[!] Add %s: Ring diameter must be positive\n",
+               alias             );
+      preview_clear_messages(preview);
+      preview->messages = preview_copy(message);
+      return false;
+    }
+    ring_setup(&item->ring, (uint32_t)diameter);
+  } else if (item->type == BAR_COMPONENT_ALIAS) {
+    /* The daemon takes the owner and the name of an alias out of the name
+       of the item, split at a comma (src/message.c:241-253). */
+    char* name = preview_copy(alias);
+    if (!name) return false;
+
+    struct key_value_pair pair = get_key_value_pair(name, ',');
+    if (!pair.key || !pair.value) {
+      alias_setup(&item->alias, name, NULL);
+    } else {
+      alias_setup(&item->alias, pair.key, pair.value);
+    }
+  }
+
+  return true;
+}
+
 static int preview_apply_item_property(sb_preview_t* preview,
                                        struct bar_item* item,
                                        const char* key,
@@ -97,6 +172,9 @@ static int preview_apply_item_property(sb_preview_t* preview,
   free(message);
 
   preview->messages = buffer;
+
+  preview_apply_placeholder(item);
+
   return preview_messages_have_error(preview->messages)
          ? SB_ERR_PROPERTY_REJECTED
          : SB_OK;
@@ -107,6 +185,11 @@ sb_preview_t* sb_preview_create(void) {
 
   sb_preview_t* preview = calloc(1, sizeof(sb_preview_t));
   if (!preview) return NULL;
+
+  /* The virtual display is a global of the shim, so the display of the
+     preview before this one would leak into this one. The caller sets the
+     display of its preview after it created it. */
+  preview_display_reset();
 
   if (!preview_bar_manager_init()) {
     free(preview);
@@ -166,9 +249,12 @@ int sb_preview_set_default(sb_preview_t* preview, const char* key, const char* v
                                      value              );
 }
 
-int sb_preview_add_item(sb_preview_t* preview, const char* alias) {
+int sb_preview_add_item(sb_preview_t* preview, const char* alias, const char* type,
+                         const char* position, const char* argument) {
   if (!preview || !alias || alias[0] == '\0') return SB_ERR_INVALID_ARGUMENT;
   if (preview_find_item(alias)) return SB_ERR_ITEM_EXISTS;
+
+  preview_clear_messages(preview);
 
   /* bar_manager_create_item never returns NULL. */
   struct bar_item* item = bar_manager_create_item(&g_bar_manager);
@@ -179,6 +265,41 @@ int sb_preview_add_item(sb_preview_t* preview, const char* alias) {
     return SB_ERR_OUT_OF_MEMORY;
   }
   bar_item_set_name(item, name);
+
+  /* The type of the add command of the daemon (src/message.c:196). A type
+     the daemon does not know leaves the item a plain item, and the daemon
+     says so. */
+  if (type && type[0] != '\0' && !bar_item_set_type(item, type)) {
+    char message[256];
+    snprintf(message, sizeof(message),
+             "[?] Add %s: Invalid type '%s', assuming 'item'\n",
+             alias,
+             type       );
+    preview->messages = preview_copy(message);
+  }
+
+  /* The position of the add command. The daemon creates the item and
+     removes it again when the position is missing or illegal
+     (src/message.c:202-208), and so does the preview. */
+  if (item->type != BAR_COMPONENT_GROUP
+      && !bar_item_set_position(item, position ? position : "")) {
+    char message[256];
+    snprintf(message, sizeof(message),
+             "[!] Add %s: Illegal position '%s'\n",
+             alias,
+             position ? position : "");
+    preview->messages = preview_copy(message);
+    bar_manager_remove_item(&g_bar_manager, item);
+    return SB_ERR_PROPERTY_REJECTED;
+  }
+
+  /* The trailing argument of the add command (src/message.c:218-256). */
+  if (!preview_apply_add_argument(preview, item, argument, alias)) {
+    bar_manager_remove_item(&g_bar_manager, item);
+    return SB_ERR_PROPERTY_REJECTED;
+  }
+
+  preview_apply_placeholder(item);
   return SB_OK;
 }
 
@@ -209,6 +330,12 @@ int sb_preview_set_display(sb_preview_t* preview, double widthPoints, double hei
 int sb_preview_set_menu_bar(sb_preview_t* preview, double heightPoints) {
   if (!preview || heightPoints < 0) return SB_ERR_INVALID_ARGUMENT;
   preview_display_set_menu_bar(heightPoints, heightPoints > 0);
+  return SB_OK;
+}
+
+int sb_preview_set_notch(sb_preview_t* preview, int hasNotch) {
+  if (!preview) return SB_ERR_INVALID_ARGUMENT;
+  preview_display_set_notch(hasNotch != 0);
   return SB_OK;
 }
 

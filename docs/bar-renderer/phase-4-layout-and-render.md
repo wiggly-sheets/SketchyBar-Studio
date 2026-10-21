@@ -41,8 +41,9 @@ The render path is already offscreen upstream (`src/context.c:11-26`, `src/bar_i
 
 ## Acceptance criteria
 
-* A render of a config with three items returns a `CGImage` whose pixel width equals the virtual display width in points times 2, and whose pixel height equals the bar height in points times 2.
+* A render of a config with three items returns a `CGImage` whose pixel width equals the width of the bar in points times 2, and whose pixel height equals the height of the bar in points times 2. The image is the frame of the bar, so a bar on the left or on the right of the display has the shape of that bar.
 * `sb_preview_item_rect` returns a non-empty rect in points for every item, and the rect is half the size of the corresponding pixels in the image.
+* `sb_preview_bar_frame` returns the frame of the bar in points, in the same space as the rect of the items, so a rect of an item lies inside the frame of the bar.
 * The process asks for no screen recording permission, creates no window, and does not talk to the Mach service. Checkable objectively: `nm -u` on the built C target shows no `bootstrap_register` and no `SLS*` symbol; `otool -L` on the app binary shows no SkyLight, DisplayServices or MediaRemote (the Stage-1 criterion); and a test asserts that the child environment the shim's `fork_exec` builds contains no `BAR_NAME` and that no `mach_send_message` symbol is reachable from the preview target.
 * The rendered image is not blank: at least one pixel differs from the background.
 * The default virtual display width equals the target display's real width in points, and an explicit override changes it.

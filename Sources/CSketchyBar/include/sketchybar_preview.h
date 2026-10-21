@@ -46,9 +46,35 @@ SB_API int  sb_preview_set_bar(sb_preview_t* preview, const char* key, const cha
    items are added. See the defaults contract below. */
 SB_API int  sb_preview_set_default(sb_preview_t* preview, const char* key, const char* value);
 
-/* Item level: alias first, then one property at a time. The alias is the
-   name of the item, e.g. "apple". */
-SB_API int  sb_preview_add_item(sb_preview_t* preview, const char* alias);
+/* Item level: alias, type, position and argument first, then one property
+   at a time. The four arguments are the four arguments of the add command
+   of the daemon: "add <type> <alias> <position> [<argument>]"
+   (src/message.c:180-256).
+
+   The alias is the name of the item, e.g. "apple". The type is the type of
+   the add command, e.g. "item", "alias" or "space" (src/message.c:196). A
+   type the daemon does not know makes the item a plain item, and the answer
+   says so.
+
+   The position is the position of the add command, e.g. "left" or "right".
+   It is not optional: the daemon removes an item whose add position is
+   missing or illegal (src/message.c:202-208), and so does the preview. The
+   item is then gone, and the answer carries the message of the daemon.
+
+   The argument is the trailing argument of the add command: the width of a
+   graph and of a slider, and the diameter of a ring (src/message.c:218-256).
+   The other types ignore it. A ring needs a diameter that is positive, and
+   the daemon removes the item when it is not (src/message.c:236-248). A
+   graph needs a width, and the daemon crashes when it has none: it draws
+   the graph and divides by its width (src/graph.c:24). The preview removes
+   the item and says so, so the process of the app survives.
+
+   An alias item and a space item show the content of the window server,
+   which the preview does not have. They keep a placeholder of a fixed size
+   (see the contract of the placeholders below). */
+SB_API int  sb_preview_add_item(sb_preview_t* preview, const char* alias,
+                                const char* type, const char* position,
+                                const char* argument);
 SB_API int  sb_preview_set_item(sb_preview_t* preview, const char* alias,
                                 const char* key, const char* value);
 
@@ -58,24 +84,97 @@ SB_API int  sb_preview_set_item(sb_preview_t* preview, const char* alias,
    that fixed scale of 2.0 and ignores the argument.
 
    The call rebuilds the bar of the preview, so its frame follows the new
-   display (src/bar.c:516-522). */
+   display (src/bar.c:516-522).
+
+   The C API has no default for the width: the caller always passes one.
+   The default belongs to the caller, because the width of the target
+   display is a property of the machine, not of the vendored core. The
+   Swift wrapper (Sources/SketchyBarStudio/Support/SketchyBarPreviewC.swift)
+   derives it from the target NSScreen and passes it down. The C default,
+   used when the caller never sets a display, is 1440 x 900 points. */
 SB_API int  sb_preview_set_display(sb_preview_t* preview,
                                     double widthPoints, double heightPoints, double scale);
 
 /* The height of the menu bar above the bar, in POINTS. 0 means there is no
    menu bar and the bar starts at the top of the display. The call comes
    after sb_preview_set_display: the menu bar does not change the geometry
-   of the display. */
+   of the display. The menu bar moves the bar down, so it has to be set
+   before the render. */
 SB_API int  sb_preview_set_menu_bar(sb_preview_t* preview, double heightPoints);
 
-/* Renders into a bitmap and returns a retained CGImage. The caller owns it
-   and releases it with sb_preview_release_image. */
+/* Whether the virtual display is the built-in display of the machine, and
+   so has the notch of a notched Mac.
+
+   The daemon asks CoreGraphics whether the display is built-in, and the
+   answer decides whether the notch of the bar applies: the notch width
+   moves the items of the centre and of the right (src/bar.c:200-222), and
+   the notch offset and the notch height move the bar itself
+   (src/bar.c:437-440). The preview has no window server, so the answer is
+   a parameter of the virtual display. The width, the offset and the height
+   of the notch are the bar properties "notch_width", "notch_offset" and
+   "notch_display_height", exactly as in the daemon.
+
+   The call comes after sb_preview_set_display. Zero means the virtual
+   display has no notch, which is the default. */
+SB_API int  sb_preview_set_notch(sb_preview_t* preview, int hasNotch);
+
+/* Renders the bar into a bitmap and returns a retained CGImage. The caller
+   owns it and releases it with sb_preview_release_image.
+
+   The call lays the bar out with the code of the daemon
+   (src/bar_manager.c:424-447) and draws it, so the rectangles of the items
+   and the image are the same layout.
+
+   The image is the FRAME OF THE BAR, in the fixed backing scale of 2.0: a
+   bar of 480 x 25 points gives an image of 960 x 50 pixels. The origin of
+   the image is the origin of the bar in the coordinate system of the
+   display, so the margins of the bar stay empty as they are on the screen.
+   The bar draws itself into the image, and so does every item, at the place
+   the layout gave it. The image is the frame of the bar and not the frame
+   of the display, so a bar on the left or on the right of the display has
+   the shape of that bar.
+
+   The image is NULL when the preview has no bar, or when the bitmap could
+   not be created. */
 SB_API CGImageRef sb_preview_render(sb_preview_t* preview);
+
+/* Releases an image that sb_preview_render returned. Passing NULL is a
+   no-op. */
 SB_API void sb_preview_release_image(CGImageRef image);
 
-/* The origin and size of one item, in POINTS, after layout. */
+/* The origin and size of one item, in POINTS, after layout.
+
+   The rectangle is the frame of the window of the item, in the coordinate
+   system of the virtual display: it is the same value as the
+   "bounding_rects" of `sketchybar --query <item>` (src/bar_item.c:1065-1079).
+   An item that the bar does not draw keeps the rectangle of the nirvana
+   point, like it does on the screen.
+
+   The call lays the bar out when the item has no window yet, so the
+   rectangle is the one of the bar even when the render did not run. */
 SB_API int sb_preview_item_rect(sb_preview_t* preview, const char* alias,
                                 CGRect* outRect);
+
+/* The origin and size of the window of the bar, in POINTS.
+
+   The rectangle is the frame of the bar in the coordinate system of the
+   virtual display, so it is in the same space as the rectangle of
+   sb_preview_item_rect: the rectangle of an item lies inside it, shifted
+   by the height of the menu bar when the virtual display has one.
+
+   The image of sb_preview_render is that rectangle: the origin of the
+   image is the origin of the bar. The mapping of a rectangle onto the
+   image is
+
+     image_x_pt = rect.origin.x - barFrame.origin.x,
+     image_y_pt = rect.origin.y - barFrame.origin.y,
+
+   and the pixel is the point times 2, because the backing scale of the
+   bitmap is the fixed scale of 2.0 of SketchyBar.
+
+   The call lays the bar out when the bar has no window yet, so the frame is
+   the one of the bar even when the render did not run. */
+SB_API int sb_preview_bar_frame(sb_preview_t* preview, CGRect* outFrame);
 
 /* Messages the vendored code produced, one per line. The returned pointer is
    owned by the preview: it stays valid until the next call that can produce
@@ -100,7 +199,28 @@ SB_API const char* sb_preview_messages(sb_preview_t* preview);
    Every rectangle the API reports is in POINTS. The backing bitmap is
    rendered at the fixed scale of 2.0, which is what SketchyBar itself uses
    (src/surface.c:37, src/surface.c:47), independent of the scale of the
-   display. The bitmap is therefore twice the size of the point geometry.
+   display. The bitmap is therefore twice the size of the point geometry:
+   the image of sb_preview_render is the frame of the bar in points, so its
+   pixel size is the width of the bar times 2 by the height of the bar
+   times 2.
+
+   The contract of the placeholders.
+
+   An alias item draws a captured menu bar item (src/alias.c:206-223) and a
+   space item draws a captured space (src/image.c:67-76). Both need the
+   window server, and the preview has none. Such an item keeps a box of 16
+   points. That width is a value CHOSEN BY THIS PROJECT: the real width of
+   an alias item is the width of the captured image of the menu bar item,
+   and a space is as wide as the captured space, so the preview cannot know
+   it. The render draws the box into the bitmap of the item itself, so the
+   item keeps its place on the bar and an export of the item alone shows
+   the box too. A width of the config wins over the placeholder.
+
+   The app warns about such an item before it reaches the preview: the
+   parsers of the app report the type the preview cannot show
+   (PreviewWarning.unsupportedType), and the app does not send it to the
+   preview. The type of sb_preview_add_item is there for the differential
+   test of stage 8.
 
    The contract of the messages.
 
@@ -131,6 +251,11 @@ SB_API int sb_preview_test_item_padding_left(sb_preview_t* preview, const char* 
    quote or a newline breaks a JSON parser. The daemon has the same
    defect. */
 SB_API char* sb_preview_test_item_serialize(sb_preview_t* preview, const char* alias);
+
+/* The bitmap of an item, in the scale of the backing bitmap. The caller
+   owns the image and releases it with sb_preview_release_image. It is NULL
+   when no item has that alias, or when the item has no window yet. */
+SB_API CGImageRef sb_preview_test_item_image(sb_preview_t* preview, const char* alias);
 
 /* The environment the child of the script runner receives, one "KEY=VALUE"
    per line. The caller owns the string and releases it with free(). */

@@ -18,11 +18,13 @@ The fixtures are the existing parser fixtures. The bridge and shim tests need no
 
 The comparison uses a per-pixel tolerance of zero (exact match) for the text and the shapes, so a change in a glyph shows up.
 
-The golden test is **skipped when `Hack Nerd Font` is not installed**: it is the default family of the renderer (`src/font.c:152-158`), and without it the text is drawn with a fallback and the pixels are not comparable.
+The golden test is **not skipped for the font**: the config of the golden image pins the font of every text (`label.font=Menlo:Bold:14`) and its icon carries no text, so the default family of the renderer (`src/font.c:152-158`) never reaches the pixels of this fixture. The test therefore runs on every machine, and the pixels of the fixture do not depend on the fonts of the machine. An earlier version of this file asked for a skip when `Hack Nerd Font` was missing; the skip was wrong, because the fixture never uses that family, so the only pixel-exact net of stage 4 never ran.
+
+The render of the preview is in the colour space of the device and the golden file is in sRGB, so the test converts the render into sRGB once and compares the two sRGB images. The golden file is written from that same converted image, so both sides of the comparison are in sRGB.
 
 The expected PNG is regenerated per macOS major version, and the macOS version is part of the test file name, because the text rasterization differs between macOS releases.
 
-The golden files are regenerated deliberately, never silently. A golden file that changes in a diff is a review item, not a merge detail. Regenerate it on purpose and say so in the commit message.
+The golden files are regenerated deliberately, never silently. A golden file that changes in a diff is a review item, not a merge detail. Regenerate it on purpose and say so in the commit message. The test never writes the file of the tree: `SKETCHYBAR_STUDIO_GOLDEN=write` writes the file to a temporary directory and prints that path, so the file of the tree is only replaced on purpose.
 
 ## The differential test against the installed binary
 
