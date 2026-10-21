@@ -24,7 +24,9 @@ APP_VERSION="${APP_VERSION:-0.0.0}"
 APP_VERSION="${APP_VERSION#v}"
 APP_BUILD="${SKETCHYBAR_STUDIO_BUILD:-$(git -C "$ROOT_DIR" rev-list --count HEAD 2>/dev/null || echo 1)}"
 
-if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+# A version may carry a prerelease suffix, such as 1.0.0-test, because the
+# release tooling stamps the version it was given.
+if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
   echo "invalid app version '$APP_VERSION' (expected X.Y.Z)" >&2
   exit 2
 fi

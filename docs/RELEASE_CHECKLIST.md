@@ -1,13 +1,13 @@
 # Release Checklist
 
-1. Update `CHANGELOG.md`.
+1. Update `CHANGELOG.md`. Add a section for the version, because the release uses that section as the release notes.
 2. Confirm the `vX.Y.Z` version/tag name.
 3. Run local checks:
 
    ```bash
-   swift build
-   swift test
-   ./script/build_and_run.sh --universal-package
+   make build
+   make test
+   make app-universal
    lipo -info dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
    codesign --verify --deep --strict dist/SketchyBarStudio.app
    ```
@@ -22,10 +22,10 @@
    - Save & Apply
    - backup mirror under `backups/`
 6. Commit release changes.
-7. Create and push tag:
+7. Build the artifacts, create the tag and push it:
 
    ```bash
-   git tag -a vX.Y.Z -m "SketchyBar Studio X.Y.Z"
+   make release VERSION=X.Y.Z
    git push origin master
    git push origin vX.Y.Z
    ```
@@ -33,6 +33,7 @@
 8. GitHub Actions `Release` workflow will automatically:
    - build the universal app
    - create a DMG with `create-dmg@8.1.0`
-   - upload the DMG and checksum
-   - create or update the GitHub release
+   - write the checksum sidecar next to the DMG
+   - upload the DMG and the checksum sidecar
+   - publish the release with the download, Homebrew and notes blocks, the changelog section of that version and the SHA-256 of the DMG
 9. Download the release DMG and smoke test it.
