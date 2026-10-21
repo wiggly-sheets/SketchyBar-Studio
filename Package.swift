@@ -51,7 +51,11 @@ let package = Package(
         .testTarget(
             name: "SketchyBarStudioTests",
             dependencies: ["SketchyBarStudio", "CSketchyBar"],
-            path: "Tests/SketchyBarStudioTests"
+            path: "Tests/SketchyBarStudioTests",
+            // The golden image of the render is a file of the sources: the
+            // test reads it from the tree, so it is not a resource of the
+            // bundle.
+            exclude: ["Fixtures"]
         )
     ]
 )

@@ -68,6 +68,20 @@ static bool preview_messages_have_error(const char* messages) {
   return false;
 }
 
+/* The placeholder of the items that need the window server.
+
+   An alias item draws a captured menu bar item (src/alias.c:206-223) and a
+   space item draws a captured space (src/image.c:67-76). The preview has
+   no window server, so the item keeps a box of a fixed size. A width of
+   the config wins over the placeholder. */
+static void preview_apply_placeholder(struct bar_item* item) {
+  if (item->has_const_width) return;
+  if (item->type != BAR_COMPONENT_ALIAS && item->type != BAR_COMPONENT_SPACE) return;
+
+  item->custom_width = PREVIEW_PLACEHOLDER_SIZE;
+  item->has_const_width = true;
+}
+
 static int preview_apply_item_property(sb_preview_t* preview,
                                        struct bar_item* item,
                                        const char* key,
@@ -97,6 +111,9 @@ static int preview_apply_item_property(sb_preview_t* preview,
   free(message);
 
   preview->messages = buffer;
+
+  preview_apply_placeholder(item);
+
   return preview_messages_have_error(preview->messages)
          ? SB_ERR_PROPERTY_REJECTED
          : SB_OK;
@@ -166,9 +183,11 @@ int sb_preview_set_default(sb_preview_t* preview, const char* key, const char* v
                                      value              );
 }
 
-int sb_preview_add_item(sb_preview_t* preview, const char* alias) {
+int sb_preview_add_item(sb_preview_t* preview, const char* alias, const char* type) {
   if (!preview || !alias || alias[0] == '\0') return SB_ERR_INVALID_ARGUMENT;
   if (preview_find_item(alias)) return SB_ERR_ITEM_EXISTS;
+
+  preview_clear_messages(preview);
 
   /* bar_manager_create_item never returns NULL. */
   struct bar_item* item = bar_manager_create_item(&g_bar_manager);
@@ -179,6 +198,20 @@ int sb_preview_add_item(sb_preview_t* preview, const char* alias) {
     return SB_ERR_OUT_OF_MEMORY;
   }
   bar_item_set_name(item, name);
+
+  /* The type of the add command of the daemon (src/message.c:196). A type
+     the daemon does not know leaves the item a plain item, and the daemon
+     says so. */
+  if (type && type[0] != '\0' && !bar_item_set_type(item, type)) {
+    char message[256];
+    snprintf(message, sizeof(message),
+             "[?] Add %s: Invalid type '%s', assuming 'item'\n",
+             alias,
+             type       );
+    preview->messages = preview_copy(message);
+  }
+
+  preview_apply_placeholder(item);
   return SB_OK;
 }
 

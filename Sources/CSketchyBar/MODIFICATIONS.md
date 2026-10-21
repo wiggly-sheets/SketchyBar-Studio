@@ -27,6 +27,7 @@ code nor a replacement of a dropped upstream file:
 preview/preview_internal.h            the internal API of the preview
 preview/sketchybar_preview.c          the public C API and the item tree
 preview/sketchybar_preview_bar.c      the bar manager and the bar domain
+preview/sketchybar_preview_render.c   the layout and the render to a CGImage
 preview/sketchybar_preview_stubs.c    the symbols of the dropped files
 preview/sketchybar_preview_test.c     the test-only accessors
 ```
@@ -286,3 +287,54 @@ check of that is a grep over `src/` and `shim/`:
 | `workspace_copy_app_name_for_pid` | no | answers NULL |
 | `initialize_media_events` | no | does nothing |
 | `mouse_begin` | no | does nothing |
+
+## The decisions of stage 4
+
+Stage 4 lays the bar out and paints it into a bitmap. It patches **no file
+of `src/`**: the render path is the code of the preview, in
+`preview/sketchybar_preview_render.c`, and it uses the vendored code as it
+is. `python3 script/vendor_stage1.py` therefore reproduces the committed
+`src/` byte for byte.
+
+| # | Decision | Where |
+| --- | --- | --- |
+| S1 | The layout and the draw run through the vendored code: `bar_manager_refresh` with the forced flag (`src/bar_manager.c:424-447`), which lays the bounds out, draws the bar and orders the item windows. | `preview/sketchybar_preview_render.c` (`preview_layout`) |
+| S2 | The image is as wide as the display and as tall as the bar, at the fixed backing scale of 2.0. The bar draws itself into the image and so does every item, at the place the layout gave it. The bar background of the daemon is the window of the bar and every item is its own window (`src/bar.c:140-198`), so the image is the composition of the bitmaps of those windows. | `preview/sketchybar_preview_render.c` (`preview_compose`) |
+| S3 | Every rectangle the API reports is in points, in the coordinate system of the virtual display, exactly like the `bounding_rects` of `sketchybar --query <item>` (`src/bar_item.c:1065-1079`). The bitmap is twice the size of the point geometry. | `preview/sketchybar_preview_render.c` (`sb_preview_item_rect`) |
+| S4 | The C API has no default for the width of the virtual display: the caller always passes one. The default belongs to the caller, because the width of the target display is a property of the machine. The Swift wrapper derives it from the target `NSScreen`. The C default, used when the caller never sets a display, stays 1440 x 900 points. | `include/sketchybar_preview.h`, `Sources/SketchyBarStudio/Support/SketchyBarPreviewC.swift` |
+| S5 | The backing scale is the fixed scale of 2.0 of SketchyBar, whatever the scale of the display is. The argument of `sb_preview_set_display` is ignored, as in stage 2. | `include/sketchybar_preview.h` |
+| S6 | The height of the bar comes from the config, not from the display: it is the height of the background of the bar, 25 points by default (`src/bar_manager.c:51`). The height of the display is the height of the screen. | `preview/sketchybar_preview_render.c` (`preview_compose`) |
+| S7 | The menu bar of the virtual display moves the bar down (`src/bar.c:484-487`). The menu bar is set before the render, and the render lays the bar out again, so the vertical origin of the bar and the rectangles of the items follow it. | `shim/sketchybar_preview_display.c`, `preview/sketchybar_preview_render.c` |
+| S8 | An alias item and a space item show the content of the window server, which the preview does not have. They keep a box of 16 points, the size of a menu bar extra, and the render draws the box, so the item keeps its place on the bar. A width of the config wins over the placeholder. | `preview/sketchybar_preview.c` (`preview_apply_placeholder`), `preview/sketchybar_preview_render.c` (`preview_draw_placeholder`) |
+| S9 | The add of an item takes the type of the add command of the daemon (`src/message.c:196`), so the preview can hold an alias or a space item. A type the daemon does not know leaves the item a plain item, and the answer says so. | `preview/sketchybar_preview.c` (`sb_preview_add_item`) |
+
+### S2 in detail
+
+The daemon draws the background of the bar into the window of the bar and
+every item into its own window (`src/bar.c:140-198`). The preview has no
+window server, so the windows are records in memory
+(`shim/sketchybar_preview_window.c`) and their surfaces are bitmaps
+(`shim/sketchybar_preview_surface.c`). The render puts the bitmaps of the
+windows together into one image, the way the screen shows the windows of the
+bar: the bitmap of the bar at the margin of the bar, and the bitmap of every
+item at the origin of its window.
+
+The image starts at the top of the bar and reaches the right edge of the
+display, so the margins of the bar stay empty as they are on the screen. The
+image is as wide as the display and as tall as the bar, so a display of
+480 x 25 points gives an image of 960 x 50 pixels.
+
+### S8 in detail
+
+An alias item draws a captured menu bar item (`src/alias.c:206-223`) and a
+space item draws a captured space (`src/image.c:67-76`). Both need the
+window server, and the preview has none: the vendored `alias.c` never
+reaches it and never asks for the Screen Recording permission, so the alias
+has no image and the space has no capture.
+
+The placeholder is a box of 16 points, the size of a menu bar extra, drawn
+in the image at the place of the item, so the item keeps its place on the
+bar and the user sees that something is there. The app says that the preview
+cannot show the item (`PreviewWarning.unsupportedType`), and the bridge does
+not send such an item to the preview today.
+
