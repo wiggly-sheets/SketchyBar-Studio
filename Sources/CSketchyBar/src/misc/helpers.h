@@ -17,6 +17,11 @@
 #define MAXLEN 512
 #define FORK_TIMEOUT 60
 
+/* The preview runs the scripts of the items with a much shorter timeout than
+   the daemon: the preview is interactive, so a script that hangs must not
+   hold the app. Three seconds is the value this project chose. */
+#define PREVIEW_SCRIPT_TIMEOUT 3
+
 struct signal_args {
   struct env_vars env_vars;
   void *entity;

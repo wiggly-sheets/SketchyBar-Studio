@@ -99,4 +99,39 @@ char** preview_build_environment(struct env_vars* env_vars);
    array itself. */
 void preview_free_environment(char** environment);
 
+/* The outcome of a run of the scripts of the preview. The names carry
+   OUTCOME, because PREVIEW_SCRIPT_TIMEOUT is the timeout of a script in
+   seconds (`src/misc/helpers.h`). */
+#define PREVIEW_SCRIPT_OUTCOME_OK      0
+#define PREVIEW_SCRIPT_OUTCOME_TIMEOUT 1
+#define PREVIEW_SCRIPT_OUTCOME_FAILED  2
+
+/* The environment of the scripts of the preview.
+
+   The shim directory comes first on the PATH of the child, so a script that
+   calls `sketchybar` reaches the shim and not the live bar, and the sink
+   variable carries the path of the file the shim writes to. The directories
+   that hold a real sketchybar are removed from the PATH of the child. */
+void preview_set_script_environment(const char* shim_directory,
+                                    const char* sink_path,
+                                    const char* log_directory);
+
+/* The alias of the script that is forked next. The caller sets it before it
+   forks, so the report of a script knows the item it belongs to. */
+void preview_set_current_script(const char* alias);
+
+/* Runs one script the way the daemon runs the script of an item: the same
+   child, the same environment, the same timeout. */
+bool preview_run_script(const char* alias, const char* script);
+
+/* Waits for the children of the scripts and reports what happened. */
+void preview_wait_for_scripts(int timeout_milliseconds);
+
+/* The outcome of the last run of the scripts. */
+int preview_script_status(void);
+
+/* The messages of the last run of the scripts, one per line. The pointer
+   belongs to the runner and stays valid until the next run. */
+const char* preview_script_messages(void);
+
 #endif

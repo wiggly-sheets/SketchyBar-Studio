@@ -306,6 +306,24 @@ extern int g_connection;
 """,
 )
 
+# The preview runs the scripts of the items with a much shorter timeout than
+# the daemon: the preview is interactive, so a script that hangs must not
+# hold the app. Three seconds is the value this project chose.
+patch(
+    "misc/helpers.h",
+    """#define MAXLEN 512
+#define FORK_TIMEOUT 60
+""",
+    """#define MAXLEN 512
+#define FORK_TIMEOUT 60
+
+/* The preview runs the scripts of the items with a much shorter timeout than
+   the daemon: the preview is interactive, so a script that hangs must not
+   hold the app. Three seconds is the value this project chose. */
+#define PREVIEW_SCRIPT_TIMEOUT 3
+""",
+)
+
 # respond() copies every answer to stdout, so a rejected property prints a
 # line in the app. The preview has no log: the answer goes to the reply
 # stream only.

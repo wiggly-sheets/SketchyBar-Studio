@@ -142,6 +142,23 @@ actor BarRendererService {
     /// the drafts of the user in it.
     static let maximumDisplayWidthPoints: Double = 20_000
 
+    /// How often the scripts of the items run while the preview is in use.
+    static let liveValuesInterval: TimeInterval = 1
+
+    /// The runner of the scripts of the items.
+    ///
+    /// The scripts run in the preview, so the bar shows the values they
+    /// produce. The runner keeps the values of the last run, so a render
+    /// that follows a run of the timer does not run the scripts again.
+    private let runner = PreviewScriptRunner()
+
+    /// The timer that runs the scripts of the items again and again.
+    ///
+    /// The timer lives while the renders are requested and stops when the
+    /// requests stop: the pane of the preview cannot tell the service that
+    /// it is hidden without a change in the views.
+    private var liveValuesTimer: DispatchSourceTimer?
+
     /// The core has one preview at a time, so there is one service.
     private init() {}
 
@@ -173,6 +190,17 @@ actor BarRendererService {
         var warnings = request.warnings
         warnings += PreviewConfigBridge.apply(plan, to: handle)
 
+        // The scripts of the items run inside the preview, so the bar shows
+        // the values they produce. The scripts reach the shim and not the
+        // live bar of the user.
+        let scripts = Self.scripts(of: plan)
+        runner.noteRequest(scripts: scripts)
+        let outcome = runner.values(for: scripts, in: handle)
+        warnings += outcome.warnings
+        for assignment in outcome.assignments {
+            warnings += Self.apply(assignment, to: handle)
+        }
+
         guard let image = SketchyBarPreviewC.render(handle) else {
             throw BarRenderError.renderFailed("The bar could not be rendered.")
         }
@@ -186,6 +214,8 @@ actor BarRendererService {
             barRects[item.alias] = Self.barRelative(rect, in: frame)
         }
 
+        startLiveValuesTimer()
+
         return BarRenderResult(
             image: image,
             pixelSize: CGSize(width: image.width, height: image.height),
@@ -194,6 +224,77 @@ actor BarRendererService {
             barFrame: frame,
             warnings: warnings
         )
+    }
+
+    /// The scripts of the items of a plan.
+    ///
+    /// The script of an item is the `script` property of the item, the
+    /// property the daemon reads with `bar_item_set_script`
+    /// (`src/bar_item.c:1248`).
+    private static func scripts(of plan: BarRenderPlan) -> [PreviewScriptRunner.Script] {
+        plan.items.compactMap { item in
+            guard let script = item.properties.first(where: { $0.key == "script" })?.value,
+                  !script.isEmpty else { return nil }
+            return PreviewScriptRunner.Script(alias: item.alias, script: script)
+        }
+    }
+
+    /// Puts one assignment of a script into the preview.
+    ///
+    /// The answer of the vendored code is not swallowed: a property that
+    /// the vendored parser refuses answers with a message, and the app has
+    /// to show the user why the property was refused.
+    private static func apply(_ assignment: PreviewScriptShim.Assignment, to handle: OpaquePointer?) -> [String] {
+        let code = SketchyBarPreviewC.setItem(handle,
+                                               alias: assignment.alias,
+                                               key: assignment.key,
+                                               value: assignment.value)
+        guard code != SketchyBarPreviewC.Code.ok else { return [] }
+
+        let message = SketchyBarPreviewC.messages(handle).trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason = message.isEmpty ? "the property was refused" : message
+        return ["The property '\(assignment.key)' of the item '\(assignment.alias)' was refused: \(reason)"]
+    }
+
+    /// Starts the timer that runs the scripts of the items again and again.
+    ///
+    /// The timer runs the scripts of the last request, so the values of the
+    /// items stay fresh while the preview is in use. It stops itself when
+    /// the requests stop: the pane of the preview cannot tell the service
+    /// that it is hidden without a change in the views, so the timer waits
+    /// for the idle timeout of the runner.
+    private func startLiveValuesTimer() {
+        guard liveValuesTimer == nil else { return }
+
+        let runner = self.runner
+        let queue = DispatchQueue(label: "com.sketchybarstudio.preview.live-values")
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + Self.liveValuesInterval,
+                       repeating: Self.liveValuesInterval)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            guard !runner.isIdle else {
+                Task { await self.stopLiveValuesTimer() }
+                return
+            }
+            _ = runner.runCurrentScripts()
+        }
+        timer.resume()
+        liveValuesTimer = timer
+    }
+
+    /// Stops the timer of the scripts of the items.
+    private func stopLiveValuesTimer() {
+        liveValuesTimer?.cancel()
+        liveValuesTimer = nil
+    }
+
+    /// The values the scripts of the items produced.
+    ///
+    /// The pane of the preview does not read them yet: the view may not
+    /// change in this stage. A later stage shows them in the pane.
+    var liveValues: PreviewScriptRunner.Outcome? {
+        runner.lastOutcome
     }
 
     /// Refuses a display the render cannot draw.

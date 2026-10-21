@@ -343,3 +343,60 @@ const char* sb_preview_messages(sb_preview_t* preview) {
   if (!preview) return "";
   return preview->messages ? preview->messages : "";
 }
+
+/* --- The scripts of the items --------------------------------------------- */
+
+/* The answer of a run of the scripts, in the codes of the public API. */
+static int preview_script_status_code(void) {
+  switch (preview_script_status()) {
+    case PREVIEW_SCRIPT_OUTCOME_TIMEOUT: return SB_ERR_SCRIPT_TIMEOUT;
+    case PREVIEW_SCRIPT_OUTCOME_FAILED: return SB_ERR_SCRIPT_FAILED;
+    default: return SB_OK;
+  }
+}
+
+int sb_preview_set_script_environment(const char* shim_directory,
+                                       const char* sink_path,
+                                       const char* log_directory) {
+  if (!shim_directory || !sink_path || !log_directory) return SB_ERR_INVALID_ARGUMENT;
+
+  preview_set_script_environment(shim_directory, sink_path, log_directory);
+  return SB_OK;
+}
+
+int sb_preview_run_item_scripts(sb_preview_t* preview) {
+  if (!preview) return SB_ERR_INVALID_ARGUMENT;
+
+  for (uint32_t i = 0; i < g_bar_manager.bar_item_count; i++) {
+    struct bar_item* item = g_bar_manager.bar_items[i];
+    if (!item || !item->script || !item->script[0]) continue;
+    if (!item->name) continue;
+
+    /* The report of the script names the item it belongs to. */
+    preview_set_current_script(item->name);
+
+    /* The environment of the item: the variables of the item, its name and
+       the sender (src/bar_item.c:114-171). The daemon runs the script when
+       the item is updated, and the preview runs it when the render asks
+       for the values of the items. */
+    struct env_vars env_vars;
+    env_vars_init(&env_vars);
+    bar_item_update(item, "routine", true, &env_vars);
+    env_vars_destroy(&env_vars);
+  }
+
+  preview_wait_for_scripts(PREVIEW_SCRIPT_TIMEOUT * 1000);
+  return preview_script_status_code();
+}
+
+int sb_preview_run_script(const char* alias, const char* script) {
+  if (!alias || !script) return SB_ERR_INVALID_ARGUMENT;
+  if (!preview_run_script(alias, script)) return SB_ERR_SCRIPT_FAILED;
+
+  preview_wait_for_scripts(PREVIEW_SCRIPT_TIMEOUT * 1000);
+  return preview_script_status_code();
+}
+
+const char* sb_preview_script_messages(void) {
+  return preview_script_messages();
+}
