@@ -48,7 +48,7 @@ The current preview is `Sources/SketchyBarStudio/Views/BarPreviewView.swift`. It
 
 * A user can open the preview of a config that is not the live one, and see a bar, and the rendered image has the width of the virtual display and is not blank.
 * The preview of the live config shows the unsaved draft of the selected file.
-* The 1:1 toggle shows the image at one image pixel per screen point, and the pane scrolls horizontally.
+* The 1:1 toggle shows the image at its true POINT size (one image pixel per device pixel on a 2× display), and the pane scrolls horizontally.
 * Switching between Edit and Preview does not lose a draft.
 * In the scaled-to-fit view the drawn image has the same width-to-height ratio as the rendered image, and the rendered image has the ratio of the target display width against the bar height. Checkable by comparing the two ratios.
 * The fitted image's aspect ratio equals the rendered image's aspect ratio within 0.1%.

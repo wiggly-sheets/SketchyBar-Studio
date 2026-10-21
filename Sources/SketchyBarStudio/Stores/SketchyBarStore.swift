@@ -57,6 +57,30 @@ enum StatusKind {
     }
 }
 
+/// What the detail pane shows.
+///
+/// The pane is either the editor of the file or the rendered bar of a
+/// config or a profile. Switching between them never touches a draft: the
+/// drafts live in the store.
+enum DetailPaneMode: String, CaseIterable, Identifiable {
+    /// The editor of the file.
+    case edit
+    /// The rendered bar.
+    case preview
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .edit: return "Edit"
+        case .preview: return "Preview"
+        }
+    }
+
+    /// The mode the detail pane opens in.
+    static let defaultMode: DetailPaneMode = .edit
+}
+
 /// One config file read from disk together with the values scanned from it.
 private struct ScannedConfigFile {
     let file: ConfigFile
@@ -122,12 +146,28 @@ final class SketchyBarStore: ObservableObject {
     @Published var selectedFileID: ConfigFile.ID?
     @Published var missingFiles: [ConfigFile] = []
     @Published var profiles: [ConfigProfile] = []
+    /// The saved profiles of every config of the library.
+    ///
+    /// The profiles of a config live in the archive of that config, so the
+    /// preview pane can offer the profile of another config too.
+    @Published private(set) var libraryProfiles: [BarRenderProfile] = []
     @Published var profileName = ""
     @Published var newConfigName = ""
     @Published var newConfigPath = ""
     @Published var statusMessage = ""
     @Published var searchText = ""
     @Published var showModifiedOnly = false
+    /// The pane the detail view shows.
+    @Published var detailPaneMode: DetailPaneMode = .defaultMode
+    /// The config or the profile the preview pane renders. Nil is the
+    /// config the app has open.
+    @Published var barRenderSource: BarRenderSource?
+    /// The width of the display the bar is rendered for, in points. Nil is
+    /// the width of the display of the machine.
+    @Published var barRenderWidthOverride: Double?
+    /// The id of the display the bar is rendered for. Nil is the display
+    /// the app is on.
+    @Published var barRenderDisplayID: String?
     @Published var appTheme: AppTheme = SketchyBarStore.savedTheme() {
         didSet { UserDefaults.standard.set(appTheme.rawValue, forKey: "appTheme") }
     }
@@ -370,6 +410,9 @@ final class SketchyBarStore: ObservableObject {
         selectedConfigID = id
         configRoot = config.url
         newConfigPath = config.path
+        // The preview follows the config the app has open, so the choice
+        // of the picker starts over with the new config.
+        barRenderSource = nil
         UserDefaults.standard.set(id, forKey: "selectedConfigID")
         UserDefaults.standard.set(config.path, forKey: "configRoot")
         selectedFileID = nil
@@ -406,6 +449,7 @@ final class SketchyBarStore: ObservableObject {
         }
         let config = ConfigWorkspace.make(name: trimmedName, url: url)
         configs.append(config)
+        refreshLibraryProfiles()
         saveConfigLibrary()
         newConfigName = ""
         newConfigPath = url.path
@@ -424,6 +468,7 @@ final class SketchyBarStore: ObservableObject {
             return
         }
         configs.removeAll { $0.id == id }
+        refreshLibraryProfiles()
         saveConfigLibrary()
         if selectedConfigID == id, let first = configs.first { selectConfig(first.id) }
     }
@@ -1664,6 +1709,7 @@ final class SketchyBarStore: ObservableObject {
             try profileService.saveProfile(named: profileName, from: configRoot, configID: selectedConfigProfileID)
             profileName = ""
             profiles = profileService.listProfiles(for: selectedConfigProfileID)
+            refreshLibraryProfiles()
             statusMessage = "Saved profile for \(selectedConfig?.name ?? "config")."
         } catch {
             statusMessage = "Profile save failed: \(error.localizedDescription)"
@@ -1682,6 +1728,81 @@ final class SketchyBarStore: ObservableObject {
         } catch {
             statusMessage = "Restore failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Reads the saved profiles of every config of the library.
+    ///
+    /// The profiles of a config live in the archive of that config, so the
+    /// preview pane can offer the profile of another config too.
+    private func refreshLibraryProfiles() {
+        libraryProfiles = configs.flatMap { config in
+            profileService.listProfiles(for: config.id).map { profile in
+                BarRenderProfile(config: config, profile: profile)
+            }
+        }
+    }
+
+    /// The warnings about a source the render cannot know itself.
+    ///
+    /// The render knows the files it reads, but not whether the app has
+    /// the config open, so the pane has to say what the render cannot see.
+    func barRenderWarnings(for source: BarRenderSource) -> [String] {
+        switch source {
+        case .config(let id):
+            guard id == selectedConfig?.id else {
+                return ["This config is not open, so its items are rendered in file order and not in loader order."]
+            }
+            // A file that changed on disk cannot take the drafts of the
+            // app any more, so the bar shows the file as it is on disk.
+            return filesInPreviewOrder.compactMap { file in
+                guard previewIssue(for: file) != nil else { return nil }
+                return "\(file.displayName) changed on disk, so the bar shows the file as it is on disk and not the unsaved drafts."
+            }
+        case .profile:
+            return ["This profile is rendered in file order and not in loader order."]
+        }
+    }
+
+    /// A number that changes when the rendered source changes.
+    ///
+    /// The signature of the config the app has open follows the drafts, so
+    /// every edit renders the bar again. The signature of a config that is
+    /// not open follows the files on disk, so a file that changes on disk
+    /// renders the bar again.
+    func barRenderSignature(for source: BarRenderSource?) -> Int {
+        guard let source else { return 0 }
+        if case .config(let id) = source, id == selectedConfig?.id {
+            return draftsSignature()
+        }
+        return diskSignature(for: source)
+    }
+
+    /// The signature of the drafts of the app.
+    private func draftsSignature() -> Int {
+        var hasher = Hasher()
+        hasher.combine(sourceDraftRevision)
+        for file in files {
+            hasher.combine(file.id)
+            for value in file.values {
+                hasher.combine(value.draftValue)
+            }
+        }
+        return hasher.finalize()
+    }
+
+    /// The signature of the files of a source on disk.
+    ///
+    /// The files of a source that is not open are read from disk, so the
+    /// render has to follow the files and not the drafts of the app.
+    private func diskSignature(for source: BarRenderSource) -> Int {
+        var hasher = Hasher()
+        for file in barRenderFiles(for: source) {
+            hasher.combine(file.url.path)
+            let values = try? file.url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            hasher.combine(values?.contentModificationDate)
+            hasher.combine(values?.fileSize)
+        }
+        return hasher.finalize()
     }
 
     /// Reads every config file once and scans it. It only touches file
@@ -1772,6 +1893,7 @@ final class SketchyBarStore: ObservableObject {
         files = scanned.compactMap { nextSessions[$0.file.id]?.file }
         pruneStagedLoaderOrders()
         profiles = profileService.listProfiles(for: selectedConfigProfileID)
+        refreshLibraryProfiles()
         rebuildValueIndex()
         if selectedFileID == nil {
             selectedFileID = files.first?.id
