@@ -334,6 +334,7 @@ private struct BarThemeSettingsTab: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Select \(palette.displayName)")
+                    .help("\(palette.family) · \(palette.licence) · \(palette.sourceURL)")
                 }
             }
 
