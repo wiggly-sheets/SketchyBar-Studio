@@ -197,10 +197,174 @@ final class BarThemeTests: XCTestCase {
         XCTAssertTrue(written.contains("background = 0xff2e3440"))
     }
 
+    func testPaletteCatalogHasAtLeast24Palettes() {
+        XCTAssertGreaterThanOrEqual(BarPalette.all.count, 24)
+    }
+
+    func testPaletteMetadataIsCompleteAndLicensed() {
+        let allowedLicences: Set<String> = [
+            "MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause",
+            "ISC", "CC0-1.0", "Unlicense"
+        ]
+        let identifiers = Set(BarPalette.all.map(\.id))
+
+        XCTAssertEqual(identifiers.count, BarPalette.all.count)
+        for palette in BarPalette.all {
+            XCTAssertFalse(palette.sourceURL.isEmpty, palette.id)
+            XCTAssertTrue(palette.sourceURL.hasPrefix("https://"), palette.id)
+            XCTAssertTrue(allowedLicences.contains(palette.licence), "\(palette.id): \(palette.licence)")
+            XCTAssertFalse(palette.swatches.isEmpty, palette.id)
+
+            for role in BarPalette.Role.allCases {
+                let hex = palette.hex(for: role)
+                XCTAssertEqual(hex.count, 6, "\(palette.id).\(role)")
+                XCTAssertTrue(hex.allSatisfy(\.isHexDigit), "\(palette.id).\(role)")
+            }
+        }
+    }
+
+    func testHueNamedKeysUseMatchingSwatches() throws {
+        let written = try renderedTheme(
+            """
+            return {
+            \tred = 0xff101010,
+            \tgreen = 0xff101010,
+            \tblue = 0xff101010,
+            }
+            """
+        )
+
+        XCTAssertTrue(written.contains("red = 0xffbf616a"))
+        XCTAssertTrue(written.contains("green = 0xffa3be8c"))
+        XCTAssertTrue(written.contains("blue = 0xff5e81ac"))
+    }
+
+    func testHueNamedKeysDoNotCollide() throws {
+        let written = try renderedTheme(
+            """
+            return {
+            \tred = 0xff101010,
+            \tblue = 0xff101010,
+            }
+            """
+        )
+
+        XCTAssertTrue(written.contains("red = 0xffbf616a"))
+        XCTAssertTrue(written.contains("blue = 0xff5e81ac"))
+        XCTAssertNotEqual(
+            BarThemeService.hexEntries(in: written).map(\.value),
+            ["0xffbf616a", "0xffbf616a"]
+        )
+    }
+
+    func testCompoundHueKeyUsesMatchingSwatch() throws {
+        let written = try renderedTheme(
+            """
+            return {
+            \tbattery_red = 0xff101010,
+            }
+            """
+        )
+
+        XCTAssertTrue(written.contains("battery_red = 0xffbf616a"))
+    }
+
+    func testSemanticKeyWinsOverHueName() throws {
+        let written = try renderedTheme(
+            """
+            return {
+            \taccent_red = 0xff101010,
+            \tbackground_blue = 0xff101010,
+            }
+            """
+        )
+
+        XCTAssertTrue(written.contains("accent_red = 0xff88c0d0"))
+        XCTAssertTrue(written.contains("background_blue = 0xff2e3440"))
+    }
+
+    func testAchromaticKeysUseLuminanceRoles() throws {
+        let written = try renderedTheme(
+            """
+            return {
+            \tgrey = 0xff808080,
+            \tblack = 0xff101010,
+            \twhite = 0xfff0f0f0,
+            }
+            """
+        )
+
+        XCTAssertTrue(written.contains("grey = 0xff4c566a"))
+        XCTAssertTrue(written.contains("black = 0xff2e3440"))
+        XCTAssertTrue(written.contains("white = 0xffd8dee9"))
+    }
+
+    func testMissingSwatchFallsBackToLuminance() throws {
+        let palette = testPalette(swatches: ["#5e81ac"])
+        let written = try renderedTheme(
+            """
+            return {
+            \tred = 0xff101010,
+            }
+            """,
+            palette: palette
+        )
+
+        XCTAssertTrue(written.contains("red = 0xff123456"))
+    }
+
+    func testHueMappingKeepsAlphaAndKeyOrder() throws {
+        let written = try renderedTheme(
+            """
+            return {
+            \tred = 0x40101010,
+            \tblue = 0xff101010,
+            \tcustom = 0xff808080,
+            }
+            """
+        )
+
+        XCTAssertTrue(written.contains("red = 0x40bf616a"))
+        XCTAssertEqual(
+            BarThemeService.hexEntries(in: written).map(\.key),
+            ["red", "blue", "custom"]
+        )
+    }
+
     // MARK: - Helpers
 
     private var nord: BarPalette {
         BarPalette.all.first { $0.id == "nord" }!
+    }
+
+    private func testPalette(swatches: [String]) -> BarPalette {
+        BarPalette(
+            id: "test-palette",
+            displayName: "Test Palette",
+            family: "Test",
+            isDark: true,
+            background: "#000000",
+            foreground: "#ffffff",
+            accent: "#ff0000",
+            accentSecondary: "#00ff00",
+            muted: "#123456",
+            border: "#654321",
+            swatches: swatches,
+            sourceURL: "https://example.com/palette",
+            licence: "MIT"
+        )
+    }
+
+    private func renderedTheme(_ source: String, palette: BarPalette? = nil) throws -> String {
+        let palette = palette ?? nord
+        let root = try makeConfigRoot()
+        try write(source, to: root.appendingPathComponent("themes/Sample.lua"))
+        try write("Sample\n", to: root.appendingPathComponent("themes/current_theme"))
+        try makeService(root).apply(palette)
+        return try String(
+            contentsOf: root.appendingPathComponent("themes/\(palette.displayName).lua"),
+            encoding: .utf8
+        )
     }
 
     private func makeService(_ root: URL) -> BarThemeService {
