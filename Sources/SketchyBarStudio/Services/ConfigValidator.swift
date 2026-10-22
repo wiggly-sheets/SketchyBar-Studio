@@ -41,9 +41,23 @@ struct ConfigValidator: Sendable {
         var diagnostics = graphDiagnostics(root: root)
         var aliases: [AliasDeclaration] = []
 
-        for file in SketchyBarConfigLocator().configFiles(in: root)
-        where file.pathExtension.lowercased() == "lua" {
-            diagnostics.append(contentsOf: luaDiagnostics(file: file, root: root, aliases: &aliases))
+        for file in SketchyBarConfigLocator().configFiles(in: root) {
+            let ext = file.pathExtension.lowercased()
+            let contents = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            let isLua = ext == "lua" || LuaSourceDetection.isLua(contents)
+            let isShell = ext == "sh" || ext == "bash" || ext == "zsh" || (!isLua && ext.isEmpty)
+
+            if isLua {
+                diagnostics.append(contentsOf: luaDiagnostics(file: file, root: root, aliases: &aliases))
+            } else if isShell {
+                let shellDiagnostics = ShellDiagnosticService().diagnose(file: file, root: root)
+                diagnostics.append(contentsOf: shellDiagnostics.map { Self.convertShellDiagnostic($0, root: root) })
+                // Collect ALL shell aliases for cross-file duplicate detection
+                let addCommands = ShellConfigCommandParser.addCommands(in: contents)
+                for (alias, line) in addCommands where !alias.isEmpty {
+                    aliases.append(AliasDeclaration(alias: alias, file: file, line: line))
+                }
+            }
         }
 
         // An alias is used in the whole config, so the files are compared
@@ -51,6 +65,38 @@ struct ConfigValidator: Sendable {
         diagnostics.append(contentsOf: Self.duplicateAliasDiagnostics(aliases, root: root))
 
         return Self.sorted(diagnostics)
+    }
+
+    /// Converts a shell diagnostic to a config diagnostic.
+    private static func convertShellDiagnostic(
+        _ shell: ShellDiagnosticService.Diagnostic,
+        root: URL
+    ) -> ConfigDiagnostic {
+        let severity: ConfigDiagnostic.Severity
+        switch shell.severity {
+        case .error: severity = .error
+        case .warning: severity = .warning
+        case .info: severity = .info
+        }
+
+        let kind: ConfigDiagnostic.Kind
+        switch shell.kind {
+        case .duplicateAlias: kind = .duplicateAlias
+        case .missingLabel: kind = .unknownOption
+        case .missingFile: kind = .missingTarget
+        case .brokenLoader: kind = .missingTarget
+        }
+
+        return ConfigDiagnostic(
+            id: shell.id,
+            severity: severity,
+            kind: kind,
+            title: shell.title,
+            detail: shell.detail,
+            fileURL: shell.fileURL,
+            line: shell.line,
+            keyPath: shell.keyPath
+        )
     }
 
     // MARK: - Load graph

@@ -270,7 +270,7 @@ struct ShellConfigScanner {
     }
 
     /// True when the value can be written without quotes.
-    private static func isSafeUnquotedToken(_ value: String) -> Bool {
+    static func isSafeUnquotedToken(_ value: String) -> Bool {
         guard !value.isEmpty, let regex = safeTokenRegex else { return false }
         let range = NSRange(value.startIndex..<value.endIndex, in: value)
         guard regex.firstMatch(in: value, range: range) != nil else { return false }
@@ -342,15 +342,18 @@ struct ShellConfigCommandParser {
     }
 
     /// One command of a shell config.
+    ///
+    /// The line is the line of the call of the binary, so a diagnostic can
+    /// name the line of an add or a set without re-parsing the file.
     private enum Command {
         /// `--add <type> <alias> <position>`
-        case add(type: String, alias: String, position: Word?)
+        case add(type: String, alias: String, position: Word?, line: Int)
         /// `--set <alias> <property>=<value> …`
-        case set(alias: String, properties: [Property])
+        case set(alias: String, properties: [Property], line: Int)
         /// `--default <property>=<value> …`
-        case defaultItem(properties: [Property])
+        case defaultItem(properties: [Property], line: Int)
         /// `--bar <property>=<value> …`
-        case bar(properties: [Property])
+        case bar(properties: [Property], line: Int)
     }
 
     /// One declaration of an item: the add that creates it and the values
@@ -388,6 +391,52 @@ struct ShellConfigCommandParser {
         let range: Range<Int>
     }
 
+    /// Returns the add commands with their aliases and line numbers.
+    static func addCommands(in source: String) -> [(alias: String, line: Int)] {
+        let commands = Self.commands(in: source)
+        return commands.commands.compactMap { command in
+            if case .add(_, let alias, _, let line) = command, !alias.isEmpty {
+                return (alias, line)
+            }
+            return nil
+        }
+    }
+
+    /// The range of the alias of the first item of the shell config.
+    ///
+    /// The range covers the quoted alias, such as `"clock"`. It is nil
+    /// when the file has no item, or when the item has no name.
+    static func aliasRange(in source: String) -> LuaSourceRange? {
+        let words = Self.words(in: source)
+        var index = 0
+
+        while index < words.count {
+            guard Self.isBinary(words[index].text) else {
+                index += 1
+                continue
+            }
+
+            var cursor = index + 1
+            while cursor < words.count,
+                  words[cursor].line == words[index].line,
+                  !Self.isBinary(words[cursor].text) {
+                cursor += 1
+            }
+
+            let arguments = Array(words[(index + 1)..<cursor])
+            index = cursor
+
+            if let flag = arguments.first, flag.text == "--add", arguments.count >= 3 {
+                let aliasWord = arguments[2]
+                if !aliasWord.text.isEmpty {
+                    return LuaSourceRange(start: aliasWord.range.lowerBound, end: aliasWord.range.upperBound)
+                }
+            }
+        }
+
+        return nil
+    }
+
     /// The commands of a config, read into the model of the app.
     static func parse(in source: String) -> Result {
         var declarations: [Declaration] = []
@@ -398,7 +447,7 @@ struct ShellConfigCommandParser {
 
         for command in commands.commands {
             switch command {
-            case .add(let type, let alias, let position):
+            case .add(let type, let alias, let position, _):
                 guard type == "item" else {
                     // The preview only knows plain items. The other types
                     // need the window server or their own setup.
@@ -416,7 +465,7 @@ struct ShellConfigCommandParser {
                     continue
                 }
                 declarations.append(Declaration(alias: alias, addPosition: position.text, properties: []))
-            case .set(let alias, let properties):
+            case .set(let alias, let properties, _):
                 let literal = properties.filter { !$0.dynamic }
                 let dynamic = properties.filter(\.dynamic)
                 guard let index = declarations.lastIndex(where: { $0.alias == alias }) else {
@@ -429,10 +478,10 @@ struct ShellConfigCommandParser {
                 declarations[index].properties.append(contentsOf: literal.map {
                     value(alias: alias, key: $0.key, text: $0.value, range: $0.range)
                 })
-            case .defaultItem(let properties):
+            case .defaultItem(let properties, _):
                 warnings.append(contentsOf: properties.filter(\.dynamic).map { PreviewWarning.dynamicValue($0.key) })
                 defaultValues.append(contentsOf: properties.filter { !$0.dynamic }.map { value(alias: "default", key: $0.key, text: $0.value, range: $0.range) })
-            case .bar(let properties):
+            case .bar(let properties, _):
                 warnings.append(contentsOf: properties.filter(\.dynamic).map { PreviewWarning.dynamicValue($0.key) })
                 barValues.append(contentsOf: properties.filter { !$0.dynamic }.map { value(alias: "bar", key: $0.key, text: $0.value, range: $0.range) })
             }
@@ -514,19 +563,20 @@ struct ShellConfigCommandParser {
     /// One command, read from the words that follow the call of the binary.
     private static func command(from arguments: [Word]) -> Command? {
         guard let flag = arguments.first else { return nil }
+        let line = flag.line
 
         switch flag.text {
         case "--add":
             guard arguments.count >= 3 else { return nil }
             let position = arguments.count > 3 ? arguments[3] : nil
-            return .add(type: arguments[1].text, alias: arguments[2].text, position: position)
+            return .add(type: arguments[1].text, alias: arguments[2].text, position: position, line: line)
         case "--set":
             guard arguments.count >= 2 else { return nil }
-            return .set(alias: arguments[1].text, properties: Self.properties(in: Array(arguments.dropFirst(2))))
+            return .set(alias: arguments[1].text, properties: Self.properties(in: Array(arguments.dropFirst(2))), line: line)
         case "--default":
-            return .defaultItem(properties: Self.properties(in: Array(arguments.dropFirst())))
+            return .defaultItem(properties: Self.properties(in: Array(arguments.dropFirst())), line: line)
         case "--bar":
-            return .bar(properties: Self.properties(in: Array(arguments.dropFirst())))
+            return .bar(properties: Self.properties(in: Array(arguments.dropFirst())), line: line)
         default:
             return nil
         }

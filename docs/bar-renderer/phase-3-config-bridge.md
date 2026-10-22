@@ -118,6 +118,18 @@ Stage 3d (the resolved pane: the draft applied on top of the resolved config, wi
 
 The resolution of a config is the expensive half of a render, and the pane renders again on every keystroke of a draft. Stage 3d therefore keeps the resolved plan in a cache keyed by a **disk signature** of the config's files: the cache hashes the text of every file, its size and its content-modification date, and it re-runs the Lua only when one of them changes. A draft changes the text the app holds and not the text on disk, so a keystroke reuses the resolved config and only puts the draft on top of it. A file that changes on disk is a new signature and is resolved again. A run that fails is kept as well, so a config that runs into the deadline of the sandbox does not stop the pane on every keystroke. The signature is a shortcut, not a correctness claim: a file the app cannot see, or a file outside the config root, is not part of it.
 
+### Shell parity
+
+A shell config reaches the bridge through the same item tree as a SbarLua config. The bridge reads the parsed shell commands the same way it reads the parsed Lua tables, so a `sketchybar --add item clock right` line and a `sbar.add("item", "clock", { position = "right" })` line produce the same item tree. The bridge applies the same defaults, the same warnings and the same duplicate-alias rule to both styles.
+
+The shell path has limits the SbarLua path does not have:
+
+* The shell parser cannot read a value that is built by a shell expansion, such as `"$PLUGIN_DIR/clock.sh"` or `"$(date +%H:%M)"`. The value is named in the warnings and the preview shows the value SketchyBar has by default.
+* The shell parser cannot read an item type that is not a plain item. A graph, a slider, a bracket, a space or an alias is reported as unsupported, and the preview lays it out with the width of the config.
+* The shell parser cannot read a value that comes from a variable the config sets elsewhere. The value is named in the warnings and the preview shows the default.
+
+The shell diagnostics find the problems a shell config has that the SbarLua diagnostics do not: duplicate aliases across shell files, items that are set but never added, items added without a position, script paths that point at a file that is gone, and loader lines that point at a file that is gone. The diagnostics reuse the existing `ConfigDiagnostic` kinds — `duplicateAlias`, `missingTarget`, `unknownOption` — so the diagnostics sheet shows them in the same way it shows the Lua diagnostics.
+
 ## Tests
 
 Unit tests in `Tests/SketchyBarStudioTests/PreviewConfigBridgeTests.swift`: one test per acceptance criterion, using the existing parser fixtures. The shared strategy is in [testing.md](testing.md).
