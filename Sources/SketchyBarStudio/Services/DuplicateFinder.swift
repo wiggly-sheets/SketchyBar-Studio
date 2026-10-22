@@ -71,7 +71,8 @@ struct DuplicateFinder: Sendable {
         var result: [ItemSignature] = []
 
         for file in SketchyBarConfigLocator().configFiles(in: root) {
-            guard file.pathExtension.lowercased() == "lua" else { continue }
+            let ext = file.pathExtension.lowercased()
+            guard ext == "lua" || ext == "sh" || ext == "bash" || ext == "zsh" else { continue }
             guard result.count < Self.maximumFiles else { break }
 
             let relativePath = Self.relativePath(of: file, from: root)
@@ -96,17 +97,41 @@ struct DuplicateFinder: Sendable {
         relativePath: String,
         contents: String
     ) -> ItemSignature? {
-        let items = SbarLuaItemParser.items(in: contents)
-        guard !items.isEmpty else { return nil }
+        // Check if it's a Lua file
+        if LuaSourceDetection.isLua(contents) || file.pathExtension.lowercased() == "lua" {
+            let items = SbarLuaItemParser.items(in: contents)
+            guard !items.isEmpty else { return nil }
+
+            var properties: [String: String] = [:]
+            for item in items {
+                for value in item.values {
+                    properties[value.keyPath] = value.rawValue
+                }
+            }
+
+            let aliases = items.map(\.alias).filter { !$0.isEmpty }
+            let alias = aliases.isEmpty ? nil : aliases.joined(separator: ", ")
+
+            return ItemSignature(
+                fileURL: file,
+                relativePath: relativePath,
+                alias: alias,
+                properties: properties
+            )
+        }
+
+        // Shell config - use the command parser to get items
+        let parsed = ShellConfigCommandParser.parse(in: contents)
+        guard !parsed.items.isEmpty else { return nil }
 
         var properties: [String: String] = [:]
-        for item in items {
+        for item in parsed.items {
             for value in item.values {
                 properties[value.keyPath] = value.rawValue
             }
         }
 
-        let aliases = items.map(\.alias).filter { !$0.isEmpty }
+        let aliases = parsed.items.map(\.alias).filter { !$0.isEmpty }
         let alias = aliases.isEmpty ? nil : aliases.joined(separator: ", ")
 
         return ItemSignature(
