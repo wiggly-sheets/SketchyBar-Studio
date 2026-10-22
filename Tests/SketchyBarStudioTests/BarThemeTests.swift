@@ -331,20 +331,71 @@ final class BarThemeTests: XCTestCase {
         )
     }
 
+    func testDisplayRoleOrderIsFixed() {
+        XCTAssertEqual(
+            BarPalette.displayRoleOrder,
+            [.background, .foreground, .accent, .accentSecondary, .muted, .border]
+        )
+    }
+
+    func testContrastFallbackUsesThePaletteOwnColours() {
+        XCTAssertEqual(
+            BarPalette.contrastRatio(between: "#000000", and: "#ffffff"),
+            21,
+            accuracy: 0.01
+        )
+        XCTAssertEqual(
+            BarPalette.contrastRatio(between: "#777777", and: "#7a7a7a"),
+            1,
+            accuracy: 0.05
+        )
+
+        XCTAssertFalse(nord.foregroundNeedsContrastFallback)
+        XCTAssertFalse(
+            testPalette(swatches: ["#000000"]).foregroundNeedsContrastFallback
+        )
+        XCTAssertTrue(
+            testPalette(
+                swatches: ["#000000"],
+                background: "#777777",
+                foreground: "#7a7a7a"
+            )
+            .foregroundNeedsContrastFallback
+        )
+    }
+
+    func testEveryPaletteSwatchIsValidHex() {
+        for palette in BarPalette.all {
+            XCTAssertFalse(palette.swatches.isEmpty, palette.id)
+            for swatch in palette.swatches {
+                XCTAssertTrue(swatch.hasPrefix("#"), "\(palette.id): \(swatch)")
+                XCTAssertEqual(swatch.count, 7, "\(palette.id): \(swatch)")
+                XCTAssertTrue(
+                    swatch.dropFirst().allSatisfy(\.isHexDigit),
+                    "\(palette.id): \(swatch)"
+                )
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     private var nord: BarPalette {
         BarPalette.all.first { $0.id == "nord" }!
     }
 
-    private func testPalette(swatches: [String]) -> BarPalette {
+    private func testPalette(
+        swatches: [String],
+        background: String = "#000000",
+        foreground: String = "#ffffff"
+    ) -> BarPalette {
         BarPalette(
             id: "test-palette",
             displayName: "Test Palette",
             family: "Test",
             isDark: true,
-            background: "#000000",
-            foreground: "#ffffff",
+            background: background,
+            foreground: foreground,
             accent: "#ff0000",
             accentSecondary: "#00ff00",
             muted: "#123456",
