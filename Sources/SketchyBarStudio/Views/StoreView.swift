@@ -10,7 +10,9 @@ struct StoreView: View {
         _model = StateObject(wrappedValue: StoreModel(
             configRoot: configRoot,
             configID: configID,
-            appSupportRoot: appSupportRoot
+            appSupportRoot: appSupportRoot,
+            dependencyService: .shared,
+            userDefaults: .standard
         ))
     }
 
@@ -28,12 +30,13 @@ struct StoreView: View {
             model.selectFirstVisibleEntry()
         }
         .sheet(item: $model.installCandidate, onDismiss: { model.discardStaging() }) { entry in
-            StoreInstallSheet(
-                entry: entry,
-                preview: model.previewText,
-                isWorking: model.isWorking
-            ) {
+            StoreInstallSheet(model: model, entry: entry) {
                 Task { await model.install(entry) }
+            }
+        }
+        .sheet(item: $model.resolveCandidate, onDismiss: { model.cancelResolve() }) { unresolved in
+            StoreResolveSheet(model: model, unresolved: unresolved) {
+                Task { await model.resolve(unresolved) }
             }
         }
         .alert(
@@ -413,14 +416,49 @@ enum StoreMarkdown {
     }
 }
 
+/// A dependency install succeeded but a required dep is still missing.
+struct StoreDependencyUnresolved: Identifiable {
+    let entryID: String
+    let entryName: String
+    let missingDependencies: [StoreDependency]
+    var id: String { entryID }
+}
+
 private struct StoreInstallSheet: View {
+    @ObservedObject var model: StoreModel
     let entry: StoreEntry
-    let preview: String?
-    let isWorking: Bool
     let onConfirm: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var accepted = false
+    @AppStorage("store.dependencyPolicy") private var policyRaw = StoreDependencyPolicy.ask.rawValue
+    @State private var overridePolicy: StoreDependencyPolicy?
+
+    private var policy: StoreDependencyPolicy {
+        overridePolicy ?? StoreDependencyPolicy(rawValue: policyRaw) ?? .ask
+    }
+
+    private var blockingRequiredMissing: [StoreDependency] {
+        guard policy == .never else { return [] }
+        var missing: [StoreDependency] = []
+        for (dep, status) in zip(entry.dependencies, model.dependencyStatus(for: entry)) {
+            if dep.required && status == .missing { missing.append(dep) }
+        }
+        return missing
+    }
+
+    private var automaticInstalls: [StoreDependency] {
+        guard policy == .automatic else { return [] }
+        var toInstall: [StoreDependency] = []
+        for (dep, status) in zip(entry.dependencies, model.dependencyStatus(for: entry)) where status == .missing {
+            if dep.kind == .formula || dep.kind == .cask { toInstall.append(dep) }
+        }
+        return toInstall
+    }
+
+    private var installBlocked: Bool {
+        blockingRequiredMissing.count > 0
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -433,7 +471,7 @@ private struct StoreInstallSheet: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            if let preview {
+            if let preview = model.previewText {
                 ScrollView {
                     Text(preview)
                         .font(.system(.caption, design: .monospaced))
@@ -445,8 +483,18 @@ private struct StoreInstallSheet: View {
                 .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
             }
 
+            if !entry.dependencies.isEmpty {
+                dependenciesSection
+            }
+
             if let url = URL(string: entry.licenceURL), let licence = entry.licence {
                 Link("Read the \(licence.rawValue) licence", destination: url)
+            }
+
+            if installBlocked {
+                Text("Install blocked: required dependencies are missing and the policy is \(policy.title). Install them first or change the policy.")
+                    .font(.callout)
+                    .foregroundStyle(.red)
             }
 
             Toggle("I accept the \(entry.licence?.rawValue ?? "") licence and want to install this entry.", isOn: $accepted)
@@ -460,7 +508,136 @@ private struct StoreInstallSheet: View {
                     onConfirm()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!accepted || isWorking)
+                .disabled(!accepted || model.isWorking || installBlocked)
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+        .onAppear { model.reloadDependencyStatus(for: entry) }
+    }
+
+    @ViewBuilder
+    private var dependenciesSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text("Dependencies").font(.headline)
+                Spacer()
+                Text("Policy: \(policy.title)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Policy override", selection: $overridePolicy) {
+                    Text("Use setting (\(StoreDependencyPolicy(rawValue: policyRaw)?.title ?? "Ask"))").tag(nil as StoreDependencyPolicy?)
+                    ForEach(StoreDependencyPolicy.allCases, id: \.self) { p in
+                        Text(p.title).tag(Optional(p))
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 220)
+                .accessibilityLabel("Dependency policy override")
+            }
+
+            switch model.dependencyCheckState {
+            case .idle:
+                EmptyView()
+            case .checking:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking dependencies…").font(.caption).foregroundStyle(.secondary)
+                }
+            case .checked:
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(zip(entry.dependencies, model.dependencyStatus(for: entry)).enumerated()), id: \.offset) { _, pair in
+                        let dep = pair.0
+                        let status = pair.1
+                        HStack(spacing: 6) {
+                            presenceLabel(status)
+                            Text(depLabel(dep))
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                            if !dep.required {
+                                Text("optional")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                    }
+                }
+            }
+
+            if policy == .automatic && !automaticInstalls.isEmpty {
+                Label("Automatic install will run: " + automaticInstalls.map(\.name).joined(separator: ", "), systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    @ViewBuilder
+    private func presenceLabel(_ status: StoreDependencyPresence) -> some View {
+        switch status {
+        case .present:
+            Label("present", systemImage: "checkmark.circle").foregroundStyle(.green).labelStyle(.titleAndIcon)
+        case .missing:
+            Label("missing", systemImage: "xmark.circle").foregroundStyle(.orange).labelStyle(.titleAndIcon)
+        case .unknownBecauseBrewAbsent:
+            Label("brew not found", systemImage: "questionmark.circle").foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+        case .unknownBecauseFontconfigAbsent:
+            Label("fontconfig not found", systemImage: "questionmark.circle").foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+        case .unknown(let reason):
+            Label(reason, systemImage: "questionmark.circle").foregroundStyle(.secondary).labelStyle(.titleAndIcon)
+        }
+    }
+
+    private func depLabel(_ dep: StoreDependency) -> String {
+        switch dep.kind {
+        case .formula: return "\(dep.name) (brew)"
+        case .cask: return "\(dep.name) (brew --cask)"
+        case .command: return dep.name
+        case .font: return "\(dep.name) (font)"
+        case .sketchybar: return "SketchyBar"
+        }
+    }
+}
+
+/// The retry sheet for a dependency that was installed but not found
+/// afterwards. Retrying re-runs the presence check first.
+private struct StoreResolveSheet: View {
+    @ObservedObject var model: StoreModel
+    let unresolved: StoreDependencyUnresolved
+    let onConfirm: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var output = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Resolve \(unresolved.entryName)?")
+                .font(.headline)
+            Text("Installed, but still missing after install: \(unresolved.missingDependencies.map(\.name).joined(separator: ", ")).")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            if !output.isEmpty {
+                ScrollView {
+                    Text(output)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: 180)
+                .padding(8)
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Resolve") { onConfirm() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(model.isWorking)
             }
         }
         .padding(20)
@@ -502,9 +679,104 @@ final class StoreModel: ObservableObject {
     @Published var records: [StoreInstallRecord] = []
     @Published var installCandidate: StoreEntry?
     @Published var uninstallCandidate: StoreInstallRecord?
+    /// A dependency install succeeded but a required dep is still missing.
+    @Published var resolveCandidate: StoreDependencyUnresolved?
     @Published var errorMessage = ""
     @Published var statusMessage = ""
     @Published var isWorking = false
+
+    // MARK: - Dependency check state
+    enum DependencyCheckState: Equatable {
+        case idle
+        case checking
+        case checked
+    }
+    @Published private(set) var dependencyCheckState: DependencyCheckState = .idle
+    /// Presence results keyed by dependency name, for the entry shown in the
+    /// install sheet. Re-checked at install time.
+    private var dependencyPresences: [String: StoreDependencyPresence] = [:]
+
+    private let dependencyService: StoreDependencyService
+    private let userDefaults: UserDefaults
+
+    var dependencyPolicy: StoreDependencyPolicy {
+        StoreDependencyPolicy(rawValue: userDefaults.string(forKey: "store.dependencyPolicy") ?? "") ?? .ask
+    }
+
+    func reloadDependencyStatus(for entry: StoreEntry) {
+        dependencyCheckState = .checking
+        dependencyPresences = [:]
+        Task { await checkDependencies(for: entry) }
+    }
+
+    func dependencyStatus(for entry: StoreEntry) -> [StoreDependencyPresence] {
+        entry.dependencies.map { dependencyPresences[$0.name] ?? .missing }
+    }
+
+    private func checkDependencies(for entry: StoreEntry) async {
+        let presences = await dependencyService.check(entry.dependencies)
+        await MainActor.run {
+            var updated: [String: StoreDependencyPresence] = [:]
+            for (dep, status) in zip(entry.dependencies, presences) {
+                updated[dep.name] = status
+            }
+            self.dependencyPresences = updated
+            self.dependencyCheckState = .checked
+        }
+    }
+
+    func cancelResolve() {
+        resolveCandidate = nil
+    }
+
+    func resolve(_ unresolved: StoreDependencyUnresolved) async {
+        guard !isWorking else { return }
+        isWorking = true
+        defer { isWorking = false }
+
+        // Re-check presence first (no install attempt).
+        let postCheck = await dependencyService.check(unresolved.missingDependencies)
+        var stillMissing: [StoreDependency] = []
+        for (dep, status) in zip(unresolved.missingDependencies, postCheck) {
+            if dep.required && status == .missing {
+                stillMissing.append(dep)
+            }
+        }
+        if stillMissing.isEmpty {
+            resolveCandidate = nil
+            return
+        }
+
+        // Still missing — offer to retry. For automatic policy, re-attempt.
+        let policy = dependencyPolicy
+        if policy == .automatic {
+            for dep in stillMissing where dep.kind == .formula || dep.kind == .cask {
+                _ = await dependencyService.install(dep) { line in
+                    await MainActor.run { self.statusMessage = line }
+                }
+            }
+            // Final re-check
+            let final = await dependencyService.check(unresolved.missingDependencies)
+            let finalMissing = zip(unresolved.missingDependencies, final).compactMap { dep, status in
+                dep.required && status == .missing ? dep : nil
+            }
+            if finalMissing.isEmpty {
+                resolveCandidate = nil
+            } else {
+                resolveCandidate = StoreDependencyUnresolved(
+                    entryID: unresolved.entryID,
+                    entryName: unresolved.entryName,
+                    missingDependencies: finalMissing
+                )
+            }
+        } else {
+            resolveCandidate = StoreDependencyUnresolved(
+                entryID: unresolved.entryID,
+                entryName: unresolved.entryName,
+                missingDependencies: stillMissing
+            )
+        }
+    }
 
     let configRoot: URL
     let configID: String
@@ -520,12 +792,16 @@ final class StoreModel: ObservableObject {
         configRoot: URL,
         configID: String,
         appSupportRoot: URL? = nil,
-        client: StoreClient? = nil
+        client: StoreClient? = nil,
+        dependencyService: StoreDependencyService = .shared,
+        userDefaults: UserDefaults = .standard
     ) {
         self.configRoot = configRoot
         self.configID = configID
         self.client = client ?? StoreClient()
         self.installer = StoreInstallService(appSupportRoot: appSupportRoot)
+        self.dependencyService = dependencyService
+        self.userDefaults = userDefaults
         selectFirstVisibleEntry()
     }
 
@@ -670,6 +946,50 @@ final class StoreModel: ObservableObject {
         errorMessage = ""
 
         do {
+            // Re-check dependencies at install time.
+            let presences = await dependencyService.check(entry.dependencies)
+            var updated: [String: StoreDependencyPresence] = [:]
+            for (dep, status) in zip(entry.dependencies, presences) {
+                updated[dep.name] = status
+            }
+            self.dependencyPresences = updated
+            self.dependencyCheckState = .checked
+
+            // Check for required deps that are missing and cannot be auto-installed.
+            let policy = dependencyPolicy
+            let missingRequired = zip(entry.dependencies, presences).compactMap { dep, status -> StoreDependency? in
+                if dep.required && status == .missing {
+                    // If automatic, we'll try to install formula/cask deps.
+                    if policy == .automatic && (dep.kind == .formula || dep.kind == .cask) {
+                        return nil
+                    }
+                    return dep
+                }
+                return nil
+            }
+            if !missingRequired.isEmpty {
+                errorMessage = "Required dependencies missing: " + missingRequired.map(\.name).joined(separator: ", ")
+                return
+            }
+
+            // Automatic install for formula/cask deps.
+            if policy == .automatic {
+                let toInstall = zip(entry.dependencies, presences).compactMap { dep, status -> StoreDependency? in
+                    if dep.required && status == .missing && (dep.kind == .formula || dep.kind == .cask) {
+                        return dep
+                    }
+                    return nil
+                }
+                for dep in toInstall {
+                    _ = await dependencyService.install(dep) { line in
+                        // Stream output to status message so the user sees progress.
+                        await MainActor.run {
+                            self.statusMessage = line
+                        }
+                    }
+                }
+            }
+
             let outcome: StoreInstallOutcome
             switch entry.kind {
             case .plugin:
@@ -680,6 +1000,19 @@ final class StoreModel: ObservableObject {
                     configRoot: configRoot,
                     configID: configID
                 )
+                // For multi-file plugins, fetch and write each additional file.
+                if !entry.files.isEmpty {
+                    let root = configRoot.standardizedFileURL
+                    let pluginDir = root.appendingPathComponent("plugins/\(entry.id)", isDirectory: true)
+                    for extraPath in entry.files {
+                        guard let extraName = StoreInstallService.pluginFileName(from: extraPath) else {
+                            throw StoreError.invalidEntry("Multi-file entry has an unsafe path: \(extraPath)")
+                        }
+                        let extraData = try await client.fetchFile(entry, path: extraPath)
+                        let extraDestination = pluginDir.appendingPathComponent(extraName)
+                        try extraData.write(to: extraDestination, options: .atomic)
+                    }
+                }
             case .setup:
                 guard let tree = stagedTree, stagedEntryID == entry.id else {
                     throw StoreError.invalidEntry("Inspect the setup files before installing it.")
@@ -695,6 +1028,20 @@ final class StoreModel: ObservableObject {
             installCandidate = nil
             discardStaging()
             reloadRecords()
+
+            // Post-check: if required deps are still missing, show resolve sheet.
+            let postCheck = await dependencyService.check(entry.dependencies)
+            let stillMissing = zip(entry.dependencies, postCheck).compactMap { dep, status -> StoreDependency? in
+                if dep.required && status == .missing { return dep }
+                return nil
+            }
+            if !stillMissing.isEmpty {
+                self.resolveCandidate = StoreDependencyUnresolved(
+                    entryID: entry.id,
+                    entryName: entry.name,
+                    missingDependencies: stillMissing
+                )
+            }
         } catch {
             errorMessage = message(for: error)
         }
