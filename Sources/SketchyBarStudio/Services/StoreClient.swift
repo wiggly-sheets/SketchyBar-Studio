@@ -101,17 +101,69 @@ struct StoreTree {
     func remove() {
         try? FileManager.default.removeItem(at: workingDirectory)
     }
+
+    /// Files of the staged subtree, relative and sorted, for the preview.
+    func fileList(fileManager: FileManager = .default) throws -> [StoreStagedFile] {
+        let rootComponents = contents.standardizedFileURL.pathComponents
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey]
+        guard let enumerator = fileManager.enumerator(
+            at: contents,
+            includingPropertiesForKeys: keys,
+            options: []
+        ) else {
+            return []
+        }
+
+        var files: [StoreStagedFile] = []
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: Set(keys))
+            guard values.isSymbolicLink != true, values.isRegularFile == true else { continue }
+            let components = url.standardizedFileURL.pathComponents
+            guard components.count > rootComponents.count else { continue }
+            files.append(StoreStagedFile(
+                path: components.dropFirst(rootComponents.count).joined(separator: "/"),
+                size: Int64(values.fileSize ?? 0)
+            ))
+        }
+        return files.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+}
+
+/// One file in a staged setup.
+struct StoreStagedFile: Identifiable, Equatable {
+    let path: String
+    let size: Int64
+
+    var id: String { path }
+}
+
+/// A README fetched from the repository.
+struct StoreReadme: Equatable {
+    let text: String
+    let url: URL
+}
+
+enum StoreReadmeResult: Equatable {
+    case loaded(StoreReadme)
+    /// The last URL that was tried, so the UI can name the source.
+    case unavailable(url: String)
 }
 
 struct StoreClient {
     static let maxDownloadBytes = 20 * 1024 * 1024
     static let maxFiles = 2000
     static let maxExtractedBytes = 200 * 1024 * 1024
+    static let maxReadmeBytes = 256 * 1024
+
+    private final class ReadmeCache {
+        var results: [String: StoreReadmeResult] = [:]
+    }
 
     private let transport: any StoreTransport
     private let fileManager: FileManager
     private let downloadLimit: Int
     private let fileLimit: Int
+    private let readmeCache = ReadmeCache()
 
     init(
         transport: any StoreTransport = URLSessionStoreTransport(),
@@ -152,6 +204,76 @@ struct StoreClient {
         }
         let data = try await transport.fetch(url, limit: downloadLimit)
         return try extractArchive(data, treePath: entry.path)
+    }
+
+    /// Fetches the README of an entry. The entry directory is tried first,
+    /// so a setup that documents itself wins over the repository root.
+    ///
+    /// The result is cached per (entry id, ref). A failure is cached too, so
+    /// re-selecting an entry does not hammer a dead URL.
+    func readme(for entry: StoreEntry) async -> StoreReadmeResult {
+        let key = "\(entry.id)@\(entry.ref)"
+        if let cached = readmeCache.results[key] { return cached }
+
+        var lastURL = entry.rawFileURLString
+        for candidate in Self.readmeCandidates(for: entry) {
+            guard let url = Self.rawURL(for: candidate, entry: entry) else { continue }
+            lastURL = url.absoluteString
+            do {
+                let data = try await transport.fetch(url, limit: Self.maxReadmeBytes)
+                guard data.count <= Self.maxReadmeBytes else {
+                    let result = StoreReadmeResult.unavailable(url: url.absoluteString)
+                    readmeCache.results[key] = result
+                    return result
+                }
+                guard let text = String(data: data, encoding: .utf8) else {
+                    let result = StoreReadmeResult.unavailable(url: url.absoluteString)
+                    readmeCache.results[key] = result
+                    return result
+                }
+                let result = StoreReadmeResult.loaded(StoreReadme(text: text, url: url))
+                readmeCache.results[key] = result
+                return result
+            } catch StoreError.notFound {
+                continue
+            } catch {
+                let result = StoreReadmeResult.unavailable(url: url.absoluteString)
+                readmeCache.results[key] = result
+                return result
+            }
+        }
+
+        let result = StoreReadmeResult.unavailable(url: lastURL)
+        readmeCache.results[key] = result
+        return result
+    }
+
+    /// The README paths to try, in order: the directory of the entry, then
+    /// the repository root with the three common spellings.
+    static func readmeCandidates(for entry: StoreEntry) -> [String] {
+        var candidates: [String] = []
+        let directory = readmeDirectory(for: entry)
+        if !directory.isEmpty {
+            candidates.append("\(directory)/README.md")
+        }
+        candidates.append(contentsOf: ["README.md", "readme.md", "README"])
+
+        var seen: Set<String> = []
+        return candidates.filter { seen.insert($0).inserted }
+    }
+
+    private static func readmeDirectory(for entry: StoreEntry) -> String {
+        let trimmed = entry.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !trimmed.isEmpty else { return "" }
+        // A setup path is the tree itself; a plugin path is a file.
+        if entry.kind == .setup { return trimmed }
+        let directory = (trimmed as NSString).deletingLastPathComponent
+        return directory == "." ? "" : directory
+    }
+
+    private static func rawURL(for path: String, entry: StoreEntry) -> URL? {
+        let escaped = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+        return URL(string: "https://raw.githubusercontent.com/\(entry.repository)/\(entry.ref)/\(escaped)")
     }
 
     /// Exposed for tests: validates and unpacks a tar.gz without the network.
