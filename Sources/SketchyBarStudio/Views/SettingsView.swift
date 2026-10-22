@@ -37,6 +37,9 @@ struct SettingsView: View {
                 onChooseFolder: { folderPicker = $0 }
             )
             .tabItem { Label("Current", systemImage: "checkmark.circle") }
+
+            BarThemeSettingsTab(store: store)
+                .tabItem { Label("Bar Theme", systemImage: "paintpalette") }
         }
         .padding()
         .frame(width: 760, height: 560)
@@ -270,5 +273,175 @@ private struct CurrentConfigSettingsTab: View {
         }
         .formStyle(.grouped)
         .padding(.top)
+    }
+}
+
+private struct BarThemeSettingsTab: View {
+    @ObservedObject var store: SketchyBarStore
+    @State private var pattern: BarThemePattern = .noThemesFolder
+    @State private var activeThemeName: String?
+    @State private var selectedPaletteID: String? = BarPalette.all.first?.id
+    @State private var status: Status?
+    @State private var canRestore = false
+
+    private struct Status {
+        let message: String
+        let isError: Bool
+    }
+
+    var body: some View {
+        Form {
+            Section("Detected Theme") {
+                LabeledContent("Pattern") {
+                    Text(patternDescription)
+                }
+                LabeledContent("Active theme") {
+                    Text(activeThemeName ?? "None")
+                }
+            }
+
+            Section("Palette Preview") {
+                PalettePreviewView(palette: selectedPalette)
+            }
+
+            Section("Palettes") {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 200), spacing: 8)],
+                    alignment: .leading,
+                    spacing: 4
+                ) {
+                    ForEach(BarPalette.all) { palette in
+                        Button {
+                            selectedPaletteID = palette.id
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: palette.id == selectedPaletteID ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(palette.id == selectedPaletteID ? Color.accentColor : Color.secondary)
+
+                                Text(palette.displayName)
+                                    .lineLimit(1)
+
+                                Spacer(minLength: 0)
+
+                                Text(palette.isDark ? "Dark" : "Light")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(
+                                palette.id == selectedPaletteID ? Color.accentColor.opacity(0.12) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 5)
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Select \(palette.displayName)")
+                        .help("\(palette.family) · \(palette.licence) · \(palette.sourceURL)")
+                    }
+                }
+            }
+
+            Section {
+                Button("Apply \(selectedPalette?.displayName ?? "Palette")") {
+                    apply()
+                }
+                .disabled(selectedPalette == nil || !hasSupportedPattern)
+
+                Button("Restore previous theme") {
+                    restore()
+                }
+                .disabled(!canRestore)
+
+                if let status {
+                    Label(status.message, systemImage: status.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(status.isError ? Color.orange : Color.secondary)
+                        .lineLimit(3)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.top)
+        .onAppear(perform: refresh)
+        .onChange(of: store.configRoot) { _, _ in
+            status = nil
+            refresh()
+        }
+    }
+
+    private var service: BarThemeService {
+        BarThemeService(configRoot: store.configRoot)
+    }
+
+    private var selectedPalette: BarPalette? {
+        BarPalette.all.first { $0.id == selectedPaletteID }
+    }
+
+    private var hasSupportedPattern: Bool {
+        switch pattern {
+        case .themedPointer, .luaVariable, .literalRequire:
+            return true
+        case .themedPointerMissing, .noThemesFolder, .ambiguous, .shellConfigUnsupported:
+            return false
+        }
+    }
+
+    private var patternDescription: String {
+        switch pattern {
+        case .themedPointer(let name):
+            return "Pointer file names \(name)"
+        case .luaVariable(let name, let fileURL, _):
+            return "Lua variable in \(fileURL.lastPathComponent) names \(name)"
+        case .literalRequire(let name, let fileURL, _):
+            return "Literal require in \(fileURL.lastPathComponent) names \(name)"
+        case .themedPointerMissing:
+            return "No pointer file in themes/"
+        case .noThemesFolder:
+            return "No themes/ folder"
+        case .ambiguous(let reason):
+            return reason
+        case .shellConfigUnsupported:
+            return "Shell config (not supported)"
+        }
+    }
+
+    private func refresh() {
+        pattern = service.detect()
+        activeThemeName = service.activeTheme()?.name
+        canRestore = service.previousThemeName() != nil
+
+        if selectedPaletteID == nil || selectedPalette == nil {
+            selectedPaletteID = BarPalette.all.first?.id
+        }
+        if let activeThemeName,
+           let matching = BarPalette.all.first(where: { $0.displayName == activeThemeName }) {
+            selectedPaletteID = matching.id
+        }
+    }
+
+    private func apply() {
+        guard let palette = selectedPalette else { return }
+        do {
+            let result = try service.apply(palette)
+            if result.wroteThemeFile || result.wrotePointer || result.wroteSelection {
+                status = Status(message: "Applied \(palette.displayName). Reload SketchyBar to see it.", isError: false)
+            } else {
+                status = Status(message: "\(palette.displayName) is already active.", isError: false)
+            }
+        } catch {
+            status = Status(message: error.localizedDescription, isError: true)
+        }
+        refresh()
+    }
+
+    private func restore() {
+        do {
+            let name = try service.restorePreviousTheme()
+            status = Status(message: "Restored \(name). Reload SketchyBar to see it.", isError: false)
+        } catch {
+            status = Status(message: error.localizedDescription, isError: true)
+        }
+        refresh()
     }
 }
