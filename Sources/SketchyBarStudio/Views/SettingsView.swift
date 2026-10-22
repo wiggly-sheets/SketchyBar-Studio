@@ -37,6 +37,9 @@ struct SettingsView: View {
                 onChooseFolder: { folderPicker = $0 }
             )
             .tabItem { Label("Current", systemImage: "checkmark.circle") }
+
+            StoreSettingsTab()
+                .tabItem { Label("Store", systemImage: "shippingbox") }
         }
         .padding()
         .frame(width: 760, height: 560)
@@ -270,5 +273,44 @@ private struct CurrentConfigSettingsTab: View {
         }
         .formStyle(.grouped)
         .padding(.top)
+    }
+}
+
+private struct StoreSettingsTab: View {
+    @AppStorage("store.dependencyPolicy") private var policyRaw = StoreDependencyPolicy.ask.rawValue
+
+    var body: some View {
+        Form {
+            Section("Dependencies") {
+                Picker("Install policy", selection: $policyRaw) {
+                    ForEach(StoreDependencyPolicy.allCases) { policy in
+                        Text(policy.title).tag(policy.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Text(policyDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text("Automated installs execute Homebrew formula/cask install scripts. Review the formula before enabling automatic installs.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.top)
+    }
+
+    private var policyDescription: String {
+        guard let policy = StoreDependencyPolicy(rawValue: policyRaw) else { return "" }
+        switch policy {
+        case .never:
+            return "Missing dependencies block the install. You must install them manually."
+        case .ask:
+            return "Missing dependencies are shown before install. You decide whether to continue."
+        case .automatic:
+            return "Missing brew formulae/casks are installed automatically. Other missing deps block the install."
+        }
     }
 }
