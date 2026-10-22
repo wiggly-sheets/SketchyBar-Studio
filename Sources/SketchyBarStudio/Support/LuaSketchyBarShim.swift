@@ -286,7 +286,7 @@ enum LuaSketchyBarShim {
       if type(arguments[1]) == "string" then
         alias = arguments[1]
         rest = {}
-        for index = 2, count do rest[#rest + 1] = arguments[index] end
+        for position = 2, count do rest[#rest + 1] = arguments[position] end
       else
         alias = "item_" .. generatedNames
         generatedNames = generatedNames + 1
