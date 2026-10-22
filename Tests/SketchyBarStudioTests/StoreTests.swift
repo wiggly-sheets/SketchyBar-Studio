@@ -303,6 +303,139 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: configRoot.appendingPathComponent("plugins/datetime.lua").path))
     }
 
+    // MARK: - Multi-file plugin install and uninstall
+
+    func testMultiFilePluginInstallWritesAllFilesAndFolder() throws {
+        let (service, configRoot, _) = try makeInstallFixture()
+        let entry = makeEntry(
+            id: "multi-test",
+            path: "items/main.lua",
+            files: ["plugins/helper.sh", "plugins/lib/util.lua"]
+        )
+        let mainContents = Data("print('main')\n".utf8)
+        let extraContents = [
+            "plugins/helper.sh": Data("#!/bin/bash\necho helper\n".utf8),
+            "plugins/lib/util.lua": Data("return { util = true }\n".utf8)
+        ]
+
+        let outcome = try service.installPlugin(entry, contents: mainContents, configRoot: configRoot, configID: "workspace")
+
+        // Primary file written
+        let mainURL = configRoot.appendingPathComponent("plugins/multi-test/main.lua")
+        XCTAssertEqual(try Data(contentsOf: mainURL), mainContents)
+
+        // Extra files written by caller (simulate StoreModel.install behavior)
+        let pluginDir = configRoot.appendingPathComponent("plugins/multi-test")
+        for (path, data) in extraContents {
+            let name = (path as NSString).lastPathComponent
+            let dest = pluginDir.appendingPathComponent(name)
+            try data.write(to: dest, options: .atomic)
+        }
+
+        // Verify all files exist
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pluginDir.appendingPathComponent("main.lua").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pluginDir.appendingPathComponent("helper.sh").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pluginDir.appendingPathComponent("util.lua").path))
+
+        // Record points to folder, not single file
+        let records = try service.records(configRoot: configRoot, configID: "workspace")
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].installedPath, "plugins/multi-test")
+        XCTAssertEqual(records[0].loaderEdit?.line, "require(\"plugins.main\")")
+    }
+
+    func testMultiFilePluginUninstallRemovesEntireFolderAndLoaderLine() throws {
+        let (service, configRoot, _) = try makeInstallFixture()
+        let entry = makeEntry(
+            id: "multi-test",
+            path: "items/main.lua",
+            files: ["plugins/helper.sh", "plugins/lib/util.lua"]
+        )
+        let mainContents = Data("print('main')\n".utf8)
+
+        let outcome = try service.installPlugin(entry, contents: mainContents, configRoot: configRoot, configID: "workspace")
+
+        // Write extra files to simulate complete install
+        let pluginDir = configRoot.appendingPathComponent("plugins/multi-test")
+        try Data("#!/bin/bash\necho helper\n".utf8).write(to: pluginDir.appendingPathComponent("helper.sh"), options: .atomic)
+        try Data("return { util = true }\n".utf8).write(to: pluginDir.appendingPathComponent("util.lua"), options: .atomic)
+
+        let removed = try service.uninstall(recordID: outcome.record.id, configRoot: configRoot, configID: "workspace")
+
+        // Entire folder removed
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pluginDir.path))
+        // Loader line reverted
+        XCTAssertEqual(
+            try String(contentsOf: configRoot.appendingPathComponent("init.lua"), encoding: .utf8),
+            "require(\"bar\")\n"
+        )
+        // Manifest record removed
+        let records = try service.records(configRoot: configRoot, configID: "workspace")
+        XCTAssertTrue(records.isEmpty)
+        // Removed URLs include folder and loader file
+        XCTAssertEqual(removed.count, 2)
+    }
+
+    func testMultiFilePluginUninstallRefusesTamperedFolderPath() throws {
+        let (service, configRoot, supportRoot) = try makeInstallFixture()
+        let entry = makeEntry(
+            id: "multi-test",
+            path: "items/main.lua",
+            files: ["plugins/helper.sh"]
+        )
+        let outcome = try service.installPlugin(
+            entry,
+            contents: Data("print('main')\n".utf8),
+            configRoot: configRoot,
+            configID: "workspace"
+        )
+
+        // Tamper the manifest to point outside the config
+        let manifestStore = StoreManifestStore(appSupportRoot: supportRoot)
+        let manifestURL = manifestStore.manifestURL(forConfigRoot: configRoot)
+        var manifest = try decodeManifest(at: manifestURL)
+        manifest.records[0] = copy(outcome.record, installedPath: "../escape")
+        try encode(manifest, to: manifestURL)
+
+        XCTAssertThrowsError(
+            try service.uninstall(recordID: outcome.record.id, configRoot: configRoot, configID: "workspace")
+        ) { error in
+            guard case StoreInstallError.manifestTampered = error else {
+                return XCTFail("expected manifestTampered, got \(error)")
+            }
+        }
+
+        // Folder still exists
+        XCTAssertTrue(FileManager.default.fileExists(atPath: configRoot.appendingPathComponent("plugins/multi-test").path))
+    }
+
+    func testMultiFilePluginInstallFailsWhenExtraFileMissing() async throws {
+        let transport = RecordingTransport(routes: [
+            // Main plugin file
+            rawURL("items/main.lua", makeEntry(id: "multi-test", path: "items/main.lua", files: ["plugins/helper.sh"])): .data(Data("print('main')\n".utf8)),
+            // Extra file fails
+        ])
+        let client = StoreClient(transport: transport)
+        let (service, configRoot, _) = try makeInstallFixture()
+        let entry = makeEntry(
+            id: "multi-test",
+            path: "items/main.lua",
+            files: ["plugins/helper.sh"]
+        )
+
+        // Fetch main file
+        let mainData = try await client.fetchPluginFile(entry)
+        // Fetch extra file - should fail
+        do {
+            _ = try await client.fetchFile(entry, path: "plugins/helper.sh")
+            XCTFail("expected notFound")
+        } catch let error as StoreError {
+            XCTAssertEqual(error, .notFound)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
     // MARK: - Setup install and uninstall
 
     func testSetupInstallCreatesANewProfileAndLeavesTheConfigAlone() throws {
@@ -660,6 +793,7 @@ final class StoreTests: XCTestCase {
         name: String = "Test",
         repository: String = "owner/repo",
         path: String = "items/datetime.lua",
+        files: [String] = [],
         ref: String = "v1.0.0",
         licence: StoreLicence? = .mit
     ) -> StoreEntry {
@@ -670,11 +804,13 @@ final class StoreTests: XCTestCase {
             author: "author",
             repository: repository,
             path: path,
+            files: files,
             ref: ref,
             licence: licence,
             licenceURL: licence == nil ? "" : "https://github.com/\(repository)/blob/\(ref)/LICENSE",
             summary: "summary",
-            tags: []
+            tags: [],
+            dependencies: []
         )
     }
 
