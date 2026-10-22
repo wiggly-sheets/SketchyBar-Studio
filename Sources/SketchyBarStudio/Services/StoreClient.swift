@@ -192,6 +192,23 @@ struct StoreClient {
         return data
     }
 
+    /// Fetches an arbitrary file from the repository at the pinned ref.
+    /// Used for multi-file plugins where the entry declares additional files.
+    func fetchFile(_ entry: StoreEntry, path: String) async throws -> Data {
+        try requireInstallable(entry)
+        guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("..") else {
+            throw StoreError.invalidEntry("The file path is unsafe.")
+        }
+        let escapedPath = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+        let urlString = "https://raw.githubusercontent.com/\(entry.repository)/\(entry.ref)/\(escapedPath)"
+        guard let url = URL(string: urlString) else {
+            throw StoreError.invalidEntry("The raw URL is malformed.")
+        }
+        let data = try await transport.fetch(url, limit: downloadLimit)
+        guard data.count <= downloadLimit else { throw StoreError.tooLarge }
+        return data
+    }
+
     /// Fetches the whole repository as a tarball and returns only the entry
     /// subtree. The caller removes the working directory.
     func fetchSetupTree(_ entry: StoreEntry) async throws -> StoreTree {
