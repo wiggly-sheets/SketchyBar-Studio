@@ -106,6 +106,18 @@ The bridge names every value it cannot read, so the user learns what the preview
 * **The Lua path knows the load order and throws it away.** The defaults of a config are emitted before every item, so a default that the config declares after an item reaches an item the daemon would not give it to. Emitting the defaults at the place of the load needs an ordered list of the operations in `BarRenderPlan`, which is a bigger change than the fix pass of Stage 3b. The limit is known and not fixed yet.
 * The Lua escapes are resolved in `SbarLuaItemParser`, and `Services/LuaTableParser.swift` resolves them a second time with other rules. The two resolvers have to become one, but `LuaTableParser.swift` is out of scope for this stage.
 
+### Limits found by Stage 3d and not fixed
+
+Stage 3d (the resolved pane: the draft applied on top of the resolved config, with the resolution cached by a disk signature) found three limits and fixed none of them. They are recorded here so a later stage does not re-discover them.
+
+* **Drafts of non-plain items are ignored, and this is silent.** The parser of the app reads only the plain items, so a draft of a graph, a slider, a bracket, a space or an alias is not overlaid on the resolved item and the pane says nothing about it. The resolved config keeps the value from the disk, and the user's edit is lost without a word.
+* **A draft cannot remove a resolved value.** The overlay only changes values the resolved item already has and adds values the draft introduces; it never deletes a value the resolved item has and the draft does not set. A user who deletes a key in the editor sees the old value stay on the bar.
+* **Item attribution for items declared after their module finished loading points at the calling file.** The resolver names the file that was being run when the item was declared, so an item a module declares is attributed to the file that required the module and not to the module itself. The draft of the app matches on that same file, so the attribution is consistent, but it is not the file the user would open to edit the item.
+
+### The disk-signature shortcut
+
+The resolution of a config is the expensive half of a render, and the pane renders again on every keystroke of a draft. Stage 3d therefore keeps the resolved plan in a cache keyed by a **disk signature** of the config's files: the cache hashes the text of every file, its size and its content-modification date, and it re-runs the Lua only when one of them changes. A draft changes the text the app holds and not the text on disk, so a keystroke reuses the resolved config and only puts the draft on top of it. A file that changes on disk is a new signature and is resolved again. A run that fails is kept as well, so a config that runs into the deadline of the sandbox does not stop the pane on every keystroke. The signature is a shortcut, not a correctness claim: a file the app cannot see, or a file outside the config root, is not part of it.
+
 ## Tests
 
 Unit tests in `Tests/SketchyBarStudioTests/PreviewConfigBridgeTests.swift`: one test per acceptance criterion, using the existing parser fixtures. The shared strategy is in [testing.md](testing.md).

@@ -1,7 +1,7 @@
 # Bar Renderer — stage documents
 
-Status: **Approved design. Stages 0-7 merged; Stage 8 (exactness and the differential test) is next.**
-Date: 2026-10-20
+Status: **Approved design. Stages 0-7 and Stage 3d merged; Stage 8 (exactness and the differential test) is next.**
+Date: 2026-10-21
 Owner: repository owner (sole contributor)
 Audience: orchestrating agents and coding agents picking this work up.
 
@@ -18,7 +18,7 @@ Reference implementation: `/Users/Zeb/Developer/SketchyBar`, checkout `v2.24.0-5
 | D3 | The render must be exact, pixel for pixel. This selects vendoring SketchyBar's C code. | See [Why the plan vendors SketchyBar's C](#why-the-plan-vendors-sketchybars-c). Exactness rules out a Swift re-implementation. |
 | D4 | "Show on the real bar" becomes a user-configurable live-update mode with three settings (`Never`, `On Apply`, `While Editing`) plus an explicit Restore. | Pushing to the real bar is a side effect on the user's running system. It must be opt-in, granular, and reversible. |
 | D5 | The project switched to GPL-3.0 (decided by the owner, executed in Stage 0). The owner is the only contributor and wants fully FOSS. | Vendoring SketchyBar's GPL-3.0 code is only possible if the app carries the same licence. The owner accepted this. |
-| D6 | No renderer code exists yet. Stage 0 (the licence switch) is done; the stages are the contract for the first agent that starts. | The renderer is not implemented. Stage 1 vendors the SketchyBar subset. |
+| D6 | The resolved config is shown with the draft of the app applied on top, and the resolution is cached by a disk signature. | The preview ran the config in the Lua interpreter and threw the raw run away, so a draft could not see the value the config really has. Stage 3d keeps the resolved plan and overlays the draft on it, and re-runs the Lua only when a file of the config changes on disk. |
 | D7 | The project vendors a Lua interpreter to resolve the expressions of a config (Stage 3b). SbarLua itself is still not vendored. | **Taken by the owner on 2026-10-21**, after the preview of a config that builds its colours, its fonts and its paddings with expressions showed the defaults of SketchyBar instead of the values of the config. The owner asked for an exact rendering and accepted the interpreter route when it was presented. An expression cannot be read without an interpreter, and the interpreter is in-tree source under the same licence. |
 
 ## Why the plan vendors SketchyBar's C
@@ -56,6 +56,7 @@ The stages below are the scope. Each stage file states its own in scope and out 
 | 3 | [phase-3-config-bridge.md](phase-3-config-bridge.md) | The app's parse becomes SketchyBar property assignments | 2 | M |
 | 3b | [phase-3-config-bridge.md](phase-3-config-bridge.md) | The config is resolved with a real Lua interpreter, so the values built by an expression reach the preview | 3 | L |
 | 3c | [phase-3-config-bridge.md](phase-3-config-bridge.md) | Every item type of a config reaches the preview, not only the plain items | 3b | M |
+| 3d | [phase-3-config-bridge.md](phase-3-config-bridge.md) | The resolved config is shown with the draft of the app applied on top, and the resolution is cached by a disk signature | 3c | M |
 | 4 | [phase-4-layout-and-render.md](phase-4-layout-and-render.md) | Layout and offscreen render to a `CGImage` | 3 | L |
 | 5 | [phase-5-preview-pane.md](phase-5-preview-pane.md) | The in-app preview pane, profile picker and scaling | 4 | M |
 | 6 | [phase-6-live-values.md](phase-6-live-values.md) | The item scripts run inside the preview, isolated from the real bar | 5 | M |
@@ -212,6 +213,15 @@ The feature is done when all of the following hold.
 8. The repository is GPL-3.0, the vendored code keeps its notices, the modifications are declared, and the release notes make the source offer.
 9. The README, the CHANGELOG and the release checklist describe the shipped behaviour.
 10. The known limits are stated in the app and in the README: no popups, no window-server content (`alias`, `space`, front-app icon, `media.artwork`), no interaction.
+
+## Must-fix items of Stage 3d
+
+Two items the stage found and fixed. Both are resolved.
+
+| # | Item | Resolution |
+| --- | --- | --- |
+| F2 | The resolution of a config was re-run on every keystroke of a draft. | The resolved plan is kept in a cache keyed by a disk signature of the config's files. A draft changes the text the app holds and not the text on disk, so a keystroke reuses the resolved config and only puts the draft on top of it. A file that changes on disk is a new signature and is resolved again. A run that fails is kept too, so a config that runs into the deadline of the sandbox does not stop the pane on every keystroke. |
+| F3 | A shell config fell back to the parser and said nothing about it. | The fallback now names the reason: a config that has no Lua entrypoint is read by the parser and the pane says that the values are the ones the parser can read. The bridge and the pane use the same words. |
 
 ## Top risks
 

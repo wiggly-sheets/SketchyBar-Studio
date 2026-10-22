@@ -13,6 +13,20 @@ Run the suite with `swift test` from the repository root. A stage is done when i
 
 The fixtures are the existing parser fixtures. The bridge and shim tests need no SketchyBar and no daemon. The Lua tests use their own fixtures under `Tests/SketchyBarStudioTests/Fixtures/`, one directory per case, and they need no SketchyBar and no daemon either. The test of the real config of the user is skipped when the config is not on the machine.
 
+## The resolved pane and the draft overlay
+
+`PreviewResolvedPaneTests.swift` owns the tests of the preview pane that shows the resolved config with the draft of the app applied on top. The pane runs the entrypoint of the config in the sandbox of the app, so the values on the bar are the values of the config, and the unsaved draft is applied on top of the resolved config.
+
+* **The resolved values.** The pane shows the values a real Lua interpreter resolved: a colour that comes from a module, a font a local function builds, a name an expression computes. The items are in the order of the load, which is the order of the daemon, so a config the app does not have open is rendered in the order of its loader and not in the order of its file names.
+* **The file that declared an item.** Every item knows the file that declared it, so a draft of one file cannot land on the item of another file, and a draft of the second item of a file cannot land on the first.
+* **The draft does not run the Lua of the config again.** A draft changes the text the app holds and not the text on disk, so the resolved plan is kept between keystrokes and only the draft is overlaid. The test counts the runs of the cache per config root, so a second draft of the same config reuses the resolution and a file that changed on disk is resolved again.
+* **A config that fails is not run again for a draft.** A config whose Lua fails — a module that calls a function the sandbox took away, a syntax error, a loop that runs too long — is kept while the files on disk are the same, and the plan of the parser still shows the draft.
+* **A config that cannot run falls back to the parser.** A config that has no Lua entrypoint, such as a shell config, is read by the parser and the pane says so, naming the reason.
+* **A draft that adds a value the app cannot read is reported.** A draft whose value is an expression cannot be run by the app, so the bar keeps the value of the config on the disk and the pane names the value and says that it cannot show the edit.
+* **An item the resolver did not produce is reported.** A draft of an item the user typed after the config was resolved is named in the warnings of the pane, because the bar cannot show it.
+* **The render draws the resolved config.** The fixture declares a graph and a bracket. The parser of the app reads no type of item, so the plan of the parser holds the plain items only. The render holds the graph and the bracket, so it draws the resolved config.
+* **The value of a script is not overwritten by the resolved plan.** The script of an item moves it, and the resolved config puts it somewhere else, so the item is where the script puts it only when the value of the script wins.
+
 ## Golden-image tests
 
 `BarRenderGoldenTests.swift` renders a fixed config and compares the result with a stored PNG. The render uses a **fixed small virtual display of 480 x 25 points at the fixed scale of 2.0**, so the PNG is 960 x 50 pixels and is deterministic across machines. A rendered bar at the width of a real display would be about 3024 pixels wide, which is neither small nor stable.
