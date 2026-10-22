@@ -130,6 +130,14 @@ The shell path has limits the SbarLua path does not have:
 
 The shell diagnostics find the problems a shell config has that the SbarLua diagnostics do not: duplicate aliases across shell files, items that are set but never added, items added without a position, script paths that point at a file that is gone, and loader lines that point at a file that is gone. The diagnostics reuse the existing `ConfigDiagnostic` kinds — `duplicateAlias`, `missingTarget`, `unknownOption` — so the diagnostics sheet shows them in the same way it shows the Lua diagnostics.
 
+### Bar theme switching
+
+The bar theme feature edits an existing theme pattern only and never rewrites a config that keeps its colours in a hardcoded `colors.lua`. It detects the active theme with three patterns, in priority order: a pointer file in `themes/` that names a theme, a Lua variable that holds the name plus a computed `require("themes.<name>")`, and a literal `require("themes.<name>")`. Apply writes `themes/<palette>.lua` with the same key set, key order and layout as the active theme, preserves the original alpha bytes of a plain 8-digit `0x` hex colour, and then names the new theme in the pointer. Before the pointer changes, apply stores the older pointer text per config root in `UserDefaults`; "Restore previous theme" writes that text back to the pointer file only. The feature, the 27 palettes with their source URLs and licences, the role mapping order, the Monokai decision and the revert behaviour are in `docs/bar-themes/README.md`.
+
+### Plugin/Setup store
+
+The Store browses a curated catalogue of SketchyBar plugins and setups. A plugin installs as one file under `plugins/` plus one loader line, and a setup installs as a new profile, apart from the config the user already has. Every install is recorded in a manifest under Application Support, and uninstall removes exactly the recorded path and reverts exactly the recorded loader line, never a wildcard. The catalogue is embedded in the app and accepts only permissively licensed entries pinned to a tag or a commit. The catalogue format, the verification checklist, the licence policy, the security policy, the dependency model and the limits are in `docs/store/README.md`.
+
 ## Tests
 
 Unit tests in `Tests/SketchyBarStudioTests/PreviewConfigBridgeTests.swift`: one test per acceptance criterion, using the existing parser fixtures. The shared strategy is in [testing.md](testing.md).

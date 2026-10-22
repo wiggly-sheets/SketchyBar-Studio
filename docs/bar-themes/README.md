@@ -31,8 +31,14 @@ Detection reports one of:
 | Result | Meaning |
 | --- | --- |
 | `.themedPointer(name:)` | A pointer file names a theme. |
+| `.luaVariable(name:, fileURL:, literalRange:)` | A Lua variable holds the name and a computed `require("themes.<name>")` reads it. |
+| `.literalRequire(name:, fileURL:, literalRange:)` | A `require("themes.<name>")` call holds the name directly. |
 | `.themedPointerMissing` | The `themes/` folder exists, but no pointer file matches. |
 | `.noThemesFolder` | The config has no `themes/` folder. |
+| `.ambiguous(reason:)` | More than one file or literal names a theme. |
+| `.shellConfigUnsupported` | The config is a shell config, which this feature does not edit. |
+
+The pointer file wins when it exists. Then a single Lua variable plus computed require wins. Then a single literal require wins. More than one Lua candidate is refused as ambiguous. A shell config is reported as unsupported rather than silently skipped.
 
 The active theme file is read as text. Only top level `key = 0x…` entries take part in the role
 mapping. A nested table, a number, a function, a comment and every other byte stay as they are.

@@ -1,5 +1,7 @@
 # Stage 8 — Exactness hardening and differential testing
 
+**Dependencies satisfied.** The four platform features that landed before this stage are: shell parity (`ShellDiagnosticService`, shell clone, shell configs on the same diagnostic and preview surface as Lua), editor highlighting (`SourceSyntaxHighlighter` tokeniser plus native find bar), bar theme switching (27 palettes, three detection patterns — pointer file, Lua variable plus computed require, literal require — preview, byte-identical revert via `UserDefaults`), and the plugin/Setup store (14 verified MIT entries, README preview, staged setup install, dependency policy, manifest uninstall). Stage 8 builds on all of them: the differential test compares the rectangles of every item type the shell and Lua paths can reach, the highlighter colours the code preview the editor writes, the theme switching keeps the previewed bar in the palette the user applied, and the store installs the setups and plugins the fixtures use.
+
 ## Goal
 
 The rendered bar matches the real SketchyBar. The item rectangles of the vendored renderer are compared against the layout the installed daemon reports, and every difference is fixed.

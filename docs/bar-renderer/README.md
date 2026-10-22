@@ -223,6 +223,8 @@ Two items the stage found and fixed. Both are resolved.
 | F2 | The resolution of a config was re-run on every keystroke of a draft. | The resolved plan is kept in a cache keyed by a disk signature of the config's files. A draft changes the text the app holds and not the text on disk, so a keystroke reuses the resolved config and only puts the draft on top of it. A file that changes on disk is a new signature and is resolved again. A run that fails is kept too, so a config that runs into the deadline of the sandbox does not stop the pane on every keystroke. |
 | F3 | A shell config fell back to the parser and said nothing about it. | The fallback now names the reason: a config that has no Lua entrypoint is read by the parser and the pane says that the values are the ones the parser can read. The bridge and the pane use the same words. |
 
+Shell configs no longer fall outside the diagnostic surface. `ShellDiagnosticService` finds the problems a shell config has that the SbarLua diagnostics do not — duplicate aliases across shell files, items that are set but never added, items added without a position, script paths that point at a file that is gone, and loader lines that point at a file that is gone — and reuses the existing `ConfigDiagnostic` kinds (`duplicateAlias`, `missingTarget`, `unknownOption`) so the diagnostics sheet shows them in the same way it shows the Lua findings. The bridge names every value it cannot read from a shell config, so the preview says which values are the default and which are built by a shell expansion.
+
 ## Top risks
 
 | Risk | Impact | Mitigation | Owner |
