@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SidebarView: View {
     @ObservedObject var store: SketchyBarStore
+    let onOpenStore: () -> Void
     @SceneStorage("sidebar.expanded.groups") private var expandedGroupStorage = ""
     @State private var expandedGroups: Set<String> = Set(SidebarCategory.defaultExpandedIDs)
     /// The grouped files. They are rebuilt only when the files, the search
@@ -14,6 +15,22 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            Button(action: onOpenStore) {
+                HStack(spacing: 8) {
+                    Image(systemName: "shippingbox")
+                        .frame(width: 16)
+                    Text("Store")
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open the plugin store")
+
+            Divider()
+
             List(selection: $store.selectedFileID) {
                 ForEach(groups) { group in
                     SidebarGroupSection(
