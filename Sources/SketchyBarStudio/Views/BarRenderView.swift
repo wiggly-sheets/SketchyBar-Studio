@@ -172,6 +172,8 @@ struct BarRenderView: View {
         let width = store.barRenderWidthOverride ?? display?.widthPoints ?? 1440
         let request = BarRenderRequest(
             files: store.barRenderFiles(for: source),
+            root: store.barRenderRoot(for: source),
+            filesAreInFileOrder: store.barRenderFilesAreInFileOrder(for: source),
             displayWidthPoints: width,
             displayHeightPoints: display?.heightPoints ?? 900,
             warnings: store.barRenderWarnings(for: source)

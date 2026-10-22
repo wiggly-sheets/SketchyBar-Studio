@@ -53,6 +53,21 @@ struct BarRenderFile: Sendable {
 struct BarRenderRequest: Sendable {
     /// The files of the config, in the order of the bar.
     let files: [BarRenderFile]
+    /// The folder of the config, when the source has one.
+    ///
+    /// The Lua resolver needs the whole tree on disk to resolve the
+    /// requires of the config, so it reads the config from the disk and
+    /// the draft of the app is applied on top of the resolved tree.
+    let root: URL?
+    /// True when the files of the request come in the order of their
+    /// names.
+    ///
+    /// The files of the config the app has open come in the order of the
+    /// loader, and the files of a config that is not open come in the
+    /// order of their names. The render needs to know, because the items
+    /// of the bar follow the order of the files when the config is not
+    /// resolved with Lua.
+    let filesAreInFileOrder: Bool
     /// The width of the virtual display, in points.
     let displayWidthPoints: Double
     /// The height of the virtual display, in points.
@@ -64,10 +79,14 @@ struct BarRenderRequest: Sendable {
     let warnings: [String]
 
     init(files: [BarRenderFile],
+         root: URL? = nil,
+         filesAreInFileOrder: Bool = true,
          displayWidthPoints: Double,
          displayHeightPoints: Double,
          warnings: [String] = []) {
         self.files = files
+        self.root = root
+        self.filesAreInFileOrder = filesAreInFileOrder
         self.displayWidthPoints = displayWidthPoints
         self.displayHeightPoints = displayHeightPoints
         self.warnings = warnings
@@ -130,6 +149,13 @@ enum BarRenderError: LocalizedError {
 /// take real time.
 actor BarRendererService {
     static let shared = BarRendererService()
+
+    /// The resolved plans of the roots the pane rendered, so a draft of the
+    /// app does not run the Lua of the config again.
+    ///
+    /// It is not private, so a test can tell a render that reused its
+    /// resolution from a render that ran the Lua again.
+    static let resolvedPlans = ResolvedPlanCache()
 
     /// The biggest width of the virtual display the render accepts, in
     /// points.
@@ -198,7 +224,7 @@ actor BarRendererService {
             // its frame follows the new display (`src/bar.c:516-522`).
             try setDisplay(handle, request: request)
 
-            let plan = Self.plan(for: request.files)
+            let plan = Self.plan(for: request)
             // The defaults of the plan come before its items, so every item
             // inherits them the way it does in SketchyBar.
             var warnings = request.warnings
@@ -399,9 +425,111 @@ actor BarRendererService {
 
     /// The tree of the files of a config.
     ///
-    /// The plan of every file is combined, so the defaults of the whole
-    /// config reach every item, and the items keep the order of the files.
-    private static func plan(for files: [BarRenderFile]) -> BarRenderPlan {
+    /// A config that a Lua interpreter can resolve is resolved with it:
+    /// the values are the values of the config, the types are the types of
+    /// the config and the order is the order of the load, which is the
+    /// order of the daemon. The draft of the app is then applied on top of
+    /// the resolved tree.
+    ///
+    /// The run of the Lua is the expensive half of a render, and the pane
+    /// renders again on every keystroke of a draft. The run is therefore
+    /// kept between renders until a file of the config changes on disk: a
+    /// draft changes the text the app holds and not the text on disk, so
+    /// the draft never runs the Lua again.
+    ///
+    /// A config that cannot be resolved with Lua is read by the parser.
+    /// The plan of the parser is built only then, and a warning says why
+    /// the config was not resolved.
+    static func plan(for request: BarRenderRequest) -> BarRenderPlan {
+        guard let root = request.root else {
+            return parserPlan(for: request.files)
+        }
+
+        guard let entrypoint = LuaConfigRunner.entrypoint(in: root) else {
+            return parserFallback(
+                for: request,
+                reason: PreviewWarning.noLuaEntrypoint()
+            )
+        }
+
+        do {
+            let resolved = try resolvedPlan(of: root,
+                                            entrypoint: entrypoint,
+                                            signature: diskSignature(of: request.files))
+            let draft = PreviewConfigBridge.draft(of: request.files, root: root)
+            return resolved.overlaying(draft: draft)
+        } catch {
+            return parserFallback(
+                for: request,
+                reason: "The config could not be resolved with Lua: \(PreviewConfigBridge.reason(of: error))",
+                addsFileOrder: true
+            )
+        }
+    }
+
+    /// The plan of the resolved config, reused while the files on disk are
+    /// the same.
+    private static func resolvedPlan(of root: URL,
+                                     entrypoint: URL,
+                                     signature: Int) throws -> BarRenderPlan {
+        try resolvedPlans.plan(for: root.standardizedFileURL.path,
+                               signature: signature) {
+            try PreviewConfigBridge.plan(fromResolved: LuaConfigRunner.resolve(configRoot: root,
+                                                                              entrypoint: entrypoint))
+        }
+    }
+
+    /// The plan of the parser, with a warning that says why it is used.
+    ///
+    /// The parser reads the text of the files, so the plan holds the drafts
+    /// of the app. The parser cannot read the type of an item and it cannot
+    /// read a value an expression builds, and the warning names the reason
+    /// the parser is used at all.
+    ///
+    /// The order of the items follows the order of the files, so the pane
+    /// says that too when the files come in the order of their names.
+    private static func parserFallback(for request: BarRenderRequest,
+                                       reason: String,
+                                       addsFileOrder: Bool = false) -> BarRenderPlan {
+        let parsed = parserPlan(for: request.files)
+        var warnings = parsed.warnings
+        warnings.append(PreviewWarning.luaFallback(reason))
+        if addsFileOrder, request.filesAreInFileOrder {
+            warnings.append(PreviewWarning.fileOrder())
+        }
+        return BarRenderPlan(defaults: parsed.defaults,
+                             bar: parsed.bar,
+                             items: parsed.items,
+                             warnings: warnings)
+    }
+
+    /// A signature of the files of a config on disk.
+    ///
+    /// The signature names the text of the files the resolution was built
+    /// from, so a plan is reused while the files are the same and is built
+    /// again as soon as one of them changes. The draft of a request is not
+    /// part of the signature: a draft never changes a file on disk.
+    ///
+    /// shortcut: a file the config opens itself, such as a JSON table, is
+    /// not in the list of the config files, so a change to it is not seen
+    /// until another file changes. Upgrade when a config that reads such a
+    /// file is common.
+    private static func diskSignature(of files: [BarRenderFile]) -> Int {
+        var hasher = Hasher()
+        for file in files {
+            hasher.combine(file.url.standardizedFileURL.path)
+            let values = try? file.url.resourceValues(forKeys: [.contentModificationDateKey,
+                                                               .fileSizeKey])
+            hasher.combine(values?.contentModificationDate)
+            hasher.combine(values?.fileSize)
+        }
+        return hasher.finalize()
+    }
+
+    /// The tree of the parser: the plan of every file is combined, so the
+    /// defaults of the whole config reach every item, and the items keep
+    /// the order of the files.
+    private static func parserPlan(for files: [BarRenderFile]) -> BarRenderPlan {
         var combined = BarRenderPlan(defaults: [], bar: [], items: [], warnings: [])
         var readable = 0
 
@@ -451,12 +579,73 @@ actor BarRendererService {
     }
 }
 
+/// Keeps the resolved plan of a config root between renders.
+///
+/// The Lua of a config is expensive to run and the pane renders again on
+/// every keystroke of a draft, so the plan of a run is kept until the files
+/// of the config change on disk. The key of an entry is the root of the
+/// config, and the signature is the state of the files of the root on disk.
+///
+/// A run that fails is kept as well: a config that runs into the deadline
+/// of the sandbox would otherwise stop the pane on every keystroke. A
+/// change to a file of the config is a new signature, so a config the user
+/// fixed on disk is resolved again.
+final class ResolvedPlanCache: @unchecked Sendable {
+    private struct Entry {
+        let signature: Int
+        let result: Result<BarRenderPlan, Error>
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+    private var runsByRoot: [String: Int] = [:]
+
+    /// The plan of a root, or the result of the run that built it.
+    ///
+    /// The run happens outside of the lock, so a slow config does not hold
+    /// the cache. Two renders of the same changed root can therefore run
+    /// the Lua twice; they are the same request, so the second run only
+    /// replaces the first.
+    func plan(for root: String,
+              signature: Int,
+              run: () throws -> BarRenderPlan) throws -> BarRenderPlan {
+        if let entry = stored(root: root, signature: signature) {
+            return try entry.result.get()
+        }
+
+        let result = Result { try run() }
+
+        lock.lock()
+        entries[root] = Entry(signature: signature, result: result)
+        runsByRoot[root, default: 0] += 1
+        lock.unlock()
+        return try result.get()
+    }
+
+    /// The number of runs of a root that the cache did not answer.
+    ///
+    /// The app does not read it: a test reads it to tell a render that
+    /// reused its resolution from a render that ran the Lua again.
+    func runs(of root: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return runsByRoot[root] ?? 0
+    }
+
+    /// The stored plan of a root, when the files on disk are the same.
+    private func stored(root: String, signature: Int) -> Entry? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = entries[root], entry.signature == signature else { return nil }
+        return entry
+    }
+}
+
 /// The wording of the warnings the render produces itself.
 ///
 /// The wording lives here, so the render and the store say the same thing
 /// about the same problem.
-enum BarRenderWarning {
-    /// A source without a readable file.
+enum BarRenderWarning {    /// A source without a readable file.
     ///
     /// A missing folder, an empty config or a deleted profile leaves the
     /// render without a file, and the bar would be an empty strip without
@@ -558,12 +747,16 @@ extension SketchyBarStore {
     /// The files of the config the app has open carry the drafts of the
     /// app, so the preview shows the unsaved edits. Every other config and
     /// every profile is read from disk.
+    ///
+    /// Only the files with a draft carry their text: a file without a
+    /// draft is already in the resolved config, and the app has nothing to
+    /// put on top of it.
     func barRenderFiles(for source: BarRenderSource) -> [BarRenderFile] {
         if case .config(let id) = source, id == selectedConfig?.id {
             return filesInPreviewOrder.map { file in
                 BarRenderFile(url: file.url,
                               kind: file.kind,
-                              contents: effectiveContents(for: file))
+                              contents: hasUnsavedChanges(fileID: file.id) ? effectiveContents(for: file) : nil)
             }
         }
 

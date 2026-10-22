@@ -1,0 +1,4 @@
+#!/usr/bin/env lua
+-- The entrypoint of the fixture.
+sbar = require("sketchybar")
+require("items")
