@@ -18,20 +18,24 @@ One `StoreEntry` describes one installable thing.
 | Field | Meaning |
 | --- | --- |
 | `id` | Stable identifier. Must be unique. |
-| `kind` | `.plugin` (one file) or `.setup` (whole tree). |
+| `kind` | `.plugin` (one file or a folder) or `.setup` (whole tree). |
 | `name` | Name shown to the user. |
 | `author` | The repository owner, as credited by the repository. |
 | `repository` | `owner/repo`, exactly one slash. |
 | `path` | File path for a plugin. Subdirectory for a setup (`""` is the whole repository). |
+| `files` | Additional files (relative to repository root, same ref) copied alongside the entry file. Empty for single-file plugins and setups. |
 | `ref` | A tag or a commit. Never a branch. |
 | `licence` | `StoreLicence`, or nil when no licence was verified. |
 | `licenceURL` | Link to the repository `LICENSE` at the pinned ref. |
 | `summary` | One or two sentences on what it shows and what it needs. |
 | `tags` | Free-form search labels. |
 
-A plugin entry installs **one file**. A plugin that only works with helpers,
-themes or a binary from its own repository does not belong in the catalogue as
-a single-file plugin; list the whole repository as a setup, or leave it out.
+A plugin entry installs **one file** when `files` is empty. When `files` is
+non-empty, the plugin installs into `plugins/<entry id>/` as a folder containing
+the entry file and all declared extra files. The loader line references the
+entry file only. A plugin that only works with helpers, themes or a binary from
+its own repository should use `files` to declare them instead of being listed as
+a setup.
 
 ## Adding an entry
 
@@ -113,6 +117,19 @@ Inspect Files button stages it again after a dismissal.
 A plugin keeps its single-file content preview, and its README is shown below
 that preview.
 
+## Multi-file plugin folder layout
+
+When `files` is non-empty, the plugin installs into a dedicated subfolder:
+`plugins/<entry id>/`. The entry file (from `path`) keeps its name, and every
+path in `files` is copied alongside it using only its file name. Subdirectory
+structure from the repository is **not** preserved — all files land directly in
+the plugin folder. The manifest records `installedPath = "plugins/<entry id>"`
+and the loader line references the entry file.
+
+Uninstall removes the **entire folder** and reverts the loader line. The
+manifest is updated atomically. A tampered manifest (path traversal, absolute
+path, or path outside the config) is refused before any deletion.
+
 ## Security policy
 
 - Downloaded code is **never executed by the app**. The app writes bytes and
@@ -139,6 +156,8 @@ that preview.
   file content is kept.
 - The pinned ref is checked at runtime too. A branch name in the catalogue is
   rejected before a request is made.
+- Extra files for a multi-file plugin are fetched individually from the pinned
+  raw URL. A missing extra file aborts the install before any loader edit.
 
 ## Offline behaviour
 
@@ -164,10 +183,20 @@ still works offline, because it comes from the local manifest.
 - No GitHub token and no API calls, so the anonymous rate limit does not apply
   and there is no secret to store.
 - No branch refs. Tags and commits only.
-- A plugin entry is one file. Everything else is a setup.
+- A plugin entry is one file or a folder with declared extra files. Everything
+  else is a setup.
 - README lookups are cached per (entry id, ref) for the life of the window;
   there is no on-disk cache.
 - The tar listing is line-based, so an archive member whose name contains a
   newline is not fully validated. The catalogue pins one reviewed repository
   per entry, so the input is an allowlist; upgrade to a tar parser before
   accepting arbitrary repositories.
+
+## Dependencies
+
+`StoreDependency` entries are hints only. The app checks Homebrew formulae and
+casks, commands on `PATH`, fontconfig and SketchyBar presence. A dependency
+marked `required: true` blocks the install when the policy is "Ask" and the
+dependency is missing. The policy can be "Ask", "Never" or "Automatic"; the
+default is "Ask". An entry with no verified dependency information shows an
+empty list, which never means "nothing is needed".
