@@ -64,16 +64,22 @@ struct StoreDependencyService {
 
     /// Search paths for executable lookups.
     static let binSearchPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
+    /// Test-only override for bin search paths.
+    static var testBinSearchPaths: [String]?
 
     private let runner: CommandRunner
     private let streamingRunner: StreamingCommandRunner?
 
     init(
         runner: CommandRunner? = nil,
-        streamingRunner: StreamingCommandRunner? = nil
+        streamingRunner: StreamingCommandRunner? = nil,
+        binSearchPaths: [String]? = nil
     ) {
         self.runner = runner ?? RealCommandRunner()
         self.streamingRunner = streamingRunner
+        if let binSearchPaths {
+            Self.testBinSearchPaths = binSearchPaths
+        }
     }
 
     // MARK: - Presence
@@ -133,7 +139,8 @@ struct StoreDependencyService {
     }
 
     static func binURL(for name: String) -> URL? {
-        for dir in binSearchPaths {
+        let paths = testBinSearchPaths ?? binSearchPaths
+        for dir in paths {
             let url = URL(fileURLWithPath: dir).appendingPathComponent(name)
             if FileManager.default.isExecutableFile(atPath: url.path) {
                 return url

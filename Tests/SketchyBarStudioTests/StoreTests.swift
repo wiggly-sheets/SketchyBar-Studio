@@ -5,6 +5,11 @@ import XCTest
 final class StoreTests: XCTestCase {
     // MARK: - Catalogue
 
+    override func tearDown() {
+        StoreDependencyService.testBinSearchPaths = nil
+        super.tearDown()
+    }
+
     func testCatalogueEntriesAreVerifiedAndPinned() {
         let entries = StoreCatalogue.entries
         XCTAssertEqual(Set(entries.map(\.id)).count, entries.count, "entry ids must be unique")
@@ -597,7 +602,7 @@ final class StoreTests: XCTestCase {
                 members: ["pkg"]
             ))
         ])
-        let model = fixture.model(transport: transport)
+        let model = fixture.model(transport: transport, client: nil, dependencyService: nil, userDefaults: nil)
         model.selectedID = entry.id
 
         await model.inspect(entry)
@@ -628,7 +633,7 @@ final class StoreTests: XCTestCase {
                 members: ["pkg"]
             ))
         ])
-        let model = fixture.model(transport: transport)
+        let model = fixture.model(transport: transport, client: nil, dependencyService: nil, userDefaults: nil)
         model.selectedID = entry.id
 
         await model.inspect(entry)
@@ -651,7 +656,9 @@ final class StoreTests: XCTestCase {
         ])
         let model = fixture.model(
             transport: transport,
-            client: StoreClient(transport: transport, downloadLimit: 32)
+            client: StoreClient(transport: transport, downloadLimit: 32),
+            dependencyService: nil,
+            userDefaults: nil
         )
         model.selectedID = entry.id
 
@@ -698,11 +705,16 @@ final class StoreTests: XCTestCase {
         let root: URL
         let configRoot: URL
         let supportRoot: URL
-        @MainActor let makeModel: (RecordingTransport, StoreClient?) -> StoreModel
+        @MainActor let makeModel: (RecordingTransport, StoreClient?, StoreDependencyService?, UserDefaults?) -> StoreModel
 
         @MainActor
-        func model(transport: RecordingTransport, client: StoreClient? = nil) -> StoreModel {
-            makeModel(transport, client)
+        func model(
+            transport: RecordingTransport,
+            client: StoreClient? = nil,
+            dependencyService: StoreDependencyService? = nil,
+            userDefaults: UserDefaults? = nil
+        ) -> StoreModel {
+            makeModel(transport, client, dependencyService, userDefaults)
         }
     }
 
@@ -713,12 +725,14 @@ final class StoreTests: XCTestCase {
         try FileManager.default.createDirectory(at: configRoot, withIntermediateDirectories: true)
         try Data("require(\"bar\")\n".utf8).write(to: configRoot.appendingPathComponent("init.lua"))
         let supportRoot = root.appendingPathComponent("support")
-        return ModelFixture(root: root, configRoot: configRoot, supportRoot: supportRoot) { transport, client in
+        return ModelFixture(root: root, configRoot: configRoot, supportRoot: supportRoot) { transport, client, dependencyService, userDefaults in
             StoreModel(
                 configRoot: configRoot,
                 configID: "workspace",
                 appSupportRoot: supportRoot,
-                client: client ?? StoreClient(transport: transport)
+                client: client ?? StoreClient(transport: transport),
+                dependencyService: dependencyService ?? StoreDependencyService(),
+                userDefaults: userDefaults ?? .standard
             )
         }
     }
@@ -795,7 +809,8 @@ final class StoreTests: XCTestCase {
         path: String = "items/datetime.lua",
         files: [String] = [],
         ref: String = "v1.0.0",
-        licence: StoreLicence? = .mit
+        licence: StoreLicence? = .mit,
+        dependencies: [StoreDependency] = []
     ) -> StoreEntry {
         StoreEntry(
             id: id,
@@ -810,7 +825,7 @@ final class StoreTests: XCTestCase {
             licenceURL: licence == nil ? "" : "https://github.com/\(repository)/blob/\(ref)/LICENSE",
             summary: "summary",
             tags: [],
-            dependencies: []
+            dependencies: dependencies
         )
     }
 
@@ -931,5 +946,337 @@ final class StoreTests: XCTestCase {
             loaderEdit: record.loaderEdit,
             installedAt: record.installedAt
         )
+    }
+}
+
+// MARK: - StoreDependencyService tests
+
+private final class MockCommandRunner: CommandRunner, StreamingCommandRunner, @unchecked Sendable {
+    struct Stub {
+        let command: String
+        let args: [String]
+        let outcome: CommandOutcome
+    }
+    private let lock = NSLock()
+    private var stubs: [Stub] = []
+    private(set) var calls: [(String, [String])] = []
+
+    func addStub(_ command: String, _ args: [String], _ outcome: CommandOutcome) {
+        lock.lock()
+        defer { lock.unlock() }
+        stubs.append(Stub(command: command, args: args, outcome: outcome))
+    }
+
+    private func match(_ command: String, _ args: [String]) -> CommandOutcome? {
+        lock.lock()
+        defer { lock.unlock() }
+        for (index, stub) in stubs.enumerated() {
+            if stub.command == command && stub.args == args {
+                calls.append((command, args))
+                let outcome = stub.outcome
+                stubs.remove(at: index)
+                return outcome
+            }
+        }
+        return nil
+    }
+
+    func run(_ command: String, _ args: [String]) async -> CommandOutcome {
+        if let outcome = match(command, args) {
+            return outcome
+        }
+        return CommandOutcome(status: -1, stdout: "", stderr: "no stub for \(command) \(args)")
+    }
+
+    func runStreaming(_ command: String, _ args: [String], output: @escaping @Sendable (String) async -> Void) async -> CommandOutcome {
+        if let outcome = match(command, args) {
+            if !outcome.stdout.isEmpty {
+                await output(outcome.stdout)
+            }
+            return outcome
+        }
+        return CommandOutcome(status: -1, stdout: "", stderr: "no stub for \(command) \(args)")
+    }
+}
+
+extension StoreTests {
+    // MARK: - Presence checks
+
+    func testFormulaPresencePresent() async {
+        let mock = MockCommandRunner()
+        mock.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 0, stdout: "jq 1.7\n", stderr: ""))
+        // Use real binSearchPaths so brew is found, but mock the list call
+        let service = StoreDependencyService(runner: mock)
+
+        let dep = StoreDependency(kind: .formula, name: "jq", required: true)
+        let presence = await service.presence(of: dep)
+        XCTAssertEqual(presence, .present)
+    }
+
+    func testFormulaPresenceMissing() async {
+        let mock = MockCommandRunner()
+        mock.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 1, stdout: "", stderr: "Error: No available formula with the name \"jq\"\n"))
+        // Use real binSearchPaths so brew is found, but mock the list call
+        let service = StoreDependencyService(runner: mock)
+
+        let dep = StoreDependency(kind: .formula, name: "jq", required: true)
+        let presence = await service.presence(of: dep)
+        XCTAssertEqual(presence, .missing)
+    }
+
+    func testFormulaPresenceBrewAbsent() async {
+        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
+        // Do not add brew stub - binURL(for: "brew") will return nil
+        let dep = StoreDependency(kind: .formula, name: "jq", required: true)
+        let presence = await service.presence(of: dep)
+        XCTAssertEqual(presence, .unknownBecauseBrewAbsent)
+        StoreDependencyService.testBinSearchPaths = nil
+    }
+
+    func testCommandPresencePresent() async {
+        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: ["/fake/bin"])
+        let dep = StoreDependency(kind: .command, name: "sketchybar", required: true)
+        // commandPresence checks binURL first, then runs "command -v"
+        let presence = await service.presence(of: dep)
+        XCTAssertEqual(presence, .present)
+        StoreDependencyService.testBinSearchPaths = nil
+    }
+
+    func testCommandPresenceMissing() async {
+        let mock = MockCommandRunner()
+        // commandPresence will run "command -v nonexistentcmd"
+        mock.addStub("/bin/sh", ["-c", "command -v nonexistentcmd"], CommandOutcome(status: 1, stdout: "", stderr: ""))
+        let service = StoreDependencyService(runner: mock, binSearchPaths: [])
+        let dep = StoreDependency(kind: .command, name: "nonexistentcmd", required: true)
+        let presence = await service.presence(of: dep)
+        XCTAssertEqual(presence, .missing)
+        StoreDependencyService.testBinSearchPaths = nil
+    }
+
+    func testFontPresencePresent() async {
+        let mock = MockCommandRunner()
+        mock.addStub("/usr/bin/fc-list", [":spacing:lang=en", "sf-symbols"], CommandOutcome(status: 0, stdout: "/path/to/font.ttf: SF Symbols\n", stderr: ""))
+        let service = StoreDependencyService(runner: mock)
+        let dep = StoreDependency(kind: .font, name: "sf-symbols", required: false)
+        let presence = await service.presence(of: dep)
+        XCTAssertEqual(presence, .present)
+    }
+
+    func testFontPresenceFontconfigAbsent() async {
+        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
+        // fc-list not in binSearchPaths
+        let dep = StoreDependency(kind: .font, name: "sf-symbols", required: false)
+        let presence = await service.presence(of: dep)
+        XCTAssertEqual(presence, .unknownBecauseFontconfigAbsent)
+        StoreDependencyService.testBinSearchPaths = nil
+    }
+
+    func testSketchybarPresence() async {
+        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: ["/fake/bin"])
+        let dep = StoreDependency(kind: .sketchybar, name: "sketchybar", required: true)
+        let presence = await service.presence(of: dep)
+        XCTAssertEqual(presence, .present)
+        StoreDependencyService.testBinSearchPaths = nil
+    }
+
+    // MARK: - Install argument array
+
+    func testInstallBuildsCorrectArgumentsForFormula() async {
+        let mock = MockCommandRunner()
+        mock.addStub("brew", ["install", "jq"], CommandOutcome(status: 0, stdout: "==> Installing jq\n", stderr: ""))
+        let service = StoreDependencyService(runner: mock, streamingRunner: mock)
+
+        let dep = StoreDependency(kind: .formula, name: "jq", required: true)
+        let result = await service.install(dep) { _ in }
+
+        XCTAssertEqual(result.status, .present)
+        XCTAssertEqual(result.exitCode, 0)
+    }
+
+    func testInstallBuildsCorrectArgumentsForCask() async {
+        let mock = MockCommandRunner()
+        mock.addStub("brew", ["install", "--cask", "font-sf-mono"], CommandOutcome(status: 0, stdout: "==> Installing font-sf-mono\n", stderr: ""))
+        let service = StoreDependencyService(runner: mock, streamingRunner: mock)
+
+        let dep = StoreDependency(kind: .cask, name: "font-sf-mono", required: false)
+        let result = await service.install(dep) { _ in }
+
+        XCTAssertEqual(result.status, .present)
+        XCTAssertEqual(result.exitCode, 0)
+    }
+
+    func testInstallRefusesNonBrewDependency() async {
+        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: ["/fake/brew/bin"])
+        let dep = StoreDependency(kind: .command, name: "somecmd", required: true)
+        let result = await service.install(dep) { _ in }
+        XCTAssertEqual(result.status, .missing)
+        XCTAssertEqual(result.error, "Dependency 'somecmd' is not a brew formula/cask.")
+        StoreDependencyService.testBinSearchPaths = nil
+    }
+
+    func testInstallRefusesWhenBrewAbsent() async {
+        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
+        let dep = StoreDependency(kind: .formula, name: "jq", required: true)
+        let result = await service.install(dep) { _ in }
+        XCTAssertEqual(result.status, .unknownBecauseBrewAbsent)
+        XCTAssertEqual(result.error, "Homebrew is not installed; cannot install 'jq'.")
+        StoreDependencyService.testBinSearchPaths = nil
+    }
+
+    // MARK: - Policy gating via StoreModel
+
+    @MainActor
+    func testDependencyPolicyNeverBlocksMissingRequired() async throws {
+        let mockRunner = MockCommandRunner()
+        // Simulate missing jq via brew list returning nonzero
+        mockRunner.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 1, stdout: "", stderr: ""))
+        mockRunner.addStub("brew", ["list", "--versions", "sketchybar"], CommandOutcome(status: 0, stdout: "sketchybar 1.0\n", stderr: ""))
+
+        let transport = RecordingTransport(routes: [
+            rawURL("items/main.lua", makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
+                StoreDependency(kind: .formula, name: "jq", required: true)
+            ])): .data(Data("print(1)\n".utf8))
+        ])
+        let client = StoreClient(transport: transport)
+        let fixture = try makeModelFixture()
+        let userDefaults = UserDefaults(suiteName: "test-never-\(UUID().uuidString)")!
+        let model = fixture.model(transport: transport, client: client, dependencyService: StoreDependencyService(runner: mockRunner), userDefaults: userDefaults)
+
+        // Override policy to never
+        userDefaults.set(StoreDependencyPolicy.never.rawValue, forKey: "store.dependencyPolicy")
+
+        let entry = makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
+            StoreDependency(kind: .formula, name: "jq", required: true)
+        ])
+        await model.inspect(entry)
+        model.beginInstall(entry)
+        await model.install(entry)
+
+        XCTAssertTrue(model.errorMessage.contains("Required dependencies missing"), "errorMessage: \(model.errorMessage)")
+    }
+
+    @MainActor
+    func testDependencyPolicyAskShowsMissingRequired() async throws {
+        let mockRunner = MockCommandRunner()
+        mockRunner.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 1, stdout: "", stderr: ""))
+        mockRunner.addStub("brew", ["list", "--versions", "sketchybar"], CommandOutcome(status: 0, stdout: "sketchybar 1.0\n", stderr: ""))
+
+        let transport = RecordingTransport(routes: [
+            rawURL("items/main.lua", makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
+                StoreDependency(kind: .formula, name: "jq", required: true)
+            ])): .data(Data("print(1)\n".utf8))
+        ])
+        let client = StoreClient(transport: transport)
+        let fixture = try makeModelFixture()
+        let model = fixture.model(transport: transport, client: client, dependencyService: StoreDependencyService(runner: mockRunner), userDefaults: nil)
+
+        // Policy is ask by default
+        let entry = makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
+            StoreDependency(kind: .formula, name: "jq", required: true)
+        ])
+        await model.inspect(entry)
+        model.beginInstall(entry)
+        await model.install(entry)
+
+        XCTAssertTrue(model.errorMessage.contains("Required dependencies missing"))
+    }
+
+    @MainActor
+    func testDependencyPolicyAutomaticAttemptsInstall() async throws {
+        let mockRunner = MockCommandRunner()
+        mockRunner.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 1, stdout: "", stderr: ""))
+        mockRunner.addStub("brew", ["install", "jq"], CommandOutcome(status: 0, stdout: "==> Installing jq\n", stderr: ""))
+        mockRunner.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 0, stdout: "jq 1.7\n", stderr: ""))
+        mockRunner.addStub("brew", ["list", "--versions", "sketchybar"], CommandOutcome(status: 0, stdout: "sketchybar 1.0\n", stderr: ""))
+
+        let transport = RecordingTransport(routes: [
+            rawURL("items/main.lua", makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
+                StoreDependency(kind: .formula, name: "jq", required: true)
+            ])): .data(Data("print(1)\n".utf8))
+        ])
+        let client = StoreClient(transport: transport)
+        let fixture = try makeModelFixture()
+        let userDefaults = UserDefaults(suiteName: "test-auto-\(UUID().uuidString)")!
+        let model = fixture.model(transport: transport, client: client, dependencyService: StoreDependencyService(runner: mockRunner, streamingRunner: mockRunner), userDefaults: userDefaults)
+        userDefaults.set(StoreDependencyPolicy.automatic.rawValue, forKey: "store.dependencyPolicy")
+
+        let entry = makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
+            StoreDependency(kind: .formula, name: "jq", required: true)
+        ])
+        await model.inspect(entry)
+        model.beginInstall(entry)
+        await model.install(entry)
+
+        XCTAssertEqual(model.errorMessage, "")
+        XCTAssertTrue(model.statusMessage.contains("Installed"))
+    }
+
+    // MARK: - Post-check unresolved state
+
+    @MainActor
+    func testPostCheckUnresolvedShowsResolveCandidate() async throws {
+        let mockRunner = MockCommandRunner()
+        mockRunner.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 1, stdout: "", stderr: ""))
+        mockRunner.addStub("brew", ["install", "jq"], CommandOutcome(status: 0, stdout: "==> Installing jq\n", stderr: ""))
+        // Post-check: brew list still fails (simulating brew not picking up install)
+        mockRunner.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 1, stdout: "", stderr: ""))
+
+        let transport = RecordingTransport(routes: [
+            rawURL("items/main.lua", makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
+                StoreDependency(kind: .formula, name: "jq", required: true)
+            ])): .data(Data("print(1)\n".utf8))
+        ])
+        let client = StoreClient(transport: transport)
+        let fixture = try makeModelFixture()
+        let userDefaults = UserDefaults(suiteName: "test-post-\(UUID().uuidString)")!
+        let model = fixture.model(transport: transport, client: client, dependencyService: StoreDependencyService(runner: mockRunner, streamingRunner: mockRunner), userDefaults: userDefaults)
+        userDefaults.set(StoreDependencyPolicy.automatic.rawValue, forKey: "store.dependencyPolicy")
+
+        let entry = makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
+            StoreDependency(kind: .formula, name: "jq", required: true)
+        ])
+        await model.inspect(entry)
+        model.beginInstall(entry)
+        await model.install(entry)
+
+        XCTAssertNotNil(model.resolveCandidate)
+        XCTAssertEqual(model.resolveCandidate?.missingDependencies.count, 1)
+        XCTAssertEqual(model.resolveCandidate?.missingDependencies.first?.name, "jq")
+    }
+
+    @MainActor
+    func testResolveRetryClearsCandidate() async throws {
+        let mockRunner = MockCommandRunner()
+        mockRunner.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 1, stdout: "", stderr: ""))
+        mockRunner.addStub("brew", ["install", "jq"], CommandOutcome(status: 0, stdout: "==> Installing jq\n", stderr: ""))
+        // Post-check first time: still missing
+        mockRunner.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 1, stdout: "", stderr: ""))
+        // Resolve re-check: now present
+        mockRunner.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 0, stdout: "jq 1.7\n", stderr: ""))
+
+        let transport = RecordingTransport(routes: [
+            rawURL("items/main.lua", makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
+                StoreDependency(kind: .formula, name: "jq", required: true)
+            ])): .data(Data("print(1)\n".utf8))
+        ])
+        let client = StoreClient(transport: transport)
+        let fixture = try makeModelFixture()
+        let userDefaults = UserDefaults(suiteName: "test-resolve-\(UUID().uuidString)")!
+        let model = fixture.model(transport: transport, client: client, dependencyService: StoreDependencyService(runner: mockRunner, streamingRunner: mockRunner), userDefaults: userDefaults)
+        userDefaults.set(StoreDependencyPolicy.automatic.rawValue, forKey: "store.dependencyPolicy")
+
+        let entry = makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
+            StoreDependency(kind: .formula, name: "jq", required: true)
+        ])
+        await model.inspect(entry)
+        model.beginInstall(entry)
+        await model.install(entry)
+
+        XCTAssertNotNil(model.resolveCandidate)
+
+        // Call resolve manually
+        await model.resolve(model.resolveCandidate!)
+
+        XCTAssertNil(model.resolveCandidate)
     }
 }

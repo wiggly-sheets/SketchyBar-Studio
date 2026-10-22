@@ -196,7 +196,26 @@ still works offline, because it comes from the local manifest.
 
 `StoreDependency` entries are hints only. The app checks Homebrew formulae and
 casks, commands on `PATH`, fontconfig and SketchyBar presence. A dependency
-marked `required: true` blocks the install when the policy is "Ask" and the
-dependency is missing. The policy can be "Ask", "Never" or "Automatic"; the
-default is "Ask". An entry with no verified dependency information shows an
-empty list, which never means "nothing is needed".
+marked `required: true` blocks the install when the policy is "Ask" or "Never"
+and the dependency is missing. The policy can be "Ask" (default), "Never" or
+"Automatic"; it is persisted in `UserDefaults` under
+`store.dependencyPolicy`.
+
+The install sheet shows each dependency, its presence state (present, missing,
+or unknown when brew/fontconfig is absent), and a per-sheet policy override
+picker. When the policy is "Automatic", formula and cask dependencies are
+installed with `brew install` using an argument array and never a shell string,
+and never with `sudo` or extra flags. After the install attempt, the service
+re-checks each dependency. If a required dependency is still missing, an
+unresolved sheet is shown with a Retry action that re-runs the check.
+
+An entry with no verified dependency information shows an empty list, which
+never means "nothing is needed".
+
+### Script execution security notice
+
+Dependency checks and installs do **not** execute any code downloaded from the
+Store. They only run `brew list`, `brew install`, `command -v`, and `fc-list`
+that are already on the user's machine. The app never writes to the user's
+SketchyBar config during a dependency install; it only installs the declared
+external tool.
