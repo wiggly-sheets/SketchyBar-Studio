@@ -71,6 +71,15 @@ final class PreviewResolvedPaneTests: XCTestCase {
         return root
     }
 
+    /// The number of runs of the Lua of a root that the cache did not
+    /// answer.
+    ///
+    /// The count is per root, so a test of one config is not moved by a
+    /// render of another one.
+    private func runs(of root: URL) -> Int {
+        BarRendererService.resolvedPlans.runs(of: root.standardizedFileURL.path)
+    }
+
     /// The text of the two items of the fixture of two items, with the
     /// label of the second item.
     private func twoItemDraft(label: String) -> String {
@@ -346,13 +355,13 @@ final class PreviewResolvedPaneTests: XCTestCase {
     func testADraftDoesNotRunTheLuaOfTheConfigAgain() throws {
         let root = try copyOfFixture("lua-draft-two-items")
 
-        let before = BarRendererService.resolvedPlans.runs
+        let before = runs(of: root)
         let first = self.plan(of: root, drafts: ["items.lua": twoItemDraft(label: "drafted one")])
-        XCTAssertEqual(BarRendererService.resolvedPlans.runs, before + 1,
+        XCTAssertEqual(runs(of: root), before + 1,
                        "the first plan of a config has to run the Lua")
 
         let second = self.plan(of: root, drafts: ["items.lua": twoItemDraft(label: "drafted two")])
-        XCTAssertEqual(BarRendererService.resolvedPlans.runs, before + 1,
+        XCTAssertEqual(runs(of: root), before + 1,
                        "a draft of the app must not run the Lua of the config again")
 
         XCTAssertEqual(value(first, "two", "label.string"), "drafted one")
@@ -389,14 +398,14 @@ final class PreviewResolvedPaneTests: XCTestCase {
     /// of the parser still shows the draft.
     func testAConfigThatFailsDoesNotRunTheLuaAgainForADraft() throws {
         let root = try copyOfFixture("lua-throws")
-        let before = BarRendererService.resolvedPlans.runs
+        let before = runs(of: root)
 
         _ = self.plan(of: root, drafts: ["sketchybarrc": brokenDraft(label: "one")])
-        XCTAssertEqual(BarRendererService.resolvedPlans.runs, before + 1,
+        XCTAssertEqual(runs(of: root), before + 1,
                        "the first plan of a broken config has to run the Lua")
 
         let plan = self.plan(of: root, drafts: ["sketchybarrc": brokenDraft(label: "two")])
-        XCTAssertEqual(BarRendererService.resolvedPlans.runs, before + 1,
+        XCTAssertEqual(runs(of: root), before + 1,
                        "a draft of the app must not run the Lua of a broken config again")
         XCTAssertEqual(value(plan, "typed", "label.string"), "two",
                        "the parser path still shows the draft")

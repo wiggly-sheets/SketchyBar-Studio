@@ -591,12 +591,6 @@ actor BarRendererService {
 /// change to a file of the config is a new signature, so a config the user
 /// fixed on disk is resolved again.
 final class ResolvedPlanCache: @unchecked Sendable {
-    /// The number of runs that the cache did not answer.
-    ///
-    /// The app does not read it: a test reads it to tell a render that
-    /// reused its resolution from a render that ran the Lua again.
-    private(set) var runs = 0
-
     private struct Entry {
         let signature: Int
         let result: Result<BarRenderPlan, Error>
@@ -604,6 +598,7 @@ final class ResolvedPlanCache: @unchecked Sendable {
 
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
+    private var runsByRoot: [String: Int] = [:]
 
     /// The plan of a root, or the result of the run that built it.
     ///
@@ -622,9 +617,19 @@ final class ResolvedPlanCache: @unchecked Sendable {
 
         lock.lock()
         entries[root] = Entry(signature: signature, result: result)
-        runs += 1
+        runsByRoot[root, default: 0] += 1
         lock.unlock()
         return try result.get()
+    }
+
+    /// The number of runs of a root that the cache did not answer.
+    ///
+    /// The app does not read it: a test reads it to tell a render that
+    /// reused its resolution from a render that ran the Lua again.
+    func runs(of root: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return runsByRoot[root] ?? 0
     }
 
     /// The stored plan of a root, when the files on disk are the same.
