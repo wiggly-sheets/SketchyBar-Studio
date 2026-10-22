@@ -221,21 +221,41 @@ struct BarThemeService {
 
     /// Rewrites the hex values of the active theme and keeps every other byte:
     /// the key set, the key order, the comments, the nested tables and the
-    /// functions.
+    /// functions. A semantic key wins over a hue name, a hue name wins over
+    /// the luminance rule.
     func renderedThemeContents(for palette: BarPalette, from active: BarThemeFile) -> String {
-        var assignments: [(entry: BarThemeEntry, role: BarPalette.Role)] = []
+        var assignments: [(entry: BarThemeEntry, hex: String)] = []
         var accentUsed = false
         var remaining: [BarThemeEntry] = []
 
         for entry in active.entries {
             if let role = Self.heuristicRole(for: entry.key, accentUsed: accentUsed) {
-                assignments.append((entry, role))
+                assignments.append((entry, palette.hex(for: role)))
                 if role == .accent || role == .accentSecondary {
                     accentUsed = true
                 }
-            } else {
-                remaining.append(entry)
+                continue
             }
+
+            if let hue = Self.hueName(in: entry.key) {
+                switch hue {
+                case .black:
+                    assignments.append((entry, palette.hex(for: .background)))
+                case .white:
+                    assignments.append((entry, palette.hex(for: .foreground)))
+                case .grey, .gray:
+                    assignments.append((entry, palette.hex(for: .muted)))
+                default:
+                    if let swatch = palette.swatchHex(for: hue) {
+                        assignments.append((entry, swatch))
+                    } else {
+                        remaining.append(entry)
+                    }
+                }
+                continue
+            }
+
+            remaining.append(entry)
         }
 
         let byLuminance = remaining.sorted { left, right in
@@ -245,18 +265,18 @@ struct BarThemeService {
         }
 
         if byLuminance.count == 1 {
-            assignments.append((byLuminance[0], .muted))
+            assignments.append((byLuminance[0], palette.hex(for: .muted)))
         } else if byLuminance.count >= 2 {
-            assignments.append((byLuminance[0], .background))
-            assignments.append((byLuminance[byLuminance.count - 1], .foreground))
+            assignments.append((byLuminance[0], palette.hex(for: .background)))
+            assignments.append((byLuminance[byLuminance.count - 1], palette.hex(for: .foreground)))
             for entry in byLuminance.dropFirst().dropLast() {
-                assignments.append((entry, .muted))
+                assignments.append((entry, palette.hex(for: .muted)))
             }
         }
 
         var lines = active.contents.components(separatedBy: "\n")
-        for (entry, role) in assignments {
-            guard let replacement = Self.replacement(for: entry, role: role, palette: palette) else { continue }
+        for (entry, hex) in assignments {
+            guard let replacement = Self.replacement(for: entry, hex: hex) else { continue }
             guard lines.indices.contains(entry.lineIndex) else { continue }
 
             let rawLine = lines[entry.lineIndex]
@@ -266,6 +286,11 @@ struct BarThemeService {
             lines[entry.lineIndex] = updated + (hasCarriageReturn ? "\r" : "")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private static func hueName(in key: String) -> BarPalette.Hue? {
+        let tokens = key.lowercased().split(whereSeparator: { !$0.isLetter })
+        return tokens.lazy.compactMap { BarPalette.Hue(rawValue: String($0)) }.first
     }
 
     private static func heuristicRole(for key: String, accentUsed: Bool) -> BarPalette.Role? {
@@ -290,15 +315,15 @@ struct BarThemeService {
         return nil
     }
 
-    private static func replacement(for entry: BarThemeEntry, role: BarPalette.Role, palette: BarPalette) -> String? {
+    private static func replacement(for entry: BarThemeEntry, hex: String) -> String? {
         let prefix = String(entry.value.prefix(2))
         let digits = String(entry.value.dropFirst(2))
         switch digits.count {
         case 8:
             // The original alpha bytes stay; only the colour changes.
-            return prefix + digits.prefix(2) + palette.hex(for: role)
+            return prefix + digits.prefix(2) + hex
         case 6:
-            return prefix + palette.hex(for: role)
+            return prefix + hex
         default:
             return nil
         }
