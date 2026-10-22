@@ -100,6 +100,9 @@ final class PreviewIsolationTests: XCTestCase {
             SketchyBarPreviewC.addItem(handle, alias: alias, position: "left")
             let script = "sketchybar --set \"\(alias)\" label=\"\(sentinel)\""
             SketchyBarPreviewC.setItem(handle, alias: alias, key: "script", value: script)
+            // The daemon runs the script of an item from its clock, so the
+            // item needs an update frequency (src/bar_item.c:127).
+            SketchyBarPreviewC.setItem(handle, alias: alias, key: "update_freq", value: "1")
             scripts.append(PreviewScriptRunner.Script(alias: alias, script: script))
         }
 
