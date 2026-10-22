@@ -65,6 +65,50 @@ struct BarPalette: Identifiable, Equatable {
     let sourceURL: String
     let licence: String
 
+    /// The order the role rows use in the palette preview.
+    static let displayRoleOrder: [Role] = [
+        .background, .foreground, .accent, .accentSecondary, .muted, .border
+    ]
+
+    /// The WCAG contrast ratio between the palette foreground and background.
+    var foregroundContrastRatio: Double {
+        Self.contrastRatio(between: foreground, and: background)
+    }
+
+    /// True when the palette own text is too close to its own bar. The preview
+    /// then uses the app contrast colour instead of changing the palette.
+    var foregroundNeedsContrastFallback: Bool {
+        foregroundContrastRatio < 3.0
+    }
+
+    /// WCAG 2.1 contrast ratio. An unreadable value returns 0, so a broken
+    /// palette never claims to be legible.
+    static func contrastRatio(between first: String, and second: String) -> Double {
+        guard let firstLuminance = relativeLuminance(first),
+              let secondLuminance = relativeLuminance(second) else {
+            return 0
+        }
+        let lighter = max(firstLuminance, secondLuminance)
+        let darker = min(firstLuminance, secondLuminance)
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    private static func relativeLuminance(_ value: String) -> Double? {
+        let digits = digits(value)
+        guard digits.count == 6, let integer = UInt32(digits, radix: 16) else { return nil }
+
+        func channel(_ byte: UInt32) -> Double {
+            let component = Double(byte) / 255
+            return component <= 0.04045
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+
+        return 0.2126 * channel((integer >> 16) & 0xff)
+            + 0.7152 * channel((integer >> 8) & 0xff)
+            + 0.0722 * channel(integer & 0xff)
+    }
+
     /// The role colour as six lowercase hex digits, the form a SketchyBar
     /// value uses after its alpha bytes.
     func hex(for role: Role) -> String {
