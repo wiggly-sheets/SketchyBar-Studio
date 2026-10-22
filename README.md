@@ -35,6 +35,8 @@
 
 SketchyBar Studio helps you explore and edit the SketchyBar setup you already have, without turning your configuration into an app-owned project. It follows your folder structure, provides native controls for common values, and keeps writes narrow and backed up.
 
+What you can do now: render any config or profile in the library as a live bar preview with real item values, run item scripts inside the preview so the bar shows live values, switch bar themes across 27 palettes with a preview and one-click revert, browse and install 14 verified MIT-licensed plugins and setups, and edit shell and Lua configs on the same surface with shared diagnostics, highlighting, cloning, and duplication finding.
+
 > [!NOTE]
 > Your configuration remains ordinary Lua, `sketchybarrc`, and shell files. Studio does not replace the files or take ownership of them.
 
@@ -54,6 +56,7 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 - Shows a reachability map of the config: the files the loaders reach, the files no loader loads, the loader lines that point at files that are gone, and the require cycles. The map only reads the config.
 - Checks the config for the problems SketchyBar silently ignores: unknown options, values SketchyBar cannot use, duplicate item aliases, missing require targets, orphan files, unbalanced brackets, and item files that declare nothing. The diagnostics sheet names the file and the line of every finding, and clicking a finding reveals the file in Finder. The check only reads the config.
 - Finds the item files of the config that are nearly the same. The duplication finder shows the pairs of files that match, how much they match, and the keys that drifted apart with both values side by side. It only reads the config.
+- Shell configs now share the same diagnostic and preview surface as Lua: diagnostics finds duplicate aliases across shell files, items set but never added, items added without a position, script paths that point at a missing file, and loader lines that point at a missing file. A clone action copies a shell item file with a new alias, lands it in the source folder, and adds the matching loader line.
 
 ### Purpose-built editing
 
@@ -61,7 +64,7 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 - Shows an option reference for most SketchyBar options: an info button next to the key path opens a popover with the meaning, the type, the accepted values and the default of the option. The entries follow the SketchyBar property table, and the summary names the level of the option.
 - Includes an interactive draft bar preview: drag items to reorder them or move them between left, center, and right; drag a numeric-width handle to resize; and adjust available left/right padding without writing files until you save.
 - Draws the bar preview with the real values of the config: an SF Symbol, the icon of an installed app, a media artwork or the text of the icon, the real label, and the font, the text color and the background color of the item. A symbol SketchyBar would reject is marked with a warning.
-- Provides a built-in source editor for complete Lua and `sketchybarrc` files, with optional Vim-style navigation (`h/j/k/l`, words, line start/end, `i`/`a`, Escape). Source saves use the same backup protection as structured edits.
+- Provides a built-in source editor for complete Lua and `sketchybarrc` files, with optional Vim-style navigation (`h/j/k/l`, words, line start/end, `i`/`a`, Escape). Source saves use the same backup protection as structured edits. The editor has syntax highlighting for Lua, `sketchybarrc`, and shell files with theme-aware colours, and a native find bar (Cmd-F, Cmd-G, Cmd-Shift-G) that searches the draft and the file on disk.
 - Opens the native macOS color picker, saving colors as `0xAARRGGBB`.
 - Opens the native macOS font panel, saving SketchyBar font syntax.
 - Groups controls into practical sections such as item, icon, label, background, popup, and scripts.
@@ -80,12 +83,33 @@ SketchyBar Studio helps you explore and edit the SketchyBar setup you already ha
 - Reorders items when Studio can identify concrete activation references; complex loader code is left alone.
 - Avoids offering core entrypoints and theme files as activatable items.
 
+### Plugin and setup store
+
+- Browses a curated catalogue of permissively licensed SketchyBar plugins and setups.
+- A plugin installs as one file under `plugins/` plus one loader line; the file content is shown before the write.
+- A setup installs as a new profile, apart from the config the user already has.
+- Every install is recorded in a manifest under Application Support, and uninstall removes exactly the recorded path and reverts exactly the recorded loader line, never a wildcard.
+- The catalogue accepts only MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Unlicense, and CC0-1.0 entries, pinned to a tag or commit; an entry with no verified licence is refused before any request.
+- Downloads use one raw file request or one codeload tarball, with a 20 MB cap, a 2000 file cap, a 30 second timeout, and archive members with `..`, absolute paths, or links are refused.
+- Selecting an entry fetches its README, capped at 256 KB, cached per entry and ref, rendered as Markdown with a Rendered/Raw switch and plain-text fallback.
+- A setup stages its tarball once, lists every file with its size and the total, and installs from that same staged tree; the staging directory is dropped when the selection changes or the install sheet is dismissed.
+- External dependencies for catalogue entries are checked and installed: a `StoreDependency` declares a Homebrew formula, cask, command, font, or SketchyBar binary with a `required` flag. The install sheet shows each dependency and its presence state, with a per-sheet policy override and a global "Never", "Ask" (default), or "Automatic" setting. Automatic installs run only `brew install` with an argument array, never a shell string and never sudo.
+- Multi-file plugin support: a plugin entry can declare additional files via the `files` array. Install writes the entry file and all extra files into `plugins/<entry id>/`, and the loader line references only the entry file. Uninstall removes the entire folder and reverts the loader line. A tampered manifest (path traversal, absolute path, or path outside the config) is refused before any deletion.
+
 ### Config library and profiles
 
 - Keeps a library of config folders, including symlinked configs in dotfiles repositories.
 - Saves and restores full config-folder snapshots as per-config profiles.
 - Can make a selected config live by pointing `~/.config/sketchybar` at it, with a confirmation step and backup of an existing real folder.
 - Saves all edits and optionally runs `sketchybar --reload` to apply them.
+
+### Bar theme switching
+
+- Applies a named colour palette to the real SketchyBar config and puts the previous theme back.
+- Detects the active theme with three patterns: a pointer file in `themes/` that names a theme, a Lua variable with a computed `require("themes.<name>")`, and a literal `require("themes.<name>")`.
+- Ships 27 palettes, each copied from the official palette file with its source URL and licence recorded.
+- A palette preview is shown in the settings before apply. Apply writes `themes/<palette>.lua` with the same key set, key order, and layout as the active theme, preserves original alpha bytes of plain 8-digit `0x` hex colours, and names the new theme in the pointer.
+- Before the pointer changes, apply stores the older pointer text per config root in `UserDefaults`; "Restore previous theme" writes that text back to the pointer file only, so the created theme file stays on disk. The stored value is cleared after a restore.
 
 ### Native macOS experience
 
@@ -224,6 +248,9 @@ make release VERSION=1.0.3
 - Lua editing intentionally targets simple scalar assignments first; tables and computed values remain read-only context.
 - Shell support covers common `key=value` SketchyBar property assignments.
 - Unusual loader patterns may require future activation-detection support.
+- The preview renderer cannot produce window-server content: `alias` items, `space` items, the front-app icon, and `media.artwork` render as placeholders with the same geometry.
+- Popups are not rendered. Interaction with the preview is not supported.
+- The differential test only claims geometry it can check; window-server-backed item types are excluded.
 
 ## Inspiration
 

@@ -1,6 +1,6 @@
 # Bar Renderer — stage documents
 
-Status: **Approved design. Stages 0-7 and Stage 3d merged; Stage 8 (exactness and the differential test) is next.**
+Status: **Approved design. Stages 0-8 merged (including Stage 3d); the next stage is Stage 9 (docs and release prep).**
 Date: 2026-10-21
 Owner: repository owner (sole contributor)
 Audience: orchestrating agents and coding agents picking this work up.
