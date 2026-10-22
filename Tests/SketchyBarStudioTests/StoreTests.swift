@@ -366,6 +366,171 @@ final class StoreTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: outcome.installedURL.path))
     }
 
+    // MARK: - README
+
+    func testReadmeResolutionPrefersEntryDirectoryThenRoot() async throws {
+        let entry = makeEntry(kind: .setup, path: "sub", ref: "v1.0.0")
+        let transport = RecordingTransport(routes: [
+            rawURL("readme.md", entry): .data(Data("# Readme\n".utf8))
+        ])
+
+        let result = try XCTUnwrapLoaded(
+            await StoreClient(transport: transport).readme(for: entry)
+        )
+
+        XCTAssertTrue(result.text.hasPrefix("# Readme"))
+        XCTAssertEqual(
+            transport.requestedURLs(),
+            [rawURL("sub/README.md", entry), rawURL("README.md", entry), rawURL("readme.md", entry)]
+        )
+    }
+
+    func testReadmeResolutionFallsBackToExtensionlessREADME() async throws {
+        let entry = makeEntry(path: "items/datetime.lua")
+        let transport = RecordingTransport(routes: [
+            rawURL("README", entry): .data(Data("plain\n".utf8))
+        ])
+
+        let loaded = try XCTUnwrapLoaded(await StoreClient(transport: transport).readme(for: entry))
+
+        XCTAssertEqual(loaded.text, "plain\n")
+        XCTAssertEqual(loaded.url.absoluteString, rawURL("README", entry))
+        XCTAssertEqual(transport.requestedURLs().count, 4)
+    }
+
+    func testReadmeSizeCapIsEnforced() async {
+        let entry = makeEntry()
+        let oversized = Data(repeating: 0x41, count: StoreClient.maxReadmeBytes + 1)
+        let transport = RecordingTransport(routes: [
+            rawURL("items/README.md", entry): .data(oversized)
+        ])
+
+        let result = await StoreClient(transport: transport).readme(for: entry)
+
+        XCTAssertEqual(result, .unavailable(url: rawURL("items/README.md", entry)))
+    }
+
+    func testReadmeFailureYieldsUnavailableWithSourceURL() async {
+        let entry = makeEntry()
+        let transport = RecordingTransport()
+
+        let result = await StoreClient(transport: transport).readme(for: entry)
+
+        guard case .unavailable(let url) = result else {
+            return XCTFail("expected unavailable, got \(result)")
+        }
+        XCTAssertTrue(url.hasPrefix(rawURL("", entry)))
+        XCTAssertTrue(url.hasSuffix("/README"))
+    }
+
+    func testReadmeIsCachedPerEntryAndRef() async {
+        let entry = makeEntry()
+        let transport = RecordingTransport(routes: [
+            rawURL("items/README.md", entry): .data(Data("# Cached\n".utf8))
+        ])
+        let client = StoreClient(transport: transport)
+
+        _ = await client.readme(for: entry)
+        _ = await client.readme(for: entry)
+        XCTAssertEqual(transport.count(rawURL("items/README.md", entry)), 1)
+
+        let otherRef = makeEntry(ref: "v2.0.0")
+        _ = await client.readme(for: otherRef)
+        XCTAssertEqual(transport.count(rawURL("items/README.md", otherRef)), 1)
+        XCTAssertEqual(transport.count(rawURL("items/README.md", entry)), 1)
+    }
+
+    func testMarkdownParseFailureFallsBackToPlainText() {
+        struct BrokenMarkdown: Error {}
+
+        let result = StoreMarkdown.rendered("# Title") { _ in
+            throw BrokenMarkdown()
+        }
+
+        XCTAssertEqual(String(result.characters), "# Title")
+    }
+
+    // MARK: - Setup staging
+
+    @MainActor
+    func testSetupStagingIsReusedOnInstall() async throws {
+        let fixture = try makeModelFixture()
+        let entry = makeEntry(kind: .setup, name: "Islands", path: "", ref: "v1.0.0")
+        let transport = RecordingTransport(routes: [
+            rawURL("README.md", entry): .data(Data("# Islands\n".utf8)),
+            entry.archiveURLString: .data(try tarData(
+                in: fixture.root,
+                files: ["pkg/bar.lua": "bar\n"],
+                members: ["pkg"]
+            ))
+        ])
+        let model = fixture.model(transport: transport)
+        model.selectedID = entry.id
+
+        await model.inspect(entry)
+
+        guard case .staged(let files, let total) = model.setup else {
+            return XCTFail("expected a staged tree, got \(model.setup)")
+        }
+        XCTAssertEqual(files.map(\.path), ["bar.lua"])
+        XCTAssertEqual(total, Int64("bar\n".utf8.count))
+        let stagingRoot = try XCTUnwrap(model.stagedTree).workingDirectory
+
+        await model.install(entry)
+
+        XCTAssertEqual(transport.count(entry.archiveURLString), 1)
+        XCTAssertNil(model.stagedTree)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stagingRoot.path))
+        XCTAssertEqual(model.records.count, 1)
+    }
+
+    @MainActor
+    func testStagingIsDiscardedWhenSelectionChanges() async throws {
+        let fixture = try makeModelFixture()
+        let entry = makeEntry(kind: .setup, name: "Islands", path: "", ref: "v1.0.0")
+        let transport = RecordingTransport(routes: [
+            entry.archiveURLString: .data(try tarData(
+                in: fixture.root,
+                files: ["pkg/bar.lua": "bar\n"],
+                members: ["pkg"]
+            ))
+        ])
+        let model = fixture.model(transport: transport)
+        model.selectedID = entry.id
+
+        await model.inspect(entry)
+        let stagingRoot = try XCTUnwrap(model.stagedTree).workingDirectory
+
+        model.selectedID = StoreCatalogue.entries.first { $0.kind == .plugin }?.id
+        model.loadSelectedPreview()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stagingRoot.path))
+        XCTAssertNil(model.stagedTree)
+        XCTAssertEqual(model.setup, .idle)
+    }
+
+    @MainActor
+    func testOversizedArchiveIsRefusedAtStaging() async throws {
+        let fixture = try makeModelFixture()
+        let entry = makeEntry(kind: .setup, name: "Islands", path: "", ref: "v1.0.0")
+        let transport = RecordingTransport(routes: [
+            entry.archiveURLString: .data(Data(repeating: 0, count: 128))
+        ])
+        let model = fixture.model(
+            transport: transport,
+            client: StoreClient(transport: transport, downloadLimit: 32)
+        )
+        model.selectedID = entry.id
+
+        await model.inspect(entry)
+
+        guard case .failed(let message) = model.setup else {
+            return XCTFail("expected a refusal, got \(model.setup)")
+        }
+        XCTAssertTrue(message.contains("20 MB"), message)
+        XCTAssertNil(model.stagedTree)
+    }
+
     // MARK: - Helpers
 
     private struct StubTransport: StoreTransport {
@@ -393,6 +558,99 @@ final class StoreTests: XCTestCase {
                 throw StoreError.invalidEntry("unexpected URL \(url.absoluteString)")
             }
             return payload
+        }
+    }
+
+    private struct ModelFixture {
+        let root: URL
+        let configRoot: URL
+        let supportRoot: URL
+        @MainActor let makeModel: (RecordingTransport, StoreClient?) -> StoreModel
+
+        @MainActor
+        func model(transport: RecordingTransport, client: StoreClient? = nil) -> StoreModel {
+            makeModel(transport, client)
+        }
+    }
+
+    @MainActor
+    private func makeModelFixture() throws -> ModelFixture {
+        let root = try makeTestRoot()
+        let configRoot = root.appendingPathComponent("config")
+        try FileManager.default.createDirectory(at: configRoot, withIntermediateDirectories: true)
+        try Data("require(\"bar\")\n".utf8).write(to: configRoot.appendingPathComponent("init.lua"))
+        let supportRoot = root.appendingPathComponent("support")
+        return ModelFixture(root: root, configRoot: configRoot, supportRoot: supportRoot) { transport, client in
+            StoreModel(
+                configRoot: configRoot,
+                configID: "workspace",
+                appSupportRoot: supportRoot,
+                client: client ?? StoreClient(transport: transport)
+            )
+        }
+    }
+
+    private func rawURL(_ path: String, _ entry: StoreEntry) -> String {
+        "https://raw.githubusercontent.com/\(entry.repository)/\(entry.ref)/\(path)"
+    }
+
+    private func XCTUnwrapLoaded(
+        _ result: StoreReadmeResult,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> StoreReadme {
+        guard case .loaded(let readme) = result else {
+            XCTFail("expected a loaded README, got \(result)", file: file, line: line)
+            throw StoreError.notFound
+        }
+        return readme
+    }
+
+    private final class RecordingTransport: StoreTransport, @unchecked Sendable {
+        enum Reply {
+            case data(Data)
+            case error(StoreError)
+        }
+
+        private let lock = NSLock()
+        private let routes: [String: Reply]
+        private let fallback: Reply
+        private var calls: [String: Int] = [:]
+        private var order: [String] = []
+
+        init(routes: [String: Reply] = [:], fallback: Reply = .error(.notFound)) {
+            self.routes = routes
+            self.fallback = fallback
+        }
+
+        func fetch(_ url: URL, limit: Int) async throws -> Data {
+            switch record(url) {
+            case .data(let data):
+                return data
+            case .error(let error):
+                throw error
+            }
+        }
+
+        private func record(_ url: URL) -> Reply {
+            lock.lock()
+            defer { lock.unlock() }
+            let key = url.absoluteString
+            calls[key, default: 0] += 1
+            order.append(key)
+            return routes[key] ?? fallback
+        }
+
+        func count(_ url: String) -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return calls[url] ?? 0
+        }
+
+        func requestedURLs() -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return order
         }
     }
 
