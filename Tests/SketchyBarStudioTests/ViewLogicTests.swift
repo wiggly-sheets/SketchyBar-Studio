@@ -197,17 +197,24 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertLessThan(EditableValueGroup.sortRank("Scripts"), EditableValueGroup.sortRank("Mystery"))
     }
 
-    // MARK: - CodeSyntaxHighlighter
+    // MARK: - SourceSyntaxHighlighter
+
+    private func syntaxTokens(_ source: String, _ language: SourceLanguage) -> [(kind: SourceTokenKind, text: String)] {
+        let text = source as NSString
+        return SourceSyntaxHighlighter.tokens(in: source, language: language).map {
+            (kind: $0.kind, text: text.substring(with: $0.range))
+        }
+    }
 
     func testLuaCommentToken() {
-        let tokens = CodeSyntaxHighlighter.tokens(for: "-- comment", kind: .lua)
+        let tokens = syntaxTokens("-- comment", .lua)
 
         XCTAssertEqual(tokens.first?.kind, .comment)
         XCTAssertEqual(tokens.first?.text, "-- comment")
     }
 
     func testShellCommentToken() {
-        let tokens = CodeSyntaxHighlighter.tokens(for: "# comment", kind: .shell)
+        let tokens = syntaxTokens("# comment", .shell)
 
         XCTAssertEqual(tokens.first?.kind, .comment)
         XCTAssertEqual(tokens.first?.text, "# comment")
@@ -215,7 +222,7 @@ final class ViewLogicTests: XCTestCase {
 
     func testStringWithEscapes() {
         let source = "\"say \\\"hi\\\"\""
-        let tokens = CodeSyntaxHighlighter.tokens(for: source, kind: .lua)
+        let tokens = syntaxTokens(source, .lua)
 
         XCTAssertEqual(tokens.count, 1)
         XCTAssertEqual(tokens.first?.kind, .string)
@@ -224,7 +231,7 @@ final class ViewLogicTests: XCTestCase {
 
     func testNumberTokens() {
         for source in ["42", "3.5", "0xFF"] {
-            let tokens = CodeSyntaxHighlighter.tokens(for: source, kind: .lua)
+            let tokens = syntaxTokens(source, .lua)
             XCTAssertEqual(tokens.count, 1)
             XCTAssertEqual(tokens.first?.kind, .number)
             XCTAssertEqual(tokens.first?.text, source)
@@ -232,22 +239,22 @@ final class ViewLogicTests: XCTestCase {
     }
 
     func testKeywordTokens() {
-        let lua = CodeSyntaxHighlighter.tokens(for: "local", kind: .lua)
+        let lua = syntaxTokens("local", .lua)
         XCTAssertEqual(lua.first?.kind, .keyword)
         XCTAssertEqual(lua.first?.text, "local")
 
-        let rc = CodeSyntaxHighlighter.tokens(for: "sketchybar", kind: .shell)
+        let rc = syntaxTokens("sketchybar", .shell)
         XCTAssertEqual(rc.first?.kind, .keyword)
         XCTAssertEqual(rc.first?.text, "sketchybar")
 
-        let plain = CodeSyntaxHighlighter.tokens(for: "foo", kind: .lua)
+        let plain = syntaxTokens("foo", .lua)
         XCTAssertEqual(plain.first?.kind, .plain)
         XCTAssertEqual(plain.first?.text, "foo")
     }
 
     func testVariableTokens() {
         for source in ["$var", "${var}"] {
-            let tokens = CodeSyntaxHighlighter.tokens(for: source, kind: .shell)
+            let tokens = syntaxTokens(source, .shell)
             XCTAssertEqual(tokens.count, 1)
             XCTAssertEqual(tokens.first?.kind, .variable)
             XCTAssertEqual(tokens.first?.text, source)
@@ -255,7 +262,7 @@ final class ViewLogicTests: XCTestCase {
     }
 
     func testFlagTokens() {
-        let tokens = CodeSyntaxHighlighter.tokens(for: "--flag", kind: .shell)
+        let tokens = syntaxTokens("--flag", .shell)
 
         XCTAssertEqual(tokens.count, 1)
         XCTAssertEqual(tokens.first?.kind, .flag)
@@ -263,8 +270,8 @@ final class ViewLogicTests: XCTestCase {
     }
 
     func testRepeatedTokenizingReturnsTheSameTokens() {
-        let first = CodeSyntaxHighlighter.tokens(for: "width = 10", kind: .lua)
-        let second = CodeSyntaxHighlighter.tokens(for: "width = 10", kind: .lua)
+        let first = syntaxTokens("width = 10", .lua)
+        let second = syntaxTokens("width = 10", .lua)
 
         XCTAssertEqual(first.map(\.text), second.map(\.text))
         XCTAssertEqual(first.map(\.kind), second.map(\.kind))

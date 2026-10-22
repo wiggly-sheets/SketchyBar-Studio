@@ -63,7 +63,8 @@ struct SourceEditorView: View {
                     text: sourceBinding,
                     vimMotionsEnabled: vimMotionsEnabled,
                     mode: $vimMode,
-                    theme: theme
+                    theme: theme,
+                    fileURL: file.url
                 )
                 .frame(minHeight: 420)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -100,6 +101,7 @@ private struct VimTextEditor: NSViewRepresentable {
     let vimMotionsEnabled: Bool
     @Binding var mode: VimMode
     let theme: AppTheme
+    let fileURL: URL
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, mode: $mode)
@@ -119,7 +121,9 @@ private struct VimTextEditor: NSViewRepresentable {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.allowsUndo = true
-        textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        textView.usesFindBar = true
+        textView.isIncrementalSearchingEnabled = true
+        textView.font = SourceSyntaxAttributes.font
         textView.textContainerInset = NSSize(width: 12 + LineNumberGutterView.width, height: 12)
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -131,6 +135,9 @@ private struct VimTextEditor: NSViewRepresentable {
         textView.onModeChange = { mode in
             context.coordinator.mode.wrappedValue = mode
         }
+        textView.sourceURL = fileURL
+        textView.theme = theme
+        textView.applyHighlight()
 
         let gutter = LineNumberGutterView()
         gutter.textView = textView
@@ -155,9 +162,12 @@ private struct VimTextEditor: NSViewRepresentable {
         }
         textView.vimMotionsEnabled = vimMotionsEnabled
         textView.mode = vimMotionsEnabled ? mode : .insert
+        textView.sourceURL = fileURL
+        textView.theme = theme
         textView.backgroundColor = NSColor(theme.background)
         textView.textColor = NSColor(theme.syntaxVariable)
         textView.insertionPointColor = NSColor(theme.accent)
+        textView.scheduleHighlight()
         textView.gutter?.refresh()
     }
 
@@ -173,6 +183,7 @@ private struct VimTextEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             text.wrappedValue = textView.string
+            (textView as? VimTextView)?.scheduleHighlight()
             (textView as? VimTextView)?.gutter?.refresh()
         }
     }
@@ -314,6 +325,64 @@ private final class VimTextView: NSTextView {
     }
     var onModeChange: ((VimMode) -> Void)?
     weak var gutter: LineNumberGutterView?
+    var sourceURL: URL?
+    var theme: AppTheme = .nord
+    private var highlightWorkItem: DispatchWorkItem?
+
+    /// Re-colours the text after a short pause, so typing stays responsive.
+    func scheduleHighlight() {
+        highlightWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.applyHighlight() }
+        highlightWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
+    /// Applies the colours as attributes only. The characters never change,
+    /// so selection, undo and the find bar keep working.
+    func applyHighlight() {
+        guard let storage = textStorage else { return }
+        // shortcut: highlight skipped above 400 KB, revisit if real configs exceed it
+        guard storage.length <= 400 * 1024 else { return }
+        guard !hasMarkedText() else {
+            scheduleHighlight()
+            return
+        }
+
+        let language = SourceSyntaxHighlighter.language(
+            for: sourceURL ?? URL(fileURLWithPath: ""),
+            contents: string
+        )
+        let tokens = SourceSyntaxHighlighter.tokens(in: string, language: language)
+        let selection = selectedRanges
+        let scrollOrigin = enclosingScrollView?.contentView.bounds.origin
+        let fullRange = NSRange(location: 0, length: storage.length)
+
+        storage.beginEditing()
+        storage.setAttributes(SourceSyntaxAttributes.base(theme: theme), range: fullRange)
+        for token in tokens {
+            storage.addAttributes(SourceSyntaxAttributes.attributes(for: token.kind, theme: theme), range: token.range)
+        }
+        storage.endEditing()
+
+        selectedRanges = selection
+        if let scrollOrigin, let clipView = enclosingScrollView?.contentView {
+            clipView.scroll(to: scrollOrigin)
+            enclosingScrollView?.reflectScrolledClipView(clipView)
+        }
+        typingAttributes = SourceSyntaxAttributes.base(theme: theme)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "f" {
+            let sender = NSMenuItem()
+            sender.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
+            if NSApp.sendAction(#selector(NSTextView.performFindPanelAction(_:)), to: nil, from: sender) {
+                return true
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)

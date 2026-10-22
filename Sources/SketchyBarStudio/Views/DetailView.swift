@@ -796,7 +796,7 @@ private struct CodePreviewView: View {
                                 isSelected: selectedLine == index + 1,
                                 isChanged: highlightedLines.contains(index + 1),
                                 theme: theme,
-                                kind: file.kind
+                                language: language
                             )
                             .id(index)
                         }
@@ -822,6 +822,10 @@ private struct CodePreviewView: View {
         .onChange(of: refreshToken) { _, _ in loadLines() }
     }
 
+    private var language: SourceLanguage {
+        SourceSyntaxHighlighter.language(for: file.url, contents: contents)
+    }
+
     private func loadLines() {
         lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
     }
@@ -833,7 +837,7 @@ private struct CodeLineView: View {
     let isSelected: Bool
     let isChanged: Bool
     let theme: AppTheme
-    let kind: ConfigFileKind
+    let language: SourceLanguage
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -843,7 +847,7 @@ private struct CodeLineView: View {
                 .frame(width: 44, alignment: .trailing)
                 .padding(.top, 2)
 
-            HighlightedCodeText(text: displayText, kind: kind, theme: theme)
+            HighlightedCodeText(text: displayText, language: language, theme: theme)
                 .font(.system(.body, design: .default))
                 .lineSpacing(3)
                 .textSelection(.enabled)
@@ -878,7 +882,7 @@ private struct CodeLineView: View {
 
 private struct HighlightedCodeText: View {
     let text: String
-    let kind: ConfigFileKind
+    let language: SourceLanguage
     let theme: AppTheme
 
     var body: some View {
@@ -886,174 +890,9 @@ private struct HighlightedCodeText: View {
     }
 
     private var rendered: Text {
-        CodeSyntaxHighlighter.tokens(for: text, kind: kind).reduce(Text("")) { partial, token in
-            partial + Text(token.text).foregroundColor(token.color(in: theme))
+        let source = text as NSString
+        return SourceSyntaxHighlighter.tokens(in: text, language: language).reduce(Text("")) { partial, token in
+            partial + Text(source.substring(with: token.range)).foregroundColor(token.kind.color(in: theme))
         }
-    }
-}
-
-struct CodeToken {
-    let text: String
-    let kind: CodeTokenKind
-
-    func color(in theme: AppTheme) -> Color {
-        switch kind {
-        case .plain:
-            return .primary
-        case .comment:
-            return theme.muted
-        case .keyword, .flag:
-            return theme.accent
-        case .string:
-            return theme.syntaxString
-        case .number:
-            return theme.syntaxNumber
-        case .variable:
-            return theme.syntaxVariable
-        }
-    }
-}
-
-enum CodeTokenKind {
-    case plain
-    case comment
-    case keyword
-    case string
-    case number
-    case variable
-    case flag
-}
-
-enum CodeSyntaxHighlighter {
-    private static let luaKeywords: Set<String> = [
-        "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while", "require", "dofile", "loadfile"
-    ]
-
-    private static let rcKeywords: Set<String> = [
-        "sketchybar", "source", "export", "if", "then", "fi", "for", "do", "done", "case", "esac", "function", "bash", "zsh", "sh"
-    ]
-
-    static func tokens(for line: String, kind: ConfigFileKind) -> [CodeToken] {
-        let key = TokenCacheKey(text: line, kind: kind)
-        if let cached = TokenCache.shared.tokens(for: key) {
-            return cached
-        }
-        let tokens = tokenize(line, kind: kind)
-        TokenCache.shared.store(tokens, for: key)
-        return tokens
-    }
-
-    private static func tokenize(_ line: String, kind: ConfigFileKind) -> [CodeToken] {
-        var tokens: [CodeToken] = []
-        var index = line.startIndex
-
-        while index < line.endIndex {
-            if startsComment(line, at: index, kind: kind) {
-                tokens.append(CodeToken(text: String(line[index...]), kind: .comment))
-                break
-            }
-
-            let character = line[index]
-            if character == "\"" || character == "'" {
-                let end = quotedEnd(in: line, from: index, quote: character)
-                tokens.append(CodeToken(text: String(line[index..<end]), kind: .string))
-                index = end
-                continue
-            }
-
-            if character.isWhitespace {
-                let end = line[index...].firstIndex { !$0.isWhitespace } ?? line.endIndex
-                tokens.append(CodeToken(text: String(line[index..<end]), kind: .plain))
-                index = end
-                continue
-            }
-
-            let end = tokenEnd(in: line, from: index, kind: kind)
-            let raw = String(line[index..<end])
-            tokens.append(CodeToken(text: raw, kind: tokenKind(for: raw, fileKind: kind)))
-            index = end
-        }
-
-        return tokens.isEmpty ? [CodeToken(text: " ", kind: .plain)] : tokens
-    }
-
-    private static func startsComment(_ line: String, at index: String.Index, kind: ConfigFileKind) -> Bool {
-        switch kind {
-        case .lua:
-            return line[index...].hasPrefix("--")
-        case .shell, .sketchybarRC:
-            return line[index] == "#"
-        }
-    }
-
-    private static func quotedEnd(in line: String, from start: String.Index, quote: Character) -> String.Index {
-        var index = line.index(after: start)
-        var escaped = false
-        while index < line.endIndex {
-            let character = line[index]
-            if character == quote && !escaped {
-                return line.index(after: index)
-            }
-            escaped = character == "\\" && !escaped
-            if character != "\\" { escaped = false }
-            index = line.index(after: index)
-        }
-        return line.endIndex
-    }
-
-    private static func tokenEnd(in line: String, from start: String.Index, kind: ConfigFileKind) -> String.Index {
-        var index = start
-        while index < line.endIndex {
-            if startsComment(line, at: index, kind: kind) { break }
-            let character = line[index]
-            if character.isWhitespace || character == "\"" || character == "'" { break }
-            index = line.index(after: index)
-        }
-        return index
-    }
-
-    private static func tokenKind(for raw: String, fileKind: ConfigFileKind) -> CodeTokenKind {
-        let trimmed = raw.trimmingCharacters(in: CharacterSet(charactersIn: "(),[]{}"))
-        let lower = trimmed.lowercased()
-
-        if raw.hasPrefix("--") { return .flag }
-        if raw.hasPrefix("$") || raw.contains("${") { return .variable }
-        if Double(trimmed) != nil || lower.hasPrefix("0x") { return .number }
-
-        switch fileKind {
-        case .lua:
-            return luaKeywords.contains(lower) ? .keyword : .plain
-        case .shell, .sketchybarRC:
-            if lower.hasPrefix("--") { return .flag }
-            return rcKeywords.contains(lower) ? .keyword : .plain
-        }
-    }
-}
-
-private struct TokenCacheKey: Hashable {
-    let text: String
-    let kind: ConfigFileKind
-}
-
-/// Keeps the tokens of the lines that were already tokenized, so a
-/// re-render does not tokenize the same lines again.
-private final class TokenCache {
-    static let shared = TokenCache()
-
-    private let lock = NSLock()
-    private var storage: [TokenCacheKey: [CodeToken]] = [:]
-    private let limit = 4000
-
-    func tokens(for key: TokenCacheKey) -> [CodeToken]? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage[key]
-    }
-
-    func store(_ tokens: [CodeToken], for key: TokenCacheKey) {
-        lock.lock()
-        defer { lock.unlock() }
-        if storage.count >= limit { storage.removeAll(keepingCapacity: true) }
-        storage[key] = tokens
     }
 }
