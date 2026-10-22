@@ -87,6 +87,19 @@ final class PreviewResolvedPaneTests: XCTestCase {
         """
     }
 
+    /// The text of a draft of the entrypoint of a broken config.
+    ///
+    /// The draft is Lua, so the parser reads it as Lua and keeps the item.
+    private func brokenDraft(label: String) -> String {
+        """
+        #!/usr/bin/env lua
+        sbar.add("item", "typed", {
+        \tposition = "left",
+        \tlabel = { string = "\(label)" },
+        })
+        """
+    }
+
     /// The value of a property of an item of a plan.
     private func value(_ plan: BarRenderPlan, _ alias: String, _ key: String) -> String? {
         plan.items
@@ -338,6 +351,27 @@ final class PreviewResolvedPaneTests: XCTestCase {
         XCTAssertEqual(value(self.plan(of: root), "clock", "label.string"),
                        "10:00 A Shorter Font",
                        "a file that changed on disk has to be resolved again")
+    }
+
+    /// A config that fails is not run again for a draft.
+    ///
+    /// A config whose Lua fails would otherwise run the interpreter and hit
+    /// the deadline of the sandbox on every keystroke of a draft. The
+    /// failure is kept while the files on disk are the same, and the plan
+    /// of the parser still shows the draft.
+    func testAConfigThatFailsDoesNotRunTheLuaAgainForADraft() throws {
+        let root = try copyOfFixture("lua-throws")
+        let before = BarRendererService.resolvedConfigs.runs
+
+        _ = self.plan(of: root, drafts: ["sketchybarrc": brokenDraft(label: "one")])
+        XCTAssertEqual(BarRendererService.resolvedConfigs.runs, before + 1,
+                       "the first plan of a broken config has to run the Lua")
+
+        let plan = self.plan(of: root, drafts: ["sketchybarrc": brokenDraft(label: "two")])
+        XCTAssertEqual(BarRendererService.resolvedConfigs.runs, before + 1,
+                       "a draft of the app must not run the Lua of a broken config again")
+        XCTAssertEqual(value(plan, "typed", "label.string"), "two",
+                       "the parser path still shows the draft")
     }
 
     // MARK: - The fallback
