@@ -318,13 +318,13 @@ final class PreviewResolvedPaneTests: XCTestCase {
     func testADraftDoesNotRunTheLuaOfTheConfigAgain() throws {
         let root = try copyOfFixture("lua-draft-two-items")
 
-        let before = BarRendererService.resolvedConfigs.runs
+        let before = BarRendererService.resolvedPlans.runs
         let first = self.plan(of: root, drafts: ["items.lua": twoItemDraft(label: "drafted one")])
-        XCTAssertEqual(BarRendererService.resolvedConfigs.runs, before + 1,
+        XCTAssertEqual(BarRendererService.resolvedPlans.runs, before + 1,
                        "the first plan of a config has to run the Lua")
 
         let second = self.plan(of: root, drafts: ["items.lua": twoItemDraft(label: "drafted two")])
-        XCTAssertEqual(BarRendererService.resolvedConfigs.runs, before + 1,
+        XCTAssertEqual(BarRendererService.resolvedPlans.runs, before + 1,
                        "a draft of the app must not run the Lua of the config again")
 
         XCTAssertEqual(value(first, "two", "label.string"), "drafted one")
@@ -361,14 +361,14 @@ final class PreviewResolvedPaneTests: XCTestCase {
     /// of the parser still shows the draft.
     func testAConfigThatFailsDoesNotRunTheLuaAgainForADraft() throws {
         let root = try copyOfFixture("lua-throws")
-        let before = BarRendererService.resolvedConfigs.runs
+        let before = BarRendererService.resolvedPlans.runs
 
         _ = self.plan(of: root, drafts: ["sketchybarrc": brokenDraft(label: "one")])
-        XCTAssertEqual(BarRendererService.resolvedConfigs.runs, before + 1,
+        XCTAssertEqual(BarRendererService.resolvedPlans.runs, before + 1,
                        "the first plan of a broken config has to run the Lua")
 
         let plan = self.plan(of: root, drafts: ["sketchybarrc": brokenDraft(label: "two")])
-        XCTAssertEqual(BarRendererService.resolvedConfigs.runs, before + 1,
+        XCTAssertEqual(BarRendererService.resolvedPlans.runs, before + 1,
                        "a draft of the app must not run the Lua of a broken config again")
         XCTAssertEqual(value(plan, "typed", "label.string"), "two",
                        "the parser path still shows the draft")

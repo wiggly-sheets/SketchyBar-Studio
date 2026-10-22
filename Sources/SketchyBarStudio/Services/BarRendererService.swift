@@ -150,12 +150,12 @@ enum BarRenderError: LocalizedError {
 actor BarRendererService {
     static let shared = BarRendererService()
 
-    /// The resolved configs of the roots the pane rendered, so a draft of
-    /// the app does not run the Lua of the config again.
+    /// The resolved plans of the roots the pane rendered, so a draft of the
+    /// app does not run the Lua of the config again.
     ///
     /// It is not private, so a test can tell a render that reused its
     /// resolution from a render that ran the Lua again.
-    static let resolvedConfigs = ResolvedConfigCache()
+    static let resolvedPlans = ResolvedPlanCache()
 
     /// The biggest width of the virtual display the render accepts, in
     /// points.
@@ -453,11 +453,11 @@ actor BarRendererService {
         }
 
         do {
-            let resolved = try resolvedConfig(of: root,
-                                              entrypoint: entrypoint,
-                                              signature: diskSignature(of: request.files))
+            let resolved = try resolvedPlan(of: root,
+                                            entrypoint: entrypoint,
+                                            signature: diskSignature(of: request.files))
             let draft = PreviewConfigBridge.draft(of: request.files, root: root)
-            return PreviewConfigBridge.plan(fromResolved: resolved).overlaying(draft: draft)
+            return resolved.overlaying(draft: draft)
         } catch {
             return parserFallback(
                 for: request,
@@ -467,14 +467,15 @@ actor BarRendererService {
         }
     }
 
-    /// The resolution of a config, reused while the files on disk are the
-    /// same.
-    private static func resolvedConfig(of root: URL,
-                                       entrypoint: URL,
-                                       signature: Int) throws -> LuaConfigRunner.ResolvedConfig {
-        try resolvedConfigs.config(for: root.standardizedFileURL.path,
-                                   signature: signature) {
-            try LuaConfigRunner.resolve(configRoot: root, entrypoint: entrypoint)
+    /// The plan of the resolved config, reused while the files on disk are
+    /// the same.
+    private static func resolvedPlan(of root: URL,
+                                     entrypoint: URL,
+                                     signature: Int) throws -> BarRenderPlan {
+        try resolvedPlans.plan(for: root.standardizedFileURL.path,
+                               signature: signature) {
+            try PreviewConfigBridge.plan(fromResolved: LuaConfigRunner.resolve(configRoot: root,
+                                                                              entrypoint: entrypoint))
         }
     }
 
@@ -578,19 +579,18 @@ actor BarRendererService {
     }
 }
 
-/// Keeps the resolution of a config root between renders.
+/// Keeps the resolved plan of a config root between renders.
 ///
 /// The Lua of a config is expensive to run and the pane renders again on
-/// every keystroke of a draft, so the result of a run is kept until the
-/// files of the config change on disk. The key of an entry is the root of
-/// the config, and the signature is the state of the files of the root on
-/// disk.
+/// every keystroke of a draft, so the plan of a run is kept until the files
+/// of the config change on disk. The key of an entry is the root of the
+/// config, and the signature is the state of the files of the root on disk.
 ///
 /// A run that fails is kept as well: a config that runs into the deadline
 /// of the sandbox would otherwise stop the pane on every keystroke. A
 /// change to a file of the config is a new signature, so a config the user
 /// fixed on disk is resolved again.
-final class ResolvedConfigCache: @unchecked Sendable {
+final class ResolvedPlanCache: @unchecked Sendable {
     /// The number of runs that the cache did not answer.
     ///
     /// The app does not read it: a test reads it to tell a render that
@@ -599,21 +599,21 @@ final class ResolvedConfigCache: @unchecked Sendable {
 
     private struct Entry {
         let signature: Int
-        let result: Result<LuaConfigRunner.ResolvedConfig, Error>
+        let result: Result<BarRenderPlan, Error>
     }
 
     private let lock = NSLock()
     private var entries: [String: Entry] = [:]
 
-    /// The resolution of a root, or the result of the run that built it.
+    /// The plan of a root, or the result of the run that built it.
     ///
     /// The run happens outside of the lock, so a slow config does not hold
     /// the cache. Two renders of the same changed root can therefore run
     /// the Lua twice; they are the same request, so the second run only
     /// replaces the first.
-    func config(for root: String,
-                signature: Int,
-                run: () throws -> LuaConfigRunner.ResolvedConfig) throws -> LuaConfigRunner.ResolvedConfig {
+    func plan(for root: String,
+              signature: Int,
+              run: () throws -> BarRenderPlan) throws -> BarRenderPlan {
         if let entry = stored(root: root, signature: signature) {
             return try entry.result.get()
         }
@@ -627,8 +627,7 @@ final class ResolvedConfigCache: @unchecked Sendable {
         return try result.get()
     }
 
-    /// The stored resolution of a root, when the files on disk are the
-    /// same.
+    /// The stored plan of a root, when the files on disk are the same.
     private func stored(root: String, signature: Int) -> Entry? {
         lock.lock()
         defer { lock.unlock() }
