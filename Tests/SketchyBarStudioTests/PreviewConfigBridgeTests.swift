@@ -615,4 +615,70 @@ final class PreviewConfigBridgeTests: XCTestCase {
         XCTAssertEqual(warnings.count, 1)
         XCTAssertTrue(warnings[0].contains("not_a_property"))
     }
+
+    // MARK: - Stage 8: known limits warnings
+
+    /// The front-app alias item is dropped by the parser and warns.
+    func testFrontAppAliasIsDroppedByParser() throws {
+        let plan = PreviewConfigBridge.plan(forLua: """
+        sbar.add("alias", "front_app", { position = "left" })
+        """)
+
+        // The parser path drops the alias item and warns.
+        XCTAssertEqual(plan.items.count, 0)
+        XCTAssertTrue(plan.warnings.contains { $0.contains("alias") && $0.contains("front_app") },
+                      "warnings must mention alias front_app: \(plan.warnings)")
+    }
+
+    /// The media.artwork icon value is accepted but the preview cannot show it.
+    func testMediaArtworkIconIsAccepted() throws {
+        let plan = PreviewConfigBridge.plan(forLua: """
+        sbar.add("item", "music", {
+            position = "right",
+            icon = { string = "media.artwork" }
+        })
+        """)
+
+        // The item is added with the icon value.
+        XCTAssertEqual(plan.items.count, 1)
+        XCTAssertEqual(plan.items.first?.alias, "music")
+        // No parser warning for media.artwork - it's a valid icon value.
+    }
+
+    /// A popup item is accepted by the parser.
+    func testPopupItemIsAcceptedByParser() throws {
+        let plan = PreviewConfigBridge.plan(forLua: """
+        sbar.add("item", "parent", { position = "left" })
+        sbar.add("item", "popup_item", { position = "popup", argument = "parent" })
+        """)
+
+        // The parser reads both items.
+        XCTAssertEqual(plan.items.count, 2)
+        XCTAssertTrue(plan.items.contains { $0.alias == "popup_item" })
+        // No parser warning for popup position - it's a valid position.
+    }
+
+    /// The shell style alias item is dropped by the parser and warns.
+    func testShellAliasItemIsDroppedByParser() throws {
+        let plan = PreviewConfigBridge.plan(forShell: """
+        sketchybar --add alias front_app left
+        sketchybar --add item clock right
+        """)
+
+        XCTAssertEqual(plan.items.map(\.alias), ["clock"])
+        XCTAssertTrue(plan.warnings.contains { $0.contains("alias") && $0.contains("front_app") },
+                      "warnings must mention alias front_app: \(plan.warnings)")
+    }
+
+    /// The shell style popup item is accepted by the parser.
+    func testShellPopupItemIsAcceptedByParser() throws {
+        let plan = PreviewConfigBridge.plan(forShell: """
+        sketchybar --add item parent left
+        sketchybar --add item popup_item popup parent
+        """)
+
+        XCTAssertEqual(plan.items.count, 2)
+        XCTAssertTrue(plan.items.contains { $0.alias == "popup_item" })
+        // No parser warning for popup position - it's a valid position.
+    }
 }
