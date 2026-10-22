@@ -54,6 +54,39 @@ final class PreviewResolvedPaneTests: XCTestCase {
         BarRendererService.plan(for: request(of: root, drafts: drafts))
     }
 
+    /// A copy of a fixture in a temporary directory.
+    ///
+    /// The tests that follow a change of a file of the config change the
+    /// copy, so the fixture of the tree is never touched.
+    private func copyOfFixture(_ name: String) throws -> URL {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SketchyBarStudioResolvedPaneTests")
+            .appendingPathComponent(UUID().uuidString)
+        let root = parent.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: fixture(name), to: root)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: parent)
+        }
+        return root
+    }
+
+    /// The text of the two items of the fixture of two items, with the
+    /// label of the second item.
+    private func twoItemDraft(label: String) -> String {
+        """
+        sbar.add("item", "one", {
+        \tposition = "left",
+        \tlabel = { string = "one" },
+        })
+
+        sbar.add("item", "two", {
+        \tposition = "right",
+        \tlabel = { string = "\(label)" },
+        })
+        """
+    }
+
     /// The value of a property of an item of a plan.
     private func value(_ plan: BarRenderPlan, _ alias: String, _ key: String) -> String? {
         plan.items
@@ -261,6 +294,50 @@ final class PreviewResolvedPaneTests: XCTestCase {
                        "the draft belongs to the item 'last'")
         XCTAssertEqual(value(plan, "looped", "label.string"), "loop",
                        "the draft must not land on the item of the loop")
+    }
+
+    /// A draft of the app does not run the Lua of the config again.
+    ///
+    /// The run of the Lua is the expensive half of a render, and the pane
+    /// renders again on every keystroke of a draft. The resolution is kept
+    /// while the files on disk are the same, so the second plan of the
+    /// same config reuses the first one and only the draft changes.
+    func testADraftDoesNotRunTheLuaOfTheConfigAgain() throws {
+        let root = try copyOfFixture("lua-draft-two-items")
+
+        let before = BarRendererService.resolvedConfigs.runs
+        let first = self.plan(of: root, drafts: ["items.lua": twoItemDraft(label: "drafted one")])
+        XCTAssertEqual(BarRendererService.resolvedConfigs.runs, before + 1,
+                       "the first plan of a config has to run the Lua")
+
+        let second = self.plan(of: root, drafts: ["items.lua": twoItemDraft(label: "drafted two")])
+        XCTAssertEqual(BarRendererService.resolvedConfigs.runs, before + 1,
+                       "a draft of the app must not run the Lua of the config again")
+
+        XCTAssertEqual(value(first, "two", "label.string"), "drafted one")
+        XCTAssertEqual(value(second, "two", "label.string"), "drafted two",
+                       "the second plan has to show its own draft")
+    }
+
+    /// A file of the config that changed on disk is resolved again.
+    ///
+    /// The resolution is only reused while the files on disk are the same,
+    /// so an edit of the config on disk reaches the bar.
+    func testAFileThatChangedOnDiskIsResolvedAgain() throws {
+        let root = try copyOfFixture("lua-resolve")
+
+        XCTAssertEqual(value(self.plan(of: root), "clock", "label.string"),
+                       "10:00 Liga SFMono Nerd Font")
+
+        let settings = root.appendingPathComponent("settings.lua")
+        let text = try String(contentsOf: settings, encoding: .utf8)
+        try text
+            .replacingOccurrences(of: "Liga SFMono Nerd Font", with: "A Shorter Font")
+            .write(to: settings, atomically: true, encoding: .utf8)
+
+        XCTAssertEqual(value(self.plan(of: root), "clock", "label.string"),
+                       "10:00 A Shorter Font",
+                       "a file that changed on disk has to be resolved again")
     }
 
     // MARK: - The fallback
