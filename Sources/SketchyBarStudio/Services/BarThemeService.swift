@@ -4,10 +4,43 @@ import Foundation
 enum BarThemePattern: Equatable {
     /// A pointer file in `themes/` names a theme `.lua` file.
     case themedPointer(name: String)
-    /// The config has a `themes/` folder but no pointer file.
+    /// A Lua variable holds the name and a computed `require` reads it.
+    case luaVariable(name: String, fileURL: URL, literalRange: Range<Int>)
+    /// A `require("themes.<name>")` call holds the name directly.
+    case literalRequire(name: String, fileURL: URL, literalRange: Range<Int>)
+    /// The config has a `themes/` folder but no theme selection.
     case themedPointerMissing
     /// The config has no `themes/` folder.
     case noThemesFolder
+    /// More than one file or literal names a theme.
+    case ambiguous(String)
+    /// The config is a shell config, which this feature does not edit.
+    case shellConfigUnsupported
+}
+
+/// The exact theme selection a config holds.
+struct BarThemeSelection: Equatable {
+    enum Kind: String, Equatable {
+        case pointerFile
+        case luaVariableRequire
+        case literalRequire
+    }
+
+    let kind: Kind
+    let fileURL: URL
+    let themeName: String
+    /// UTF-8 byte range of the name inside its quotes.
+    let literalRange: Range<Int>
+}
+
+/// The result of reading a config's theme selection, with the reason when
+/// no single selection can be trusted.
+enum BarThemeDetection: Equatable {
+    case selection(BarThemeSelection)
+    case pointerMissing
+    case noThemesFolder
+    case ambiguous(String)
+    case shellConfigUnsupported
 }
 
 /// A top level `key = 0x…` entry of a theme file. The range points at the
@@ -31,6 +64,14 @@ struct BarThemeApplyResult: Equatable {
     let themeName: String
     let wroteThemeFile: Bool
     let wrotePointer: Bool
+    let wroteSelection: Bool
+
+    init(themeName: String, wroteThemeFile: Bool, wrotePointer: Bool, wroteSelection: Bool = false) {
+        self.themeName = themeName
+        self.wroteThemeFile = wroteThemeFile
+        self.wrotePointer = wrotePointer
+        self.wroteSelection = wroteSelection
+    }
 }
 
 enum BarThemeError: LocalizedError, Equatable {
@@ -40,13 +81,16 @@ enum BarThemeError: LocalizedError, Equatable {
     case targetThemeExists(String)
     case invalidThemeName(String)
     case noPreviousTheme
+    case ambiguousSelection(String)
+    case shellConfigUnsupported
+    case selectionChanged
 
     var errorDescription: String? {
         switch self {
         case .noThemesFolder:
             return "This config has no themes folder. Bar theme switching needs a themes/ folder with a theme pointer file."
         case .pointerMissing:
-            return "This config has a themes folder but no pointer file. A pointer file holds one theme name and is not a .lua or .sh file."
+            return "This config has no theme selection. Add a pointer file in themes/, a Lua theme variable with a computed require, or a literal require(\"themes.<name>\")."
         case .activeThemeMissing(let name):
             return "The active theme file themes/\(name).lua is missing or cannot be read."
         case .targetThemeExists(let name):
@@ -55,6 +99,12 @@ enum BarThemeError: LocalizedError, Equatable {
             return "The theme name \"\(name)\" cannot be used as a file name."
         case .noPreviousTheme:
             return "No previous theme is stored for this config."
+        case .ambiguousSelection(let reason):
+            return reason
+        case .shellConfigUnsupported:
+            return "This is a shell config. Bar theme switching supports Lua configs only; a shell config is not supported."
+        case .selectionChanged:
+            return "The theme selection changed or no longer matches the detected literal. The selection was not edited."
         }
     }
 }
@@ -85,16 +135,65 @@ struct BarThemeService {
     }
 
     func detect() -> BarThemePattern {
-        guard isDirectory(themesDirectory) else { return .noThemesFolder }
-        guard let pointer = pointerCandidate() else { return .themedPointerMissing }
-        return .themedPointer(name: pointer.name)
+        switch detectSelection() {
+        case .selection(let selection):
+            switch selection.kind {
+            case .pointerFile:
+                return .themedPointer(name: selection.themeName)
+            case .luaVariableRequire:
+                return .luaVariable(
+                    name: selection.themeName,
+                    fileURL: selection.fileURL,
+                    literalRange: selection.literalRange
+                )
+            case .literalRequire:
+                return .literalRequire(
+                    name: selection.themeName,
+                    fileURL: selection.fileURL,
+                    literalRange: selection.literalRange
+                )
+            }
+        case .pointerMissing:
+            return .themedPointerMissing
+        case .noThemesFolder:
+            return .noThemesFolder
+        case .ambiguous(let reason):
+            return .ambiguous(reason)
+        case .shellConfigUnsupported:
+            return .shellConfigUnsupported
+        }
     }
 
-    /// The theme the pointer names, or nil when the pattern or the file is
-    /// missing.
+    /// Reads the selection and keeps the file and byte range it would rewrite.
+    /// A pointer file wins, then a Lua variable plus computed require, then a
+    /// literal require. More than one Lua candidate is refused.
+    func detectSelection() -> BarThemeDetection {
+        if let pointer = pointerCandidate() {
+            return .selection(pointerSelection(pointer))
+        }
+
+        let candidates = luaSelectionCandidates()
+        if candidates.count == 1, let candidate = candidates.first {
+            return .selection(candidate)
+        }
+        if candidates.count > 1 {
+            return .ambiguous(ambiguityReason(for: candidates))
+        }
+
+        if shellEntrypoint() != nil {
+            return .shellConfigUnsupported
+        }
+        if !isDirectory(themesDirectory) {
+            return .noThemesFolder
+        }
+        return .pointerMissing
+    }
+
+    /// The theme the selection names, or nil when no single selection can be
+    /// trusted.
     func activeTheme() -> BarThemeFile? {
-        guard case let .themedPointer(name) = detect() else { return nil }
-        return themeFile(named: name)
+        guard case .selection(let selection) = detectSelection() else { return nil }
+        return themeFile(named: selection.themeName)
     }
 
     func themeFile(named name: String) -> BarThemeFile? {
@@ -142,14 +241,198 @@ struct BarThemeService {
         return candidates.sorted { $0.url.lastPathComponent < $1.url.lastPathComponent }.first
     }
 
+    private func pointerSelection(_ pointer: (url: URL, name: String)) -> BarThemeSelection {
+        let contents = (try? String(contentsOf: pointer.url, encoding: .utf8)) ?? pointer.name
+        let range = (contents as NSString).range(of: pointer.name)
+        let bytes = Self.byteRange(range, in: contents) ?? 0..<0
+        return BarThemeSelection(
+            kind: .pointerFile,
+            fileURL: pointer.url,
+            themeName: pointer.name,
+            literalRange: bytes
+        )
+    }
+
+    /// Lua files under the config root, except the theme files themselves and
+    /// the backup mirror.
+    private func luaSelectionFiles() -> [URL] {
+        let root = configRoot.standardizedFileURL
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return []
+        }
+
+        var files: [URL] = []
+        for case let url as URL in enumerator {
+            guard url.pathExtension.lowercased() == "lua" else { continue }
+            guard url.standardizedFileURL.path.hasPrefix(root.path + "/") else { continue }
+
+            let relative = url.standardizedFileURL.path.dropFirst(root.path.count + 1)
+            guard let first = relative.split(separator: "/").first?.lowercased(),
+                  first != "themes", first != "backups" else {
+                continue
+            }
+
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                  !isDirectory.boolValue else {
+                continue
+            }
+            files.append(url)
+        }
+        return files.sorted { $0.path < $1.path }
+    }
+
+    private func luaSelectionCandidates() -> [BarThemeSelection] {
+        var selections: [BarThemeSelection] = []
+        for url in luaSelectionFiles() {
+            guard let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            for literal in Self.selectionLiterals(in: contents) {
+                selections.append(BarThemeSelection(
+                    kind: literal.kind,
+                    fileURL: url,
+                    themeName: literal.themeName,
+                    literalRange: literal.literalRange
+                ))
+            }
+        }
+        return selections
+    }
+
+    private func ambiguityReason(for candidates: [BarThemeSelection]) -> String {
+        let paths = Set(candidates.map { $0.fileURL.standardizedFileURL.path })
+        if paths.count > 1 {
+            let names = Array(Set(candidates.map { relativePath(of: $0.fileURL) })).sorted()
+            return "More than one file selects a theme: \(names.joined(separator: ", ")). Refusing to guess."
+        }
+
+        let name = candidates.first.map { relativePath(of: $0.fileURL) } ?? "the config"
+        return "More than one literal in \(name) selects a theme. Refusing to guess."
+    }
+
+    private func relativePath(of url: URL) -> String {
+        let root = configRoot.standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        guard path.hasPrefix(root + "/") else { return url.lastPathComponent }
+        return String(path.dropFirst(root.count + 1))
+    }
+
+    private func shellEntrypoint() -> URL? {
+        let names = ["sketchybarrc", ".sketchybarrc"]
+        return names
+            .map { configRoot.appendingPathComponent($0) }
+            .first { fileManager.fileExists(atPath: $0.path) }
+    }
+
+    private struct SelectionLiteral: Hashable {
+        let kind: BarThemeSelection.Kind
+        let themeName: String
+        let literalRange: Range<Int>
+    }
+
+    private static func selectionLiterals(in source: String) -> [SelectionLiteral] {
+        let ignored = SourceRegions.luaIgnoredRegions(in: source)
+        let fullRange = NSRange(location: 0, length: (source as NSString).length)
+        var literals: [SelectionLiteral] = []
+
+        for match in literalRequireRegex.matches(in: source, range: fullRange) {
+            guard !isIgnored(match.range, in: source, ignored: ignored) else { continue }
+            let name = (source as NSString).substring(with: match.range(at: 2))
+            guard isPlainThemeName(name),
+                  let range = byteRange(match.range(at: 2), in: source) else {
+                continue
+            }
+            literals.append(SelectionLiteral(
+                kind: .literalRequire,
+                themeName: name,
+                literalRange: range
+            ))
+        }
+
+        let assignments: [(name: String, value: String, range: NSRange)] = assignmentRegex
+            .matches(in: source, range: fullRange)
+            .compactMap { match in
+                guard !isIgnored(match.range, in: source, ignored: ignored) else { return nil }
+                return (
+                    (source as NSString).substring(with: match.range(at: 1)),
+                    (source as NSString).substring(with: match.range(at: 3)),
+                    match.range(at: 3)
+                )
+            }
+
+        let computed = computedRequireRegex.matches(in: source, range: fullRange)
+        for match in computed {
+            guard !isIgnored(match.range, in: source, ignored: ignored) else { continue }
+            let variable = (source as NSString).substring(with: match.range(at: 2))
+
+            for assignment in assignments
+            where assignment.name == variable && assignment.range.location < match.range.location {
+                guard isPlainThemeName(assignment.value),
+                      let range = byteRange(assignment.range, in: source) else {
+                    continue
+                }
+                literals.append(SelectionLiteral(
+                    kind: .luaVariableRequire,
+                    themeName: assignment.value,
+                    literalRange: range
+                ))
+            }
+        }
+
+        var seen = Set<SelectionLiteral>()
+        return literals.filter { seen.insert($0).inserted }
+    }
+
+    private static func isPlainThemeName(_ name: String) -> Bool {
+        !name.isEmpty
+            && name == name.trimmingCharacters(in: .whitespacesAndNewlines)
+            && isValidThemeName(name)
+    }
+
+    private static func isIgnored(
+        _ range: NSRange,
+        in source: String,
+        ignored: [SourceRegions.Region]
+    ) -> Bool {
+        guard let stringRange = Range(range, in: source) else { return true }
+        let start = source.distance(from: source.startIndex, to: stringRange.lowerBound)
+        let end = source.distance(from: source.startIndex, to: stringRange.upperBound)
+        return ignored.contains { $0.intersects(start, end) }
+    }
+
+    private static func byteRange(_ range: NSRange, in source: String) -> Range<Int>? {
+        guard let stringRange = Range(range, in: source) else { return nil }
+        let start = source[..<stringRange.lowerBound].utf8.count
+        let end = source[..<stringRange.upperBound].utf8.count
+        return start..<end
+    }
+
+    private static let literalRequireRegex = try! NSRegularExpression(
+        pattern: #"\brequire\s*\(\s*(["'])themes\.([^"'\n]+)\1\s*\)"#
+    )
+
+    private static let computedRequireRegex = try! NSRegularExpression(
+        pattern: #"\brequire\b\s*(?:\(\s*|,\s*)?(["'])themes\.\1\s*\.\.\s*([A-Za-z_][A-Za-z0-9_]*)"#
+    )
+
+    private static let assignmentRegex = try! NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9_.])(?:local\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(["'])([^"'\n]*)\2"#
+    )
+
     // MARK: - Apply
 
     @discardableResult
     func apply(_ palette: BarPalette) throws -> BarThemeApplyResult {
+        let detection = detectSelection()
+        guard case .selection(let selection) = detection else {
+            throw error(for: detection)
+        }
         guard isDirectory(themesDirectory) else { throw BarThemeError.noThemesFolder }
-        guard let pointer = pointerCandidate() else { throw BarThemeError.pointerMissing }
-        guard let active = themeFile(named: pointer.name) else {
-            throw BarThemeError.activeThemeMissing(pointer.name)
+        guard let active = themeFile(named: selection.themeName) else {
+            throw BarThemeError.activeThemeMissing(selection.themeName)
         }
         guard Self.isValidThemeName(palette.displayName) else {
             throw BarThemeError.invalidThemeName(palette.displayName)
@@ -171,36 +454,98 @@ struct BarThemeService {
             wroteThemeFile = true
         }
 
-        let pointerText = try String(contentsOf: pointer.url, encoding: .utf8)
-        let newPointerText = palette.displayName + Self.newlineSuffix(of: pointerText)
         var wrotePointer = false
+        var wroteSelection = false
 
-        if newPointerText != pointerText {
-            try writePointer(newPointerText, at: pointer.url)
-            defaults.set(pointerText, forKey: previousPointerKey)
-            wrotePointer = true
+        switch selection.kind {
+        case .pointerFile:
+            let pointerText = try String(contentsOf: selection.fileURL, encoding: .utf8)
+            let newPointerText = palette.displayName + Self.newlineSuffix(of: pointerText)
+
+            if newPointerText != pointerText {
+                try writePointer(newPointerText, at: selection.fileURL)
+                defaults.set(pointerText, forKey: previousPointerKey)
+                defaults.removeObject(forKey: previousLiteralKey)
+                wrotePointer = true
+            }
+        case .luaVariableRequire, .literalRequire:
+            if selection.themeName != palette.displayName {
+                try rewriteLiteral(selection, to: palette.displayName)
+                let stored = PreviousLiteralSelection(
+                    kind: selection.kind.rawValue,
+                    filePath: selection.fileURL.standardizedFileURL.path,
+                    themeName: selection.themeName
+                )
+                defaults.set(try JSONEncoder().encode(stored), forKey: previousLiteralKey)
+                defaults.removeObject(forKey: previousPointerKey)
+                wroteSelection = true
+            }
         }
 
         return BarThemeApplyResult(
             themeName: palette.displayName,
             wroteThemeFile: wroteThemeFile,
-            wrotePointer: wrotePointer
+            wrotePointer: wrotePointer,
+            wroteSelection: wroteSelection
         )
+    }
+
+    private func rewriteLiteral(_ selection: BarThemeSelection, to name: String) throws {
+        let data = try Data(contentsOf: selection.fileURL)
+        guard selection.literalRange.lowerBound >= 0,
+              selection.literalRange.upperBound <= data.count else {
+            throw BarThemeError.selectionChanged
+        }
+
+        let current = data.subdata(in: selection.literalRange)
+        guard String(data: current, encoding: .utf8) == selection.themeName else {
+            throw BarThemeError.selectionChanged
+        }
+
+        var updated = data
+        updated.replaceSubrange(selection.literalRange, with: Data(name.utf8))
+        guard let contents = String(data: updated, encoding: .utf8) else {
+            throw BarThemeError.selectionChanged
+        }
+        try write(contents, to: selection.fileURL, permissionsFrom: selection.fileURL)
+    }
+
+    private func error(for detection: BarThemeDetection) -> BarThemeError {
+        switch detection {
+        case .selection:
+            return .pointerMissing
+        case .pointerMissing:
+            return .pointerMissing
+        case .noThemesFolder:
+            return .noThemesFolder
+        case .ambiguous(let reason):
+            return .ambiguousSelection(reason)
+        case .shellConfigUnsupported:
+            return .shellConfigUnsupported
+        }
     }
 
     // MARK: - Revert
 
     func previousThemeName() -> String? {
+        if let stored = previousLiteralSelection() {
+            return stored.themeName
+        }
         guard let stored = defaults.string(forKey: previousPointerKey) else { return nil }
         let name = stored.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !name.contains("\n"), !name.contains("\r") else { return nil }
         return name
     }
 
-    /// Puts the pointer file back to the value captured before the last
-    /// apply. The theme files are not touched.
+    /// Puts the selection back to the value captured before the last apply.
+    /// A pointer is restored from its remembered text; a Lua literal is
+    /// rewritten in place. The theme files are not touched.
     @discardableResult
     func restorePreviousTheme() throws -> String {
+        if let stored = previousLiteralSelection() {
+            return try restoreLiteral(stored)
+        }
+
         guard let stored = defaults.string(forKey: previousPointerKey) else {
             throw BarThemeError.noPreviousTheme
         }
@@ -215,6 +560,37 @@ struct BarThemeService {
         }
         defaults.removeObject(forKey: previousPointerKey)
         return name
+    }
+
+    private struct PreviousLiteralSelection: Codable {
+        let kind: String
+        let filePath: String
+        let themeName: String
+    }
+
+    private func previousLiteralSelection() -> PreviousLiteralSelection? {
+        guard let data = defaults.data(forKey: previousLiteralKey),
+              let stored = try? JSONDecoder().decode(PreviousLiteralSelection.self, from: data),
+              Self.isValidThemeName(stored.themeName) else {
+            return nil
+        }
+        return stored
+    }
+
+    private func restoreLiteral(_ stored: PreviousLiteralSelection) throws -> String {
+        guard Self.isValidThemeName(stored.themeName) else {
+            throw BarThemeError.invalidThemeName(stored.themeName)
+        }
+        guard let kind = BarThemeSelection.Kind(rawValue: stored.kind),
+              case .selection(let current) = detectSelection(),
+              current.kind == kind,
+              current.fileURL.standardizedFileURL.path == stored.filePath else {
+            throw BarThemeError.selectionChanged
+        }
+
+        try rewriteLiteral(current, to: stored.themeName)
+        defaults.removeObject(forKey: previousLiteralKey)
+        return stored.themeName
     }
 
     // MARK: - Rendering
@@ -407,6 +783,10 @@ struct BarThemeService {
 
     private var previousPointerKey: String {
         "BarThemeService.previousPointer." + configRoot.standardizedFileURL.path
+    }
+
+    private var previousLiteralKey: String {
+        "BarThemeService.previousLiteral." + configRoot.standardizedFileURL.path
     }
 
     private static func isValidThemeName(_ name: String) -> Bool {

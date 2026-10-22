@@ -346,7 +346,7 @@ private struct BarThemeSettingsTab: View {
                 Button("Apply \(selectedPalette?.displayName ?? "Palette")") {
                     apply()
                 }
-                .disabled(selectedPalette == nil || !hasPointerPattern)
+                .disabled(selectedPalette == nil || !hasSupportedPattern)
 
                 Button("Restore previous theme") {
                     restore()
@@ -378,19 +378,31 @@ private struct BarThemeSettingsTab: View {
         BarPalette.all.first { $0.id == selectedPaletteID }
     }
 
-    private var hasPointerPattern: Bool {
-        if case .themedPointer = pattern { return true }
-        return false
+    private var hasSupportedPattern: Bool {
+        switch pattern {
+        case .themedPointer, .luaVariable, .literalRequire:
+            return true
+        case .themedPointerMissing, .noThemesFolder, .ambiguous, .shellConfigUnsupported:
+            return false
+        }
     }
 
     private var patternDescription: String {
         switch pattern {
         case .themedPointer(let name):
             return "Pointer file names \(name)"
+        case .luaVariable(let name, let fileURL, _):
+            return "Lua variable in \(fileURL.lastPathComponent) names \(name)"
+        case .literalRequire(let name, let fileURL, _):
+            return "Literal require in \(fileURL.lastPathComponent) names \(name)"
         case .themedPointerMissing:
             return "No pointer file in themes/"
         case .noThemesFolder:
             return "No themes/ folder"
+        case .ambiguous(let reason):
+            return reason
+        case .shellConfigUnsupported:
+            return "Shell config (not supported)"
         }
     }
 
@@ -412,7 +424,7 @@ private struct BarThemeSettingsTab: View {
         guard let palette = selectedPalette else { return }
         do {
             let result = try service.apply(palette)
-            if result.wroteThemeFile || result.wrotePointer {
+            if result.wroteThemeFile || result.wrotePointer || result.wroteSelection {
                 status = Status(message: "Applied \(palette.displayName). Reload SketchyBar to see it.", isError: false)
             } else {
                 status = Status(message: "\(palette.displayName) is already active.", isError: false)

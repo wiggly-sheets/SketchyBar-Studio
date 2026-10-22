@@ -378,6 +378,178 @@ final class BarThemeTests: XCTestCase {
         }
     }
 
+        func testDetectFindsLuaVariableRequire() throws {
+        let root = try makeConfigRoot()
+        try writeTheme(name: "Tokyo Night", to: root)
+        try write(
+            """
+            local theme = "Tokyo Night"
+            require("themes." .. theme)
+            """,
+            to: root.appendingPathComponent("bar.lua")
+        )
+
+        let service = makeService(root)
+
+        guard case .selection(let selection) = service.detectSelection() else {
+            return XCTFail("expected a selection")
+        }
+        XCTAssertEqual(selection.kind, .luaVariableRequire)
+        XCTAssertEqual(selection.themeName, "Tokyo Night")
+        XCTAssertEqual(
+            service.detect(),
+            .luaVariable(name: "Tokyo Night", fileURL: selection.fileURL, literalRange: selection.literalRange)
+        )
+    }
+
+    func testApplyRewritesOnlyLiteralAndPreservesQuotes() throws {
+        let root = try makeConfigRoot()
+        try writeTheme(name: "Tokyo Night", to: root)
+        let barURL = root.appendingPathComponent("bar.lua")
+        try write(
+            """
+            local theme = "Tokyo Night"
+            require("themes." .. theme)
+            """,
+            to: barURL
+        )
+
+        let result = try makeService(root).apply(nord)
+
+        XCTAssertEqual(result, BarThemeApplyResult(themeName: "Nord", wroteThemeFile: true, wrotePointer: false, wroteSelection: true))
+        let bar = try String(contentsOf: barURL, encoding: .utf8)
+        XCTAssertTrue(bar.contains("local theme = \"Nord\""))
+        XCTAssertTrue(bar.contains("require(\"themes.\" .. theme)"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("themes/Nord.lua").path))
+    }
+
+    func testDetectFindsLiteralRequire() throws {
+        let root = try makeConfigRoot()
+        try writeTheme(name: "Tokyo Night", to: root)
+        try write("require(\"themes.Tokyo Night\")\n", to: root.appendingPathComponent("bar.lua"))
+
+        let service = makeService(root)
+
+        guard case .selection(let selection) = service.detectSelection() else {
+            return XCTFail("expected a selection")
+        }
+        XCTAssertEqual(selection.kind, .literalRequire)
+        XCTAssertEqual(selection.themeName, "Tokyo Night")
+        XCTAssertEqual(
+            service.detect(),
+            .literalRequire(name: "Tokyo Night", fileURL: selection.fileURL, literalRange: selection.literalRange)
+        )
+    }
+
+    func testApplyRewritesLiteralRequireOnly() throws {
+        let root = try makeConfigRoot()
+        try writeTheme(name: "Tokyo Night", to: root)
+        let barURL = root.appendingPathComponent("bar.lua")
+        try write("require(\"themes.Tokyo Night\")\nload_sbar()\n", to: barURL)
+
+        _ = try makeService(root).apply(nord)
+
+        let bar = try String(contentsOf: barURL, encoding: .utf8)
+        XCTAssertTrue(bar.contains("require(\"themes.Nord\")"))
+        XCTAssertTrue(bar.contains("load_sbar()"))
+    }
+
+    func testAmbiguityRefusedAcrossTwoFiles() throws {
+        let root = try makeConfigRoot()
+        try writeTheme(name: "Tokyo Night", to: root)
+        try write("require(\"themes.Tokyo Night\")\n", to: root.appendingPathComponent("bar.lua"))
+        try write("require(\"themes.Tokyo Night\")\n", to: root.appendingPathComponent("config.lua"))
+
+        let service = makeService(root)
+
+        guard case .ambiguous(let reason) = service.detectSelection() else {
+            return XCTFail("expected ambiguity")
+        }
+        XCTAssertTrue(reason.contains("bar.lua"))
+        XCTAssertTrue(reason.contains("config.lua"))
+        XCTAssertTrue(reason.contains("Refusing to guess"))
+        XCTAssertThrowsError(try service.apply(nord)) { error in
+            XCTAssertEqual(error as? BarThemeError, .ambiguousSelection(reason))
+        }
+    }
+
+    func testAmbiguityRefusedWithinOneFile() throws {
+        let root = try makeConfigRoot()
+        try writeTheme(name: "Tokyo Night", to: root)
+        try writeTheme(name: "Dracula", to: root)
+        try write(
+            """
+            require("themes.Tokyo Night")
+            require("themes.Dracula")
+            """,
+            to: root.appendingPathComponent("bar.lua")
+        )
+
+        let service = makeService(root)
+
+        guard case .ambiguous(let reason) = service.detectSelection() else {
+            return XCTFail("expected ambiguity")
+        }
+        XCTAssertTrue(reason.contains("bar.lua"))
+        XCTAssertTrue(reason.contains("Refusing to guess"))
+    }
+
+    func testPointerPreferredOverLuaVariable() throws {
+        let root = try makeConfigRoot()
+        try writeTheme(name: "Sample", to: root)
+        try write("Sample\n", to: root.appendingPathComponent("themes/current_theme"))
+        try write(
+            """
+            local theme = "Sample"
+            require("themes." .. theme)
+            """,
+            to: root.appendingPathComponent("bar.lua")
+        )
+
+        let service = makeService(root)
+
+        XCTAssertEqual(service.detect(), .themedPointer(name: "Sample"))
+        XCTAssertEqual(service.activeTheme()?.name, "Sample")
+    }
+
+    func testRestoreRestoresLiteralByteForByte() throws {
+        let root = try makeConfigRoot()
+        try writeTheme(name: "Tokyo Night", to: root)
+        let barURL = root.appendingPathComponent("bar.lua")
+        try write(
+            """
+            local theme = "Tokyo Night"
+            require("themes." .. theme)
+            """,
+            to: barURL
+        )
+        let original = try Data(contentsOf: barURL)
+
+        let service = makeService(root)
+        _ = try service.apply(nord)
+        XCTAssertEqual(try String(contentsOf: barURL, encoding: .utf8),
+                       "local theme = \"Nord\"\nrequire(\"themes.\" .. theme)")
+
+        let restored = try service.restorePreviousTheme()
+        XCTAssertEqual(restored, "Tokyo Night")
+        XCTAssertEqual(try Data(contentsOf: barURL), original)
+        XCTAssertNil(service.previousThemeName())
+    }
+
+    func testShellConfigIsRefused() throws {
+        let root = try makeConfigRoot()
+        try write("exec /usr/bin/sketchybar --config \"$HOME/.config/sketchybar\"\n",
+                  to: root.appendingPathComponent(".sketchybarrc"))
+
+        let service = makeService(root)
+
+        XCTAssertEqual(service.detect(), .shellConfigUnsupported)
+        XCTAssertNil(service.activeTheme())
+        XCTAssertThrowsError(try service.apply(nord)) { error in
+            XCTAssertEqual(error as? BarThemeError, .shellConfigUnsupported)
+        }
+    }
+
     // MARK: - Helpers
 
     private var nord: BarPalette {
