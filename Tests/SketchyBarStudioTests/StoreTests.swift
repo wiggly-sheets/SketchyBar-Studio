@@ -349,6 +349,31 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(records[0].loaderEdit?.line, "require(\"plugins.main\")")
     }
 
+    func testMultiFilePluginInstallWritesPrimaryFileOnly() throws {
+        let (service, configRoot, _) = try makeInstallFixture()
+        let entry = makeEntry(
+            id: "multi-test",
+            path: "items/main.lua",
+            files: ["plugins/helper.sh", "plugins/lib/util.lua"]
+        )
+        let mainContents = Data("print('main')\n".utf8)
+
+        // Service-level entry point writes only the primary file.
+        let outcome = try service.installPlugin(entry, contents: mainContents, configRoot: configRoot, configID: "workspace")
+
+        let pluginDir = configRoot.appendingPathComponent("plugins/multi-test")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pluginDir.appendingPathComponent("main.lua").path))
+        XCTAssertEqual(try Data(contentsOf: pluginDir.appendingPathComponent("main.lua")), mainContents)
+
+        // Extra files are not written by the service — the caller must fetch and write them.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pluginDir.appendingPathComponent("helper.sh").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pluginDir.appendingPathComponent("util.lua").path))
+
+        let records = try service.records(configRoot: configRoot, configID: "workspace")
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].installedPath, "plugins/multi-test")
+    }
+
     func testMultiFilePluginUninstallRemovesEntireFolderAndLoaderLine() throws {
         let (service, configRoot, _) = try makeInstallFixture()
         let entry = makeEntry(

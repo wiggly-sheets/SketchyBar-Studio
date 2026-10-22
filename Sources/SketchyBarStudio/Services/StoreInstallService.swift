@@ -219,19 +219,8 @@ struct StoreInstallService {
             try? fileManager.setAttributes([.posixPermissions: existingPermissions], ofItemAtPath: entryTarget.path)
         }
 
-        if isMultiFile {
-            for extraPath in entry.files {
-                guard let extraName = Self.pluginFileName(from: extraPath) else {
-                    throw StoreError.invalidEntry("Multi-file entry has an unsafe path: \(extraPath)")
-                }
-                let extraDestination = try replacer.containedChild(named: extraName, of: directory)
-                let extraTarget = replacer.resolvedFileURL(for: extraDestination)
-                // We don't have the extra file contents here — the caller must fetch them.
-                // For now, we record the expected file and the uninstall will remove the folder.
-                // The actual fetch happens in StoreModel.install before calling this.
-                // This method only writes the primary file; the caller writes extras after.
-            }
-        }
+        // Multi-file extras are written by the caller (StoreModel.install) after
+        // this method returns. This method writes the primary file only.
 
         let relativePath = isMultiFile
             ? "\(Self.pluginDirectoryName)/\(entry.id)/\(entryFileName)"
