@@ -4,6 +4,7 @@ import SwiftUI
 /// manifest-backed install service.
 struct StoreView: View {
     @StateObject private var model: StoreModel
+    @State private var readmeShowsRaw = false
 
     init(configRoot: URL, configID: String, appSupportRoot: URL? = nil) {
         _model = StateObject(wrappedValue: StoreModel(
@@ -26,13 +27,13 @@ struct StoreView: View {
         .onChange(of: model.kind) { _, _ in
             model.selectFirstVisibleEntry()
         }
-        .sheet(item: $model.installCandidate) { entry in
+        .sheet(item: $model.installCandidate, onDismiss: { model.discardStaging() }) { entry in
             StoreInstallSheet(
                 entry: entry,
                 preview: model.previewText,
                 isWorking: model.isWorking
             ) {
-                model.install(entry)
+                Task { await model.install(entry) }
             }
         }
         .alert(
@@ -80,6 +81,7 @@ struct StoreView: View {
             }
             .listStyle(.sidebar)
             .onChange(of: model.selectedID) { _, _ in
+                readmeShowsRaw = false
                 model.loadSelectedPreview()
             }
         }
@@ -93,6 +95,7 @@ struct StoreView: View {
                     header(entry)
                     metadata(entry)
                     preview(entry)
+                    readmeSection(entry)
                     installControls(entry)
                 } else {
                     ContentUnavailableView(
@@ -148,15 +151,7 @@ struct StoreView: View {
             }
             GridRow {
                 Text("Licence").foregroundStyle(.secondary)
-                if let licence = entry.licence {
-                    if let url = URL(string: entry.licenceURL) {
-                        Link(licence.rawValue, destination: url)
-                    } else {
-                        Text(licence.rawValue)
-                    }
-                } else {
-                    Text("No verified licence").foregroundStyle(.orange)
-                }
+                licenceLabel(entry)
             }
             GridRow {
                 Text("Source").foregroundStyle(.secondary)
@@ -174,10 +169,87 @@ struct StoreView: View {
     }
 
     @ViewBuilder
-    private func preview(_ entry: StoreEntry) -> some View {
+    private func licenceLabel(_ entry: StoreEntry) -> some View {
+        if let licence = entry.licence {
+            if let url = URL(string: entry.licenceURL) {
+                Link(licence.rawValue, destination: url)
+            } else {
+                Text(licence.rawValue)
+            }
+        } else {
+            Text("No verified licence").foregroundStyle(.orange)
+        }
+    }
+
+    /// The README sits next to the licence link, so attribution is on screen
+    /// with the text it belongs to.
+    private func readmeSection(_ entry: StoreEntry) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(entry.kind == .plugin ? "File content" : "What is installed")
-                .font(.headline)
+            HStack(spacing: 10) {
+                Text("README").font(.headline)
+                licenceLabel(entry)
+                    .font(.caption)
+
+                Spacer()
+
+                if model.readmeText != nil {
+                    Picker("README view", selection: $readmeShowsRaw) {
+                        Text("Rendered").tag(false)
+                        Text("Raw").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 170)
+                    .accessibilityLabel("README view")
+                }
+            }
+
+            switch model.readme {
+            case .idle, .loading:
+                ProgressView()
+                    .controlSize(.small)
+            case .loaded(let text):
+                ScrollView {
+                    if readmeShowsRaw {
+                        Text(text)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Text(StoreMarkdown.rendered(text))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .frame(maxHeight: 320)
+                .padding(8)
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+            case .unavailable(let url):
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("README unavailable")
+                    Text(url)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .accessibilityLabel("README source URL")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func preview(_ entry: StoreEntry) -> some View {
+        switch entry.kind {
+        case .plugin:
+            pluginPreview
+        case .setup:
+            setupPreview
+        }
+    }
+
+    private var pluginPreview: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("File content").font(.headline)
 
             switch model.preview {
             case .idle, .loading:
@@ -205,6 +277,63 @@ struct StoreView: View {
         }
     }
 
+    private var setupPreview: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Files").font(.headline)
+                Spacer()
+                if case .staged(let files, let total) = model.setup {
+                    Text("\(files.count) files · \(StoreView.byteText(total))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            switch model.setup {
+            case .idle:
+                HStack(spacing: 8) {
+                    Text("Inspect the setup before it is installed.")
+                        .foregroundStyle(.secondary)
+                    Button("Inspect Files") { model.inspectSelectedSetup() }
+                }
+            case .loading:
+                ProgressView()
+                    .controlSize(.small)
+            case .failed(let message):
+                HStack(spacing: 8) {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                    Button("Try Again") { model.inspectSelectedSetup() }
+                }
+            case .staged(let files, _):
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(files) { file in
+                            HStack {
+                                Text(file.path)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .textSelection(.enabled)
+                                Spacer()
+                                Text(StoreView.byteText(file.size))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 220)
+                .padding(8)
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+
+                Text("These files are copied into a new profile. Your config folder is not changed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     @ViewBuilder
     private func installControls(_ entry: StoreEntry) -> some View {
         HStack {
@@ -223,6 +352,10 @@ struct StoreView: View {
             Text("This entry is not installable: no verified permissive licence.")
                 .font(.caption)
                 .foregroundStyle(.orange)
+        } else if entry.kind == .setup && !model.isSetupStaged {
+            Text("Inspect the files first. The same staged tree is used for the install.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -254,6 +387,30 @@ struct StoreView: View {
             }
         }
     }
+
+    static func byteText(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+}
+
+/// Renders README markdown. A parse failure falls back to the plain text, so
+/// a malformed README never leaves an empty pane.
+enum StoreMarkdown {
+    static func rendered(_ text: String) -> AttributedString {
+        rendered(text) { markdown in
+            try AttributedString(
+                markdown: markdown,
+                options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
+            )
+        }
+    }
+
+    static func rendered(
+        _ text: String,
+        parse: (String) throws -> AttributedString
+    ) -> AttributedString {
+        (try? parse(text)) ?? AttributedString(text)
+    }
 }
 
 private struct StoreInstallSheet: View {
@@ -272,7 +429,7 @@ private struct StoreInstallSheet: View {
 
             Text(entry.kind == .plugin
                  ? "This exact file is written into the config folder."
-                 : "The setup is copied into a new profile. Your own config folder is not changed.")
+                 : "The inspected tree is copied into a new profile. Your own config folder is not changed.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -321,11 +478,27 @@ final class StoreModel: ObservableObject {
         case failed(String)
     }
 
+    enum Readme: Equatable {
+        case idle
+        case loading
+        case loaded(String)
+        case unavailable(String)
+    }
+
+    enum Setup: Equatable {
+        case idle
+        case loading
+        case staged(files: [StoreStagedFile], totalBytes: Int64)
+        case failed(String)
+    }
+
     @Published var kind: StoreEntryKind = .plugin {
         didSet { selectFirstVisibleEntry() }
     }
     @Published var selectedID: String?
     @Published var preview: Preview = .idle
+    @Published var readme: Readme = .idle
+    @Published var setup: Setup = .idle
     @Published var records: [StoreInstallRecord] = []
     @Published var installCandidate: StoreEntry?
     @Published var uninstallCandidate: StoreInstallRecord?
@@ -338,11 +511,20 @@ final class StoreModel: ObservableObject {
 
     private let client: StoreClient
     private let installer: StoreInstallService
+    private var previewTask: Task<Void, Never>?
+    /// The inspected tree. Install copies from it instead of fetching again.
+    private(set) var stagedTree: StoreTree?
+    private(set) var stagedEntryID: String?
 
-    init(configRoot: URL, configID: String, appSupportRoot: URL? = nil) {
+    init(
+        configRoot: URL,
+        configID: String,
+        appSupportRoot: URL? = nil,
+        client: StoreClient? = nil
+    ) {
         self.configRoot = configRoot
         self.configID = configID
-        self.client = StoreClient()
+        self.client = client ?? StoreClient()
         self.installer = StoreInstallService(appSupportRoot: appSupportRoot)
         selectFirstVisibleEntry()
     }
@@ -360,36 +542,109 @@ final class StoreModel: ObservableObject {
         return nil
     }
 
+    var readmeText: String? {
+        if case .loaded(let text) = readme { return text }
+        return nil
+    }
+
+    var isSetupStaged: Bool {
+        stagedEntryID != nil && stagedEntryID == selectedID
+    }
+
     func selectFirstVisibleEntry() {
         guard selectedEntry == nil else { return }
         selectedID = visibleEntries.first?.id
     }
 
+    /// Starts the fetch for the selected entry. The staging of the previous
+    /// entry is dropped first, so at most one tree is on disk.
     func loadSelectedPreview() {
-        guard let entry = selectedEntry else {
-            preview = .idle
-            return
-        }
-        Task { await loadPreview(entry) }
+        previewTask?.cancel()
+        discardStaging()
+        preview = .idle
+        readme = .idle
+        guard let entry = selectedEntry else { return }
+        previewTask = Task { await inspect(entry) }
     }
 
-    private func loadPreview(_ entry: StoreEntry) async {
-        guard entry.isInstallable else {
-            preview = .unavailable("No verified permissive licence, so the content is not fetched.")
-            return
+    /// Fetches the README and the plugin content, or stages the setup tree.
+    /// Exposed for tests: no Task is spawned here.
+    func inspect(_ entry: StoreEntry) async {
+        guard selectedID == entry.id else { return }
+
+        readme = .loading
+        if entry.kind == .setup {
+            setup = .loading
+            preview = .unavailable("The setup is staged before it is installed.")
+        } else {
+            preview = .loading
         }
-        guard entry.kind == .plugin else {
-            preview = .unavailable("The setup is fetched when you confirm, then copied into a new profile.")
+
+        guard entry.isInstallable else {
+            readme = .unavailable(entry.rawFileURLString)
+            preview = .unavailable("No verified permissive licence, so the content is not fetched.")
+            setup = .idle
             return
         }
 
-        preview = .loading
-        do {
-            let data = try await client.fetchPluginFile(entry)
-            preview = .text(String(decoding: data, as: UTF8.self))
-        } catch {
-            preview = .failed(message(for: error))
+        let readmeResult = await client.readme(for: entry)
+        guard selectedID == entry.id else { return }
+        switch readmeResult {
+        case .loaded(let readme):
+            self.readme = .loaded(readme.text)
+        case .unavailable(let url):
+            self.readme = .unavailable(url)
         }
+
+        switch entry.kind {
+        case .plugin:
+            do {
+                let data = try await client.fetchPluginFile(entry)
+                guard selectedID == entry.id else { return }
+                preview = .text(String(decoding: data, as: UTF8.self))
+            } catch {
+                guard selectedID == entry.id else { return }
+                preview = .failed(message(for: error))
+            }
+        case .setup:
+            await stage(entry)
+        }
+    }
+
+    func inspectSelectedSetup() {
+        guard let entry = selectedEntry, entry.kind == .setup else { return }
+        Task { await stage(entry) }
+    }
+
+    private func stage(_ entry: StoreEntry) async {
+        guard selectedID == entry.id else { return }
+        do {
+            let tree = try await client.fetchSetupTree(entry)
+            guard selectedID == entry.id else {
+                tree.remove()
+                return
+            }
+            do {
+                let files = try tree.fileList()
+                stagedTree?.remove()
+                stagedTree = tree
+                stagedEntryID = entry.id
+                setup = .staged(files: files, totalBytes: files.reduce(0) { $0 + $1.size })
+            } catch {
+                tree.remove()
+                setup = .failed(message(for: error))
+            }
+        } catch {
+            guard selectedID == entry.id else { return }
+            setup = .failed(message(for: error))
+        }
+    }
+
+    func discardStaging() {
+        stagedTree?.remove()
+        stagedTree = nil
+        stagedEntryID = nil
+        setup = .idle
     }
 
     func canInstall(_ entry: StoreEntry) -> Bool {
@@ -398,7 +653,7 @@ final class StoreModel: ObservableObject {
         case .plugin:
             return previewText != nil
         case .setup:
-            return true
+            return isSetupStaged
         }
     }
 
@@ -408,39 +663,40 @@ final class StoreModel: ObservableObject {
         installCandidate = entry
     }
 
-    func install(_ entry: StoreEntry) {
+    func install(_ entry: StoreEntry) async {
         guard !isWorking else { return }
         isWorking = true
+        defer { isWorking = false }
         errorMessage = ""
-        Task {
-            do {
-                let outcome: StoreInstallOutcome
-                switch entry.kind {
-                case .plugin:
-                    let data = try await client.fetchPluginFile(entry)
-                    outcome = try installer.installPlugin(
-                        entry,
-                        contents: data,
-                        configRoot: configRoot,
-                        configID: configID
-                    )
-                case .setup:
-                    let tree = try await client.fetchSetupTree(entry)
-                    defer { tree.remove() }
-                    outcome = try installer.installSetup(
-                        entry,
-                        tree: tree.contents,
-                        configRoot: configRoot,
-                        configID: configID
-                    )
+
+        do {
+            let outcome: StoreInstallOutcome
+            switch entry.kind {
+            case .plugin:
+                let data = try await client.fetchPluginFile(entry)
+                outcome = try installer.installPlugin(
+                    entry,
+                    contents: data,
+                    configRoot: configRoot,
+                    configID: configID
+                )
+            case .setup:
+                guard let tree = stagedTree, stagedEntryID == entry.id else {
+                    throw StoreError.invalidEntry("Inspect the setup files before installing it.")
                 }
-                statusMessage = status(for: outcome, entry: entry)
-                installCandidate = nil
-                reloadRecords()
-            } catch {
-                errorMessage = message(for: error)
+                outcome = try installer.installSetup(
+                    entry,
+                    tree: tree.contents,
+                    configRoot: configRoot,
+                    configID: configID
+                )
             }
-            isWorking = false
+            statusMessage = status(for: outcome, entry: entry)
+            installCandidate = nil
+            discardStaging()
+            reloadRecords()
+        } catch {
+            errorMessage = message(for: error)
         }
     }
 
