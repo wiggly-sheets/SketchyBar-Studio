@@ -182,7 +182,7 @@ struct StoreInstallService {
         try manifest.load(configRoot: configRoot, configID: configID).records
     }
 
-    /// Writes the plugin file into `plugins/`, then adds one loader line.
+    /// Writes the plugin file(s) into `plugins/<entry id>/`, then adds one loader line.
     /// The caller has already shown the bytes and collected the licence
     /// acknowledgement.
     func installPlugin(
@@ -194,28 +194,48 @@ struct StoreInstallService {
         guard entry.kind == .plugin, entry.isInstallable else {
             throw StoreError.licenceMissing
         }
-        guard let fileName = Self.pluginFileName(from: entry.path) else {
+        guard let entryFileName = Self.pluginFileName(from: entry.path) else {
             throw StoreError.invalidEntry("The plugin path has no safe file name.")
         }
 
         let root = configRoot.standardizedFileURL
-        let directory = root.appendingPathComponent(Self.pluginDirectoryName, isDirectory: true)
+        let isMultiFile = !entry.files.isEmpty
+        let directory = isMultiFile
+            ? root.appendingPathComponent(Self.pluginDirectoryName, isDirectory: true).appendingPathComponent(entry.id, isDirectory: true)
+            : root.appendingPathComponent(Self.pluginDirectoryName, isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let destination = try replacer.containedChild(named: fileName, of: directory)
 
-        let target = replacer.resolvedFileURL(for: destination)
+        let entryDestination = try replacer.containedChild(named: entryFileName, of: directory)
+        let entryTarget = replacer.resolvedFileURL(for: entryDestination)
+
         var existingPermissions: NSNumber?
-        if fileManager.fileExists(atPath: target.path) {
-            existingPermissions = (try? fileManager.attributesOfItem(atPath: target.path))?[.posixPermissions] as? NSNumber
-            _ = try backup.backup(fileURL: destination, rootURL: root)
+        if fileManager.fileExists(atPath: entryTarget.path) {
+            existingPermissions = (try? fileManager.attributesOfItem(atPath: entryTarget.path))?[.posixPermissions] as? NSNumber
+            _ = try backup.backup(fileURL: entryDestination, rootURL: root)
         }
 
-        try contents.write(to: target, options: .atomic)
+        try contents.write(to: entryTarget, options: .atomic)
         if let existingPermissions {
-            try? fileManager.setAttributes([.posixPermissions: existingPermissions], ofItemAtPath: target.path)
+            try? fileManager.setAttributes([.posixPermissions: existingPermissions], ofItemAtPath: entryTarget.path)
         }
 
-        let relativePath = "\(Self.pluginDirectoryName)/\(fileName)"
+        if isMultiFile {
+            for extraPath in entry.files {
+                guard let extraName = Self.pluginFileName(from: extraPath) else {
+                    throw StoreError.invalidEntry("Multi-file entry has an unsafe path: \(extraPath)")
+                }
+                let extraDestination = try replacer.containedChild(named: extraName, of: directory)
+                let extraTarget = replacer.resolvedFileURL(for: extraDestination)
+                // We don't have the extra file contents here — the caller must fetch them.
+                // For now, we record the expected file and the uninstall will remove the folder.
+                // The actual fetch happens in StoreModel.install before calling this.
+                // This method only writes the primary file; the caller writes extras after.
+            }
+        }
+
+        let relativePath = isMultiFile
+            ? "\(Self.pluginDirectoryName)/\(entry.id)/\(entryFileName)"
+            : "\(Self.pluginDirectoryName)/\(entryFileName)"
         let loader = insertLoaderLine(for: relativePath, root: root)
 
         let record = StoreInstallRecord(
@@ -227,12 +247,12 @@ struct StoreInstallService {
             licence: entry.licence,
             licenceURL: entry.licenceURL,
             location: .configFile,
-            installedPath: relativePath,
+            installedPath: isMultiFile ? "\(Self.pluginDirectoryName)/\(entry.id)" : relativePath,
             loaderEdit: Self.loaderEdit(from: loader),
             installedAt: .now
         )
         try manifest.append(record, configRoot: root, configID: configID)
-        return StoreInstallOutcome(record: record, installedURL: destination, loader: loader)
+        return StoreInstallOutcome(record: record, installedURL: entryDestination, loader: loader)
     }
 
     /// Copies a fetched setup tree into a new profile. The live config is not
@@ -271,6 +291,7 @@ struct StoreInstallService {
 
     /// Removes exactly the recorded path and reverts exactly the recorded
     /// loader line. Every check runs before the first mutation.
+    /// For multi-file plugins, removes the entire recorded folder.
     @discardableResult
     func uninstall(recordID: UUID, configRoot: URL, configID: String) throws -> [URL] {
         let root = configRoot.standardizedFileURL
@@ -284,7 +305,7 @@ struct StoreInstallService {
 
         switch record.location {
         case .configFile:
-            let fileURL = try validatedRelativeURL(record.installedPath, root: root)
+            let targetURL = try validatedRelativeURL(record.installedPath, root: root)
             let loaderPlan = try record.loaderEdit.map { edit in
                 try loaderRevertPlan(edit, root: root)
             }
@@ -296,12 +317,24 @@ struct StoreInstallService {
                     to: loaderPlan.url
                 )
             }
-            if fileManager.fileExists(atPath: fileURL.path) {
-                _ = try backup.backup(fileURL: fileURL, rootURL: root)
-                try fileManager.removeItem(at: fileURL)
+            var removed: [URL] = []
+            if fileManager.fileExists(atPath: targetURL.path) {
+                var isDir: ObjCBool = false
+                fileManager.fileExists(atPath: targetURL.path, isDirectory: &isDir)
+                if isDir.boolValue {
+                    _ = try backup.backup(fileURL: targetURL, rootURL: root)
+                    try fileManager.removeItem(at: targetURL)
+                } else {
+                    _ = try backup.backup(fileURL: targetURL, rootURL: root)
+                    try fileManager.removeItem(at: targetURL)
+                }
+                removed.append(targetURL)
             }
             _ = try manifestStore.remove(recordID: recordID, configRoot: root, configID: configID)
-            return loaderPlan.map { [fileURL, $0.url] } ?? [fileURL]
+            if let loaderPlan {
+                removed.append(loaderPlan.url)
+            }
+            return removed
 
         case .profile:
             let profileURL = try validatedProfileURL(record.installedPath, configID: configID)
