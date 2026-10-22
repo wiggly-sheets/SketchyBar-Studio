@@ -247,6 +247,34 @@ final class PreviewResolvedPaneTests: XCTestCase {
                       "the pane has to say that the edit is not shown")
     }
 
+    /// A value the draft adds that the app cannot read is reported too.
+    ///
+    /// The app cannot run the draft, so it cannot read an expression. The
+    /// resolved config has no value for that key, so the pane cannot show
+    /// the edit and has to say so instead of dropping it without a word.
+    func testADraftThatAddsAnUnreadableValueIsReported() throws {
+        let root = fixture("lua-draft-two-items")
+        let draft = """
+        sbar.add("item", "one", {
+        \tposition = "left",
+        \tlabel = { string = "one" },
+        })
+
+        sbar.add("item", "two", {
+        \tposition = "right",
+        \tlabel = { string = "two" },
+        \ticon = { color = colors.red },
+        })
+        """
+
+        let plan = self.plan(of: root, drafts: ["items.lua": draft])
+
+        XCTAssertTrue(plan.warnings.contains { $0.contains("'icon.color'") },
+                      "the pane has to name the value it cannot show")
+        XCTAssertNil(value(plan, "two", "icon.color"),
+                     "the app cannot read the expression, so the preview cannot show the value")
+    }
+
     /// A draft of an item that the resolved config does not have is
     /// reported.
     ///

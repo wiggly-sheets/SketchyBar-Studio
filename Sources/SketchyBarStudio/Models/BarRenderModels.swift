@@ -174,6 +174,12 @@ extension BarRenderItemModel {
                                                 value: PreviewValue.drafted(drafted.value, keyPath: drafted.key)))
         }
 
+        // A value the draft adds that the app cannot read is not shown
+        // either, so the pane says so as well.
+        for unreadable in draft.unreadable where !properties.contains(where: { $0.key == unreadable.keyPath }) {
+            warnings.append(PreviewWarning.draftValueUnreadable(unreadable, alias: alias))
+        }
+
         return BarRenderItemModel(alias: alias,
                                    properties: properties,
                                    addPosition: addPosition,
