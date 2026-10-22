@@ -75,6 +75,44 @@ installable. It may be listed, but `licence` is nil, every fetch refuses it, and
 the UI marks it "No verified licence". The app never guesses a licence from a
 `README`, a package manifest or a username.
 
+## README in the detail pane
+
+Selecting an entry fetches one README, in this order:
+
+1. `README.md` in the directory of the entry. A setup path is that directory;
+   a plugin path is a file, so its parent directory is used.
+2. `README.md` at the repository root.
+3. `readme.md` at the repository root.
+4. `README` at the repository root.
+
+The first file that answers is shown; a 404 moves to the next candidate. The
+fetch is capped at 256 KB and cached in memory for the (entry id, ref) pair, so
+returning to an entry does not fetch it again. A failed lookup is cached too.
+When nothing answers, the pane shows "README unavailable" and the last source
+URL it tried; it never shows an empty area.
+
+The README is rendered as Markdown with `AttributedString(markdown:)`, with a
+Rendered/Raw switch. If parsing fails, the plain text is shown instead. A
+README is untrusted text: it is rendered as text, never executed, and no link
+or code block is turned into a shell command. The licence name and link sit in
+the README header as well as in the metadata rows.
+
+## Setup staging
+
+Selecting a setup fetches its tarball once into a temporary staging directory.
+The detail pane shows the README, the list of files with their sizes and the
+total. If the tarball breaks a limit, the refusal is shown in place of the file
+list, with a Try Again button.
+
+The staged tree is the one that is installed: confirming the install copies
+from that same directory, so the tarball is not fetched twice. The staging
+directory is discarded when the detail selection changes and when the install
+sheet is dismissed. A setup cannot be installed until it is staged, and the
+Inspect Files button stages it again after a dismissal.
+
+A plugin keeps its single-file content preview, and its README is shown below
+that preview.
+
 ## Security policy
 
 - Downloaded code is **never executed by the app**. The app writes bytes and
@@ -117,13 +155,18 @@ still works offline, because it comes from the local manifest.
 ## Limits
 
 - 20 MB per download. The transport aborts past the cap instead of buffering
-  it.
+  it. The same cap applies to the staged setup tree, because the staging fetch
+  uses the same archive path.
+- 256 KB per README. A larger file is reported as unavailable instead of
+  rendering.
 - 2000 files per archive, and 200 MB unpacked.
 - 30 second request timeout.
 - No GitHub token and no API calls, so the anonymous rate limit does not apply
   and there is no secret to store.
 - No branch refs. Tags and commits only.
 - A plugin entry is one file. Everything else is a setup.
+- README lookups are cached per (entry id, ref) for the life of the window;
+  there is no on-disk cache.
 - The tar listing is line-based, so an archive member whose name contains a
   newline is not fully validated. The catalogue pins one reviewed repository
   per entry, so the input is an allowlist; upgrade to a tar parser before
