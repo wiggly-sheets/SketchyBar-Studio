@@ -9,12 +9,17 @@ struct ContentView: View {
     @State private var showsDiagnostics = false
     @State private var showsDuplicates = false
     @State private var showsAddItem = false
+    @State private var showsStore = false
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView(store: store)
+            SidebarView(store: store, onOpenStore: { showsStore = true })
         } detail: {
-            DetailView(store: store)
+            if showsStore {
+                StoreView(configRoot: store.configRoot, configID: store.selectedConfigProfileID)
+            } else {
+                DetailView(store: store)
+            }
         }
         .tint(store.appTheme.accent)
         .preferredColorScheme(.dark)
@@ -122,6 +127,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showsDuplicates) {
             DuplicatesView(rootURL: store.configRoot)
+        }
+        .onChange(of: store.selectedFileID) { _, newValue in
+            if newValue != nil { showsStore = false }
         }
         .sheet(isPresented: $showsAddItem) {
             AddItemWizard(store: store)
