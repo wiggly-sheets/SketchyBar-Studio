@@ -300,41 +300,45 @@ private struct BarThemeSettingsTab: View {
                 }
             }
 
-            Section("Palettes") {
-                ForEach(BarPalette.all) { palette in
-                    Button {
-                        selectedPaletteID = palette.id
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: palette.id == selectedPaletteID ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(palette.id == selectedPaletteID ? Color.accentColor : Color.secondary)
+            Section("Palette Preview") {
+                PalettePreviewView(palette: selectedPalette)
+            }
 
-                            VStack(alignment: .leading, spacing: 2) {
+            Section("Palettes") {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 200), spacing: 8)],
+                    alignment: .leading,
+                    spacing: 4
+                ) {
+                    ForEach(BarPalette.all) { palette in
+                        Button {
+                            selectedPaletteID = palette.id
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: palette.id == selectedPaletteID ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(palette.id == selectedPaletteID ? Color.accentColor : Color.secondary)
+
                                 Text(palette.displayName)
-                                Text(palette.isDark ? "\(palette.family) · Dark" : "\(palette.family) · Light")
-                                    .font(.caption)
+                                    .lineLimit(1)
+
+                                Spacer(minLength: 0)
+
+                                Text(palette.isDark ? "Dark" : "Light")
+                                    .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
-
-                            Spacer()
-
-                            HStack(spacing: 3) {
-                                ForEach(Array(palette.swatches.enumerated()), id: \.offset) { _, hex in
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(Color(hexLike: hex))
-                                        .frame(width: 14, height: 14)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 2)
-                                                .stroke(.quaternary, lineWidth: 0.5)
-                                        )
-                                }
-                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(
+                                palette.id == selectedPaletteID ? Color.accentColor.opacity(0.12) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 5)
+                            )
+                            .contentShape(Rectangle())
                         }
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Select \(palette.displayName)")
+                        .help("\(palette.family) · \(palette.licence) · \(palette.sourceURL)")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Select \(palette.displayName)")
-                    .help("\(palette.family) · \(palette.licence) · \(palette.sourceURL)")
                 }
             }
 
