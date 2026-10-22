@@ -431,9 +431,21 @@ actor BarRendererService {
     static func plan(for request: BarRenderRequest) -> BarRenderPlan {
         let parsed = parserPlan(for: request.files)
 
-        guard let root = request.root,
-              let entrypoint = LuaConfigRunner.entrypoint(in: root) else {
-            return parsed
+        guard let root = request.root else { return parsed }
+
+        // A config without a Lua entrypoint, such as a shell config, has no
+        // path but the parser. The pane has to say why it shows the values
+        // the parser can read.
+        guard let entrypoint = LuaConfigRunner.entrypoint(in: root) else {
+            var warnings = parsed.warnings
+            warnings.append(PreviewWarning.luaFallback(PreviewWarning.noLuaEntrypoint()))
+            if request.filesAreInFileOrder {
+                warnings.append(PreviewWarning.fileOrder())
+            }
+            return BarRenderPlan(defaults: parsed.defaults,
+                                 bar: parsed.bar,
+                                 items: parsed.items,
+                                 warnings: warnings)
         }
 
         do {

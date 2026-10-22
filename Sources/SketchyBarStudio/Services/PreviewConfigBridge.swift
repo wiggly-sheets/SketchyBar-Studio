@@ -71,7 +71,7 @@ enum PreviewConfigBridge {
         guard let entrypoint = LuaConfigRunner.entrypoint(in: root) else {
             return fallback(
                 for: root,
-                reason: "The config has no Lua entrypoint."
+                reason: PreviewWarning.noLuaEntrypoint()
             )
         }
 
@@ -556,6 +556,16 @@ enum PreviewWarning {
     /// The config was not resolved with Lua, so the parser path was used.
     static func luaFallback(_ reason: String) -> String {
         "The config was not resolved with Lua, so the preview shows the values the parser can read. \(reason)"
+    }
+
+    /// The config has no Lua file to run.
+    ///
+    /// The runner runs the `sketchybarrc` when that file is Lua and the
+    /// `init.lua` of the config otherwise, so a config without either has
+    /// no Lua entrypoint. Such a config is a shell config, and the parser
+    /// path is the only path for it.
+    static func noLuaEntrypoint() -> String {
+        "The config has no Lua entrypoint: its 'sketchybarrc' is not a Lua file and it has no 'init.lua'."
     }
 
     /// The file the Lua path ran.

@@ -276,8 +276,12 @@ final class PreviewResolvedPaneTests: XCTestCase {
                        "the parser reads no item of the broken config")
     }
 
-    /// A shell config keeps the path of the parser, and the pane says that
-    /// the items are in the order of the files.
+    /// A shell config keeps the path of the parser, and the pane says why.
+    ///
+    /// The config has no Lua entrypoint, so the parser is the only path
+    /// for it. The values on the bar are the values the parser can read,
+    /// and the pane has to say that instead of showing them as the values
+    /// of the config.
     func testAShellConfigKeepsThePathOfTheParser() throws {
         let root = fixture("lua-shell")
         let plan = self.plan(of: root)
@@ -285,6 +289,21 @@ final class PreviewResolvedPaneTests: XCTestCase {
         XCTAssertEqual(aliases(plan), ["shell"],
                        "the parser reads the item of the shell config")
         XCTAssertEqual(value(plan, "shell", "label"), "shell")
+        XCTAssertTrue(plan.warnings.contains { $0.contains("not resolved with Lua") },
+                      "the pane has to say that the config was not resolved")
+        XCTAssertTrue(plan.warnings.contains { $0.contains("no Lua entrypoint") },
+                      "the pane has to name the reason the config was not resolved")
+    }
+
+    /// The pane says why a shell config is read by the parser.
+    ///
+    /// The warning of the plan is the warning of the pane: the render
+    /// keeps the warnings of the plan and the pane shows them.
+    func testThePaneSaysWhyAShellConfigIsReadByTheParser() async throws {
+        let result = try await BarRendererService.shared.render(request(of: fixture("lua-shell")))
+
+        XCTAssertTrue(result.warnings.contains { $0.contains("no Lua entrypoint") },
+                      "the pane has to name the reason the parser read the config")
     }
 
     /// A config that is not open is rendered in the order of its files when
