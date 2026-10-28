@@ -1298,6 +1298,7 @@ final class SketchyBarStore: ObservableObject {
     /// structured values only.
     private func scheduleLiveBarPush() {
         guard liveUpdateMode == .whileEditing else { return }
+        guard isSelectedConfigLive else { return }
         liveBarDebouncer.schedule { [weak self] in
             Task { @MainActor in
                 self?.requestLiveBarPush(structuredOnly: true)

@@ -334,7 +334,10 @@ actor BarRendererService {
             stopLiveValuesTimer()
             return
         }
-        guard let plan = livePlan, let display = liveDisplay else { return }
+        guard let plan = livePlan, let display = liveDisplay else {
+            stopLiveValuesTimer()
+            return
+        }
 
         // A config without a script has nothing to run: the tick skips it
         // instead of building a tree and a directory for nothing.
@@ -442,7 +445,10 @@ actor BarRendererService {
     /// the config was not resolved.
     static func plan(for request: BarRenderRequest) -> BarRenderPlan {
         guard let root = request.root else {
-            return parserPlan(for: request.files)
+            return parserFallback(
+                for: request,
+                reason: PreviewWarning.noLuaEntrypoint()
+            )
         }
 
         guard let entrypoint = LuaConfigRunner.entrypoint(in: root) else {
@@ -606,6 +612,11 @@ final class ResolvedPlanCache: @unchecked Sendable {
     /// the cache. Two renders of the same changed root can therefore run
     /// the Lua twice; they are the same request, so the second run only
     /// replaces the first.
+    ///
+    /// All runs are cached (success and failure). A failed run is kept so
+    /// the pane does not retry the Lua on every keystroke. A change to a
+    /// file of the config is a new signature, so a config the user fixed on
+    /// disk is resolved again.
     func plan(for root: String,
               signature: Int,
               run: () throws -> BarRenderPlan) throws -> BarRenderPlan {
@@ -615,10 +626,12 @@ final class ResolvedPlanCache: @unchecked Sendable {
 
         let result = Result { try run() }
 
+        // Increment run counter for every attempt, then cache the result.
         lock.lock()
-        entries[root] = Entry(signature: signature, result: result)
         runsByRoot[root, default: 0] += 1
+        entries[root] = Entry(signature: signature, result: result)
         lock.unlock()
+
         return try result.get()
     }
 

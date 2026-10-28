@@ -354,8 +354,27 @@ struct StoreInstallService {
     }
 
     private func insertLoaderLine(for relativePath: String, root: URL) -> StoreLoaderOutcome {
+        // The loader path is the relative path with the leading "plugins/"
+        // stripped, so a multi-file plugin at plugins/<id>/<file> becomes
+        // <id>/<file> and a single-file plugin at plugins/<file> stays <file>.
+        let loaderPath = relativePath.hasPrefix("plugins/")
+            ? String(relativePath.dropFirst("plugins/".count))
+            : relativePath
         let fileName = (relativePath as NSString).lastPathComponent
-        guard let line = Self.loaderLine(forFileNamed: fileName) else {
+        let nsName = fileName as NSString
+        let line: String?
+        switch nsName.pathExtension.lowercased() {
+        case "lua":
+            let module = "plugins." + (loaderPath as NSString)
+                .deletingPathExtension
+                .replacingOccurrences(of: "/", with: ".")
+            line = "require(\"\(module)\")"
+        case "sh", "bash", "zsh":
+            line = "source \"$CONFIG_DIR/plugins/\(loaderPath)\""
+        default:
+            line = nil
+        }
+        guard let line else {
             return .manual(
                 line: "No loader line is known for \(fileName).",
                 reason: "The app only knows how to load .lua and shell plugin files."

@@ -36,7 +36,20 @@ struct ShellConfigScanner {
     func scan(fileURL: URL, contents: String) -> [LuaEditableValue] {
         // A `sketchybarrc` can hold Lua code. The Lua scanner knows the Lua
         // syntax, so the shell quoting never touches it.
-        if LuaSourceDetection.isLua(contents) {
+        // Check extension first to avoid misrouting .sh files with "require(".
+        let ext = fileURL.pathExtension.lowercased()
+        let fileName = fileURL.lastPathComponent.lowercased()
+        let isLuaFile: Bool
+            if ext == "lua" {
+                isLuaFile = true
+            } else if ext == "sh" || ext == "bash" || ext == "zsh" {
+                isLuaFile = false
+            } else if fileName == "sketchybarrc" || fileName == ".sketchybarrc" {
+                isLuaFile = LuaSourceDetection.isLua(contents)
+            } else {
+                isLuaFile = LuaSourceDetection.isLua(contents)
+            }
+        if isLuaFile {
             return LuaConfigScanner().scan(fileURL: fileURL, contents: contents)
         }
 
@@ -130,7 +143,19 @@ struct ShellConfigScanner {
         let changedValues = values.filter { $0.draftValue != $0.originalValue && !$0.isMissingFromFile }
         guard !changedValues.isEmpty else { return }
         var contents = try String(contentsOf: fileURL, encoding: .utf8)
-        if LuaSourceDetection.isLua(contents) {
+        let ext = fileURL.pathExtension.lowercased()
+        let fileName = fileURL.lastPathComponent.lowercased()
+        let isLuaFile: Bool
+            if ext == "lua" {
+                isLuaFile = true
+            } else if ext == "sh" || ext == "bash" || ext == "zsh" {
+                isLuaFile = false
+            } else if fileName == "sketchybarrc" || fileName == ".sketchybarrc" {
+                isLuaFile = LuaSourceDetection.isLua(contents)
+            } else {
+                isLuaFile = LuaSourceDetection.isLua(contents)
+            }
+        if isLuaFile {
             try LuaConfigScanner().save(values: values, to: fileURL, rootURL: rootURL)
             return
         }
@@ -155,6 +180,8 @@ struct ShellConfigScanner {
     /// The contents the file would have with the drafts applied. This is the
     /// exact text the save writes.
     func updatedContents(values: [LuaEditableValue], originalContents: String) -> String {
+        // We don't have fileURL here, so we rely on content detection for this path.
+        // The caller should ensure the file extension check is done before calling.
         if LuaSourceDetection.isLua(originalContents) {
             return LuaConfigScanner().updatedContents(values: values, originalContents: originalContents)
         }

@@ -161,7 +161,7 @@ public struct ShellDiagnosticService: Sendable {
         // Check for missing file references in script paths
         // Look for script= or background.script= in the parsed items
         for item in commands.items {
-            for value in item.values {
+            for (index, value) in item.values.enumerated() {
                 if value.keyPath.hasSuffix("script") || value.keyPath.hasSuffix("background.script") {
                     let scriptPath = value.rawValue
                     if isMissingFile(scriptPath, relativeTo: file) {
@@ -172,7 +172,7 @@ public struct ShellDiagnosticService: Sendable {
                             title: "Missing script file '\(scriptPath)'",
                             detail: "The script path points at a file that does not exist.",
                             fileURL: file,
-                            line: item.values.first { $0.keyPath == value.keyPath }.flatMap { _ in item.values.firstIndex(where: { $0.keyPath == value.keyPath }) }.map { $0 + 1 },
+                            line: value.valueStartOffset > 0 ? lineNumberAtOffset(contents, offset: value.valueStartOffset) : nil,
                             keyPath: value.keyPath
                         ))
                     }
@@ -266,5 +266,12 @@ public struct ShellDiagnosticService: Sendable {
             return nil
         }
         return String(string[captureRange])
+    }
+
+    /// Returns the 1-based line number of the character at the given offset in the source.
+    private func lineNumberAtOffset(_ source: String, offset: Int) -> Int {
+        guard offset >= 0, offset <= source.count else { return 1 }
+        let prefix = source.prefix(offset)
+        return prefix.filter { $0 == "\n" }.count + 1
     }
 }

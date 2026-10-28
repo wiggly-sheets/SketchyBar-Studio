@@ -95,6 +95,13 @@ enum LuaConfigRunner {
                 return message
             }
         }
+
+        /// True when the failure is a timeout. Timeout failures are cached
+        /// to avoid hammering the sandbox on every keystroke.
+        var isTimeout: Bool {
+            if case .timedOut = self { return true }
+            return false
+        }
     }
 
     /// The file that starts the config.
@@ -112,6 +119,11 @@ enum LuaConfigRunner {
         let rc = root.appendingPathComponent("sketchybarrc")
         if let contents = try? String(contentsOf: rc, encoding: .utf8), LuaSourceDetection.isLua(contents) {
             return rc
+        }
+
+        let dotRc = root.appendingPathComponent(".sketchybarrc")
+        if let contents = try? String(contentsOf: dotRc, encoding: .utf8), LuaSourceDetection.isLua(contents) {
+            return dotRc
         }
 
         let initFile = root.appendingPathComponent("init.lua")

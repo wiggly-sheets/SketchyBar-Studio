@@ -72,7 +72,10 @@ struct DuplicateFinder: Sendable {
 
         for file in SketchyBarConfigLocator().configFiles(in: root) {
             let ext = file.pathExtension.lowercased()
-            guard ext == "lua" || ext == "sh" || ext == "bash" || ext == "zsh" else { continue }
+            let fileName = file.lastPathComponent.lowercased()
+            let isConfigFile = ext == "lua" || ext == "sh" || ext == "bash" || ext == "zsh" ||
+                               fileName == "sketchybarrc" || fileName == ".sketchybarrc"
+            guard isConfigFile else { continue }
             guard result.count < Self.maximumFiles else { break }
 
             let relativePath = Self.relativePath(of: file, from: root)
@@ -97,8 +100,11 @@ struct DuplicateFinder: Sendable {
         relativePath: String,
         contents: String
     ) -> ItemSignature? {
-        // Check if it's a Lua file
-        if LuaSourceDetection.isLua(contents) || file.pathExtension.lowercased() == "lua" {
+        // Check if it's a Lua file - extension first to avoid misrouting .sh files
+        let ext = file.pathExtension.lowercased()
+        let fileName = file.lastPathComponent.lowercased()
+        let isLuaFile = ext == "lua" || fileName == "sketchybarrc" || fileName == ".sketchybarrc" || LuaSourceDetection.isLua(contents)
+        if isLuaFile {
             let items = SbarLuaItemParser.items(in: contents)
             guard !items.isEmpty else { return nil }
 

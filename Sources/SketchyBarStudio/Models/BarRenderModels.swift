@@ -74,7 +74,12 @@ struct BarRenderDraft: Hashable {
         if let item = items.first(where: { $0.origin == origin && $0.alias == alias }) {
             return item
         }
-        return items.first(where: { $0.origin.file == origin.file && $0.alias == alias })
+        // Fallback: match by file + alias only, but only if unambiguous.
+        // If multiple draft items share the same alias in the same file,
+        // we cannot know which one corresponds to the resolved item.
+        let candidates = items.filter { $0.origin.file == origin.file && $0.alias == alias }
+        guard candidates.count == 1 else { return nil }
+        return candidates.first
     }
 }
 

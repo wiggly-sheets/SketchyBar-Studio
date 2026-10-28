@@ -346,7 +346,7 @@ final class StoreTests: XCTestCase {
         let records = try service.records(configRoot: configRoot, configID: "workspace")
         XCTAssertEqual(records.count, 1)
         XCTAssertEqual(records[0].installedPath, "plugins/multi-test")
-        XCTAssertEqual(records[0].loaderEdit?.line, "require(\"plugins.main\")")
+        XCTAssertEqual(records[0].loaderEdit?.line, "require(\"plugins.multi-test.main\")")
     }
 
     func testMultiFilePluginInstallWritesPrimaryFileOnly() throws {
@@ -464,6 +464,41 @@ final class StoreTests: XCTestCase {
         } catch {
             XCTFail("unexpected error: \(error)")
         }
+    }
+
+    @MainActor
+    func testMultiFilePluginRollbackOnExtraFetchFailure() async throws {
+        // Build the entry with one extra file.
+        let entry = makeEntry(
+            id: "multi-rollback",
+            path: "items/main.lua",
+            files: ["plugins/extra.lua"]
+        )
+
+        // Transport succeeds for the main file but fails for the extra.
+        let transport = RecordingTransport(routes: [
+            rawURL("items/main.lua", entry): .data(Data("print('main')\n".utf8)),
+            rawURL("plugins/extra.lua", entry): .error(.notFound),
+        ])
+        let client = StoreClient(transport: transport)
+        let fixture = try makeModelFixture()
+        let model = fixture.model(transport: transport, client: client, dependencyService: StoreDependencyService(), userDefaults: nil)
+
+        await model.inspect(entry)
+        model.beginInstall(entry)
+        await model.install(entry)
+
+        // Install should fail with the extra file error.
+        XCTAssertTrue(model.errorMessage.contains("not at the pinned ref") || model.errorMessage.contains("The file path is unsafe") || model.errorMessage.contains("invalidEntry") || model.errorMessage.contains("not found"))
+
+        // Verify rollback: no plugin folder, no loader line, no manifest record.
+        let pluginDir = fixture.configRoot.appendingPathComponent("plugins/multi-rollback")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: pluginDir.path), "plugin folder should be removed on rollback")
+        let initContents = try String(contentsOf: fixture.configRoot.appendingPathComponent("init.lua"), encoding: .utf8)
+        XCTAssertEqual(initContents, "require(\"bar\")\n", "loader line should be reverted on rollback")
+        let service = StoreInstallService(appSupportRoot: fixture.supportRoot)
+        let records = try service.records(configRoot: fixture.configRoot, configID: "workspace")
+        XCTAssertTrue(records.isEmpty, "manifest record should be removed on rollback")
     }
 
     // MARK: - Setup install and uninstall

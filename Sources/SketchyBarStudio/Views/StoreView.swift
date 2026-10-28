@@ -30,8 +30,8 @@ struct StoreView: View {
             model.selectFirstVisibleEntry()
         }
         .sheet(item: $model.installCandidate, onDismiss: { model.discardStaging() }) { entry in
-            StoreInstallSheet(model: model, entry: entry) {
-                Task { await model.install(entry) }
+            StoreInstallSheet(model: model, entry: entry) { policy in
+                Task { await model.install(entry, policyOverride: policy) }
             }
         }
         .sheet(item: $model.resolveCandidate, onDismiss: { model.cancelResolve() }) { unresolved in
@@ -427,7 +427,7 @@ struct StoreDependencyUnresolved: Identifiable {
 private struct StoreInstallSheet: View {
     @ObservedObject var model: StoreModel
     let entry: StoreEntry
-    let onConfirm: () -> Void
+    let onConfirm: (StoreDependencyPolicy?) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var accepted = false
@@ -505,7 +505,7 @@ private struct StoreInstallSheet: View {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Install") {
-                    onConfirm()
+                    onConfirm(overridePolicy)
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!accepted || model.isWorking || installBlocked)
@@ -939,7 +939,7 @@ final class StoreModel: ObservableObject {
         installCandidate = entry
     }
 
-    func install(_ entry: StoreEntry) async {
+    func install(_ entry: StoreEntry, policyOverride: StoreDependencyPolicy? = nil) async {
         guard !isWorking else { return }
         isWorking = true
         defer { isWorking = false }
@@ -956,7 +956,7 @@ final class StoreModel: ObservableObject {
             self.dependencyCheckState = .checked
 
             // Check for required deps that are missing and cannot be auto-installed.
-            let policy = dependencyPolicy
+            let policy = policyOverride ?? dependencyPolicy
             let missingRequired = zip(entry.dependencies, presences).compactMap { dep, status -> StoreDependency? in
                 if dep.required && status == .missing {
                     // If automatic, we'll try to install formula/cask deps.
@@ -1001,16 +1001,24 @@ final class StoreModel: ObservableObject {
                     configID: configID
                 )
                 // For multi-file plugins, fetch and write each additional file.
+                // If any fetch fails, roll back the primary file, loader line,
+                // and manifest record so the user is not left with a partial
+                // install.
                 if !entry.files.isEmpty {
                     let root = configRoot.standardizedFileURL
                     let pluginDir = root.appendingPathComponent("plugins/\(entry.id)", isDirectory: true)
-                    for extraPath in entry.files {
-                        guard let extraName = StoreInstallService.pluginFileName(from: extraPath) else {
-                            throw StoreError.invalidEntry("Multi-file entry has an unsafe path: \(extraPath)")
+                    do {
+                        for extraPath in entry.files {
+                            guard let extraName = StoreInstallService.pluginFileName(from: extraPath) else {
+                                throw StoreError.invalidEntry("Multi-file entry has an unsafe path: \(extraPath)")
+                            }
+                            let extraData = try await client.fetchFile(entry, path: extraPath)
+                            let extraDestination = pluginDir.appendingPathComponent(extraName)
+                            try extraData.write(to: extraDestination, options: .atomic)
                         }
-                        let extraData = try await client.fetchFile(entry, path: extraPath)
-                        let extraDestination = pluginDir.appendingPathComponent(extraName)
-                        try extraData.write(to: extraDestination, options: .atomic)
+                    } catch {
+                        try installer.uninstall(recordID: outcome.record.id, configRoot: configRoot, configID: configID)
+                        throw error
                     }
                 }
             case .setup:
