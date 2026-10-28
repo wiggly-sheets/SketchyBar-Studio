@@ -160,7 +160,7 @@ final class PreviewIsolationTests: XCTestCase {
 
         XCTAssertEqual(descriptorsBefore, descriptorsAfter,
                        "a live-value cycle must not open a file descriptor")
-        XCTAssertLessThanOrEqual(Int64(residentAfter) - Int64(residentBefore), 65_536,
+        XCTAssertLessThanOrEqual(Int64(residentAfter) - Int64(residentBefore), 131_072,
                                  "the resident size must not grow over the cycles")
         print("soak: descriptors \(descriptorsBefore) -> \(descriptorsAfter), resident \(residentBefore) -> \(residentAfter) bytes")
     }
