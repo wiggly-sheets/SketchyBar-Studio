@@ -208,37 +208,20 @@ struct BarThemeService {
     }
 
     private func pointerCandidate() -> (url: URL, name: String)? {
-        guard let files = try? fileManager.contentsOfDirectory(
-            at: themesDirectory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else {
+        let pointerURL = themesDirectory.appendingPathComponent(Self.pointerFileName)
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: pointerURL.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              let contents = try? String(contentsOf: pointerURL, encoding: .utf8) else {
             return nil
         }
 
-        let candidates: [(url: URL, name: String)] = files.compactMap { url in
-            let ext = url.pathExtension.lowercased()
-            guard ext != "lua", ext != "sh" else { return nil }
-
-            var isDirectory: ObjCBool = false
-            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory),
-                  !isDirectory.boolValue,
-                  let contents = try? String(contentsOf: url, encoding: .utf8) else {
-                return nil
-            }
-
-            let name = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty, !name.contains("\n"), !name.contains("\r"),
-                  Self.isValidThemeName(name) else {
-                return nil
-            }
-            return (url, name)
+        let name = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.contains("\n"), !name.contains("\r"),
+              Self.isValidThemeName(name) else {
+            return nil
         }
-
-        if let named = candidates.first(where: { $0.url.lastPathComponent == Self.pointerFileName }) {
-            return named
-        }
-        return candidates.sorted { $0.url.lastPathComponent < $1.url.lastPathComponent }.first
+        return (pointerURL, name)
     }
 
     private func pointerSelection(_ pointer: (url: URL, name: String)) -> BarThemeSelection {
@@ -290,7 +273,7 @@ struct BarThemeService {
         var selections: [BarThemeSelection] = []
         for url in luaSelectionFiles() {
             guard let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            for literal in Self.selectionLiterals(in: contents) {
+            for literal in selectionLiterals(in: contents) {
                 selections.append(BarThemeSelection(
                     kind: literal.kind,
                     fileURL: url,
@@ -333,16 +316,17 @@ struct BarThemeService {
         let literalRange: Range<Int>
     }
 
-    private static func selectionLiterals(in source: String) -> [SelectionLiteral] {
+    private func selectionLiterals(in source: String) -> [SelectionLiteral] {
         let ignored = SourceRegions.luaIgnoredRegions(in: source)
         let fullRange = NSRange(location: 0, length: (source as NSString).length)
         var literals: [SelectionLiteral] = []
 
-        for match in literalRequireRegex.matches(in: source, range: fullRange) {
-            guard !isIgnored(match.range, in: source, ignored: ignored) else { continue }
+        for match in Self.literalRequireRegex.matches(in: source, range: fullRange) {
+            guard !Self.isIgnored(match.range, in: source, ignored: ignored) else { continue }
             let name = (source as NSString).substring(with: match.range(at: 2))
-            guard isPlainThemeName(name),
-                  let range = byteRange(match.range(at: 2), in: source) else {
+            guard Self.isPlainThemeName(name),
+                  let range = Self.byteRange(match.range(at: 2), in: source),
+                  fileManager.fileExists(atPath: themesDirectory.appendingPathComponent(name + ".lua").path) else {
                 continue
             }
             literals.append(SelectionLiteral(
@@ -352,10 +336,10 @@ struct BarThemeService {
             ))
         }
 
-        let assignments: [(name: String, value: String, range: NSRange)] = assignmentRegex
+        let assignments: [(name: String, value: String, range: NSRange)] = Self.assignmentRegex
             .matches(in: source, range: fullRange)
             .compactMap { match in
-                guard !isIgnored(match.range, in: source, ignored: ignored) else { return nil }
+                guard !Self.isIgnored(match.range, in: source, ignored: ignored) else { return nil }
                 return (
                     (source as NSString).substring(with: match.range(at: 1)),
                     (source as NSString).substring(with: match.range(at: 3)),
@@ -363,15 +347,16 @@ struct BarThemeService {
                 )
             }
 
-        let computed = computedRequireRegex.matches(in: source, range: fullRange)
+        let computed = Self.computedRequireRegex.matches(in: source, range: fullRange)
         for match in computed {
-            guard !isIgnored(match.range, in: source, ignored: ignored) else { continue }
+            guard !Self.isIgnored(match.range, in: source, ignored: ignored) else { continue }
             let variable = (source as NSString).substring(with: match.range(at: 2))
 
             for assignment in assignments
             where assignment.name == variable && assignment.range.location < match.range.location {
-                guard isPlainThemeName(assignment.value),
-                      let range = byteRange(assignment.range, in: source) else {
+                guard Self.isPlainThemeName(assignment.value),
+                      let range = Self.byteRange(assignment.range, in: source),
+                      fileManager.fileExists(atPath: themesDirectory.appendingPathComponent(assignment.value + ".lua").path) else {
                     continue
                 }
                 literals.append(SelectionLiteral(
@@ -411,7 +396,7 @@ struct BarThemeService {
     }
 
     private static let literalRequireRegex = try! NSRegularExpression(
-        pattern: #"\brequire\s*\(\s*(["'])themes\.([^"'\n]+)\1\s*\)"#
+        pattern: #"(?<!\bsbar\.)\brequire\s*\(\s*(["'])themes\.([^"'\n]+)\1\s*\)"#
     )
 
     private static let computedRequireRegex = try! NSRegularExpression(
@@ -440,7 +425,6 @@ struct BarThemeService {
 
         let contents = renderedThemeContents(for: palette, from: active)
         let targetURL = themesDirectory.appendingPathComponent(palette.displayName + ".lua")
-        var wroteThemeFile = false
 
         if replacer.itemExists(at: targetURL) {
             guard let existing = try? String(contentsOf: targetURL, encoding: .utf8) else {
@@ -449,9 +433,6 @@ struct BarThemeService {
             guard existing == contents else {
                 throw BarThemeError.targetThemeExists(palette.displayName)
             }
-        } else {
-            try write(contents, to: targetURL, permissionsFrom: active.url)
-            wroteThemeFile = true
         }
 
         var wrotePointer = false
@@ -480,6 +461,12 @@ struct BarThemeService {
                 defaults.removeObject(forKey: previousPointerKey)
                 wroteSelection = true
             }
+        }
+
+        var wroteThemeFile = false
+        if !replacer.itemExists(at: targetURL) {
+            try write(contents, to: targetURL, permissionsFrom: active.url)
+            wroteThemeFile = true
         }
 
         return BarThemeApplyResult(
@@ -554,11 +541,12 @@ struct BarThemeService {
         let name = stored.trimmingCharacters(in: .whitespacesAndNewlines)
         guard Self.isValidThemeName(name) else { throw BarThemeError.invalidThemeName(name) }
 
+        defer { defaults.removeObject(forKey: previousPointerKey) }
+
         let current = try String(contentsOf: pointer.url, encoding: .utf8)
         if current != stored {
             try writePointer(stored, at: pointer.url)
         }
-        defaults.removeObject(forKey: previousPointerKey)
         return name
     }
 
@@ -588,8 +576,9 @@ struct BarThemeService {
             throw BarThemeError.selectionChanged
         }
 
+        defer { defaults.removeObject(forKey: previousLiteralKey) }
+
         try rewriteLiteral(current, to: stored.themeName)
-        defaults.removeObject(forKey: previousLiteralKey)
         return stored.themeName
     }
 
@@ -675,15 +664,15 @@ struct BarThemeService {
             || name.hasSuffix("_bg") || name.contains("background") {
             return .background
         }
+        if name.contains("subtext") || name.contains("muted") || name.contains("secondary") || name.contains("dim") {
+            return .muted
+        }
         if name == "white" || name == "fg" || name.contains("foreground")
             || name.contains("text") || name.contains("label") {
             return .foreground
         }
         if name.contains("accent") || name.contains("highlight") || name == "primary" {
             return accentUsed ? .accentSecondary : .accent
-        }
-        if name.contains("subtext") || name.contains("muted") || name.contains("secondary") || name.contains("dim") {
-            return .muted
         }
         if name.contains("line") || name.contains("border") {
             return .border
