@@ -390,23 +390,23 @@ final class PreviewResolvedPaneTests: XCTestCase {
                        "a file that changed on disk has to be resolved again")
     }
 
-    /// A config that fails is not run again for a draft.
+    /// A config that times out is not run again for a draft.
     ///
-    /// A config whose Lua fails would otherwise run the interpreter and hit
-    /// the deadline of the sandbox on every keystroke of a draft. The
-    /// failure is kept while the files on disk are the same, and the plan
+    /// A config whose Lua hits the deadline would otherwise run the
+    /// interpreter and time out on every keystroke of a draft. The timeout
+    /// failure is cached while the files on disk are the same, and the plan
     /// of the parser still shows the draft.
-    func testAConfigThatFailsDoesNotRunTheLuaAgainForADraft() throws {
-        let root = try copyOfFixture("lua-throws")
+    func testAConfigThatTimesOutDoesNotRunTheLuaAgainForADraft() throws {
+        let root = try copyOfFixture("lua-infinite")
         let before = runs(of: root)
 
         _ = self.plan(of: root, drafts: ["sketchybarrc": brokenDraft(label: "one")])
         XCTAssertEqual(runs(of: root), before + 1,
-                       "the first plan of a broken config has to run the Lua")
+                       "the first plan of a timed-out config has to run the Lua")
 
         let plan = self.plan(of: root, drafts: ["sketchybarrc": brokenDraft(label: "two")])
         XCTAssertEqual(runs(of: root), before + 1,
-                       "a draft of the app must not run the Lua of a broken config again")
+                       "a draft of the app must not run the Lua of a timed-out config again")
         XCTAssertEqual(value(plan, "typed", "label.string"), "two",
                        "the parser path still shows the draft")
     }

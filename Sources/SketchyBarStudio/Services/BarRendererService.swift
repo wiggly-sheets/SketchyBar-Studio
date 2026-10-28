@@ -596,6 +596,12 @@ actor BarRendererService {
 /// of the sandbox would otherwise stop the pane on every keystroke. A
 /// change to a file of the config is a new signature, so a config the user
 /// fixed on disk is resolved again.
+///
+/// Only successful runs and timeout failures are cached. A timeout failure
+/// is cached to avoid hammering the sandbox on every keystroke. Other
+/// failures (syntax errors, etc.) are not cached, so a config the user
+/// fixed on disk (even with the same mtime+size) is resolved again on the
+/// next render.
 final class ResolvedPlanCache: @unchecked Sendable {
     private struct Entry {
         let signature: Int
@@ -612,11 +618,6 @@ final class ResolvedPlanCache: @unchecked Sendable {
     /// the cache. Two renders of the same changed root can therefore run
     /// the Lua twice; they are the same request, so the second run only
     /// replaces the first.
-    ///
-    /// All runs are cached (success and failure). A failed run is kept so
-    /// the pane does not retry the Lua on every keystroke. A change to a
-    /// file of the config is a new signature, so a config the user fixed on
-    /// disk is resolved again.
     func plan(for root: String,
               signature: Int,
               run: () throws -> BarRenderPlan) throws -> BarRenderPlan {
@@ -626,11 +627,20 @@ final class ResolvedPlanCache: @unchecked Sendable {
 
         let result = Result { try run() }
 
-        // Increment run counter for every attempt, then cache the result.
-        lock.lock()
-        runsByRoot[root, default: 0] += 1
-        entries[root] = Entry(signature: signature, result: result)
-        lock.unlock()
+        let shouldCache: Bool
+        switch result {
+        case .success:
+            shouldCache = true
+        case .failure(let error):
+            shouldCache = (error as? LuaConfigRunner.Failure)?.isTimeout == true
+        }
+
+        if shouldCache {
+            lock.lock()
+            runsByRoot[root, default: 0] += 1
+            entries[root] = Entry(signature: signature, result: result)
+            lock.unlock()
+        }
 
         return try result.get()
     }
