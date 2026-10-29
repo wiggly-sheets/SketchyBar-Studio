@@ -1085,12 +1085,13 @@ extension StoreTests {
     }
 
     func testFormulaPresenceBrewAbsent() async {
-        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
-        // Do not add brew stub - binURL(for: "brew") will return nil
+        StoreDependencyService.pathEnvironment = ["PATH": "/usr/bin:/bin"]
+        let service = StoreDependencyService(runner: MockCommandRunner())
+        // brew not on PATH; binURL(for: "brew") will return nil
         let dep = StoreDependency(kind: .formula, name: "jq", required: true)
         let presence = await service.presence(of: dep)
         XCTAssertEqual(presence, .unknownBecauseBrewAbsent)
-        StoreDependencyService.testBinSearchPaths = nil
+        StoreDependencyService.pathEnvironment = nil
     }
 
     func testCommandPresencePresent() async {
@@ -1123,12 +1124,13 @@ extension StoreTests {
     }
 
     func testFontPresenceFontconfigAbsent() async {
-        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
-        // fc-list not in binSearchPaths
+        StoreDependencyService.pathEnvironment = ["PATH": "/usr/bin:/bin"]
+        let service = StoreDependencyService(runner: MockCommandRunner())
+        // fc-list not on PATH
         let dep = StoreDependency(kind: .font, name: "sf-symbols", required: false)
         let presence = await service.presence(of: dep)
         XCTAssertEqual(presence, .unknownBecauseFontconfigAbsent)
-        StoreDependencyService.testBinSearchPaths = nil
+        StoreDependencyService.pathEnvironment = nil
     }
 
     func testSketchybarPresence() async {
@@ -1166,21 +1168,23 @@ extension StoreTests {
     }
 
     func testInstallRefusesNonBrewDependency() async {
-        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: ["/fake/brew/bin"])
+        StoreDependencyService.pathEnvironment = ["PATH": "/fake/brew/bin"]
+        let service = StoreDependencyService(runner: MockCommandRunner())
         let dep = StoreDependency(kind: .command, name: "somecmd", required: true)
         let result = await service.install(dep) { _ in }
         XCTAssertEqual(result.status, .missing)
         XCTAssertEqual(result.error, "Dependency 'somecmd' is not a brew formula/cask.")
-        StoreDependencyService.testBinSearchPaths = nil
+        StoreDependencyService.pathEnvironment = nil
     }
 
     func testInstallRefusesWhenBrewAbsent() async {
-        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
+        StoreDependencyService.pathEnvironment = ["PATH": "/usr/bin:/bin"]
+        let service = StoreDependencyService(runner: MockCommandRunner())
         let dep = StoreDependency(kind: .formula, name: "jq", required: true)
         let result = await service.install(dep) { _ in }
         XCTAssertEqual(result.status, .unknownBecauseBrewAbsent)
         XCTAssertEqual(result.error, "Homebrew is not installed; cannot install 'jq'.")
-        StoreDependencyService.testBinSearchPaths = nil
+        StoreDependencyService.pathEnvironment = nil
     }
 
     // MARK: - Policy gating via StoreModel

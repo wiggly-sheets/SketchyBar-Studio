@@ -67,6 +67,10 @@ struct StoreDependencyService {
     /// Test-only override for bin search paths.
     static var testBinSearchPaths: [String]?
 
+    /// Test-only override for the PATH environment used by executable lookups.
+    /// When nil, the process environment is used.
+    static var pathEnvironment: [String: String]?
+
     private let runner: CommandRunner
     private let streamingRunner: StreamingCommandRunner?
 
@@ -114,7 +118,7 @@ struct StoreDependencyService {
     }
 
     private func brewPresence(name: String) async -> StoreDependencyPresence {
-        guard let brew = Self.binURL(for: "brew") else {
+        guard let brew = Self.resolveURL(for: "brew") else {
             return .unknownBecauseBrewAbsent
         }
         // `brew list <name>` reports 0 when the formula/cask is installed.
@@ -123,15 +127,14 @@ struct StoreDependencyService {
     }
 
     private func commandPresence(name: String) -> StoreDependencyPresence {
-        if Self.binURL(for: name) != nil {
+        if Self.resolveURL(for: name) != nil {
             return .present
         }
-        let outcome = run(["/bin/sh", "-c", "command -v \(name)"])
-        return outcome.status == 0 ? .present : .missing
+        return .missing
     }
 
     private func fontPresence(name: String) -> StoreDependencyPresence {
-        guard let fcList = Self.binURL(for: "fc-list") else {
+        guard let fcList = Self.resolveURL(for: "fc-list") else {
             return .unknownBecauseFontconfigAbsent
         }
         let outcome = run([fcList.path, ":spacing:lang=en", name])
@@ -139,6 +142,23 @@ struct StoreDependencyService {
     }
 
     static func binURL(for name: String) -> URL? {
+        resolveURL(for: name) ?? fixedURL(for: name)
+    }
+
+    /// Scans PATH for an executable.
+    static func resolveURL(for name: String) -> URL? {
+        let path = pathEnvironment?["PATH"] ?? ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for dir in path.split(separator: ":") {
+            let url = URL(fileURLWithPath: String(dir)).appendingPathComponent(name)
+            if FileManager.default.isExecutableFile(atPath: url.path) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    /// Scans only the fixed search paths, never PATH.
+    static func fixedURL(for name: String) -> URL? {
         let paths = testBinSearchPaths ?? binSearchPaths
         for dir in paths {
             let url = URL(fileURLWithPath: dir).appendingPathComponent(name)
@@ -166,7 +186,7 @@ struct StoreDependencyService {
             )
         }
 
-        guard let brew = Self.binURL(for: "brew") else {
+        guard let brew = Self.resolveURL(for: "brew") else {
             return StoreDependencyInstallResult(
                 name: dep.name,
                 status: .unknownBecauseBrewAbsent,
@@ -246,7 +266,7 @@ struct RealCommandRunner: CommandRunner, Sendable {
         await withCheckedContinuation { continuation in
             DispatchQueue.global().async {
                 let process = Process()
-                if let url = StoreDependencyService.binURL(for: command) {
+                if let url = StoreDependencyService.resolveURL(for: command) {
                     process.executableURL = url
                 } else {
                     process.executableURL = URL(fileURLWithPath: command)
@@ -274,7 +294,7 @@ struct RealCommandRunner: CommandRunner, Sendable {
     /// fallback install path when no streaming runner is injected.
     func runBlocking(_ command: String, _ args: [String]) -> CommandOutcome {
         let process = Process()
-        if let url = StoreDependencyService.binURL(for: command) {
+        if let url = StoreDependencyService.resolveURL(for: command) {
             process.executableURL = url
         } else {
             process.executableURL = URL(fileURLWithPath: command)
