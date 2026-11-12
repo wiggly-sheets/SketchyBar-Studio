@@ -498,6 +498,13 @@ private struct StoreInstallSheet: View {
                     .foregroundStyle(.red)
             }
 
+            if !model.errorMessage.isEmpty {
+                Label(model.errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Toggle("I accept the \(entry.licence?.rawValue ?? "") licence and want to install this entry.", isOn: $accepted)
                 .toggleStyle(.checkbox)
 

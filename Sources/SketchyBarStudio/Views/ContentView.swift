@@ -17,6 +17,7 @@ struct ContentView: View {
         } detail: {
             if showsStore {
                 StoreView(configRoot: store.configRoot, configID: store.selectedConfigProfileID)
+                    .id(store.configRoot)
             } else {
                 DetailView(store: store)
             }
@@ -36,6 +37,15 @@ struct ContentView: View {
             }
 
             ToolbarItemGroup(placement: .primaryAction) {
+                if showsStore {
+                    Button {
+                        showsStore = false
+                    } label: {
+                        Label("Close Store", systemImage: "xmark.circle")
+                    }
+                    .help("Return to the config editor")
+                }
+
                 Toggle(isOn: $store.showModifiedOnly) {
                     Label("Changed Only", systemImage: "line.3.horizontal.decrease.circle")
                 }
@@ -86,7 +96,7 @@ struct ContentView: View {
                 } label: {
                     Label("Apply Bar Settings", systemImage: "slider.horizontal.below.rectangle")
                 }
-                .disabled(!store.isLiveBarSourceLive)
+                .disabled(!store.isLiveBarSourceLive || store.liveBarIsWorking)
                 .help("Push the settings of the bar itself, such as its height, its margin and its colors, to the live SketchyBar. The live update mode never pushes them.")
 
                 Button {
@@ -94,7 +104,7 @@ struct ContentView: View {
                 } label: {
                     Label("Restore Bar", systemImage: "arrow.uturn.backward")
                 }
-                .disabled(!store.liveBarHasSnapshot)
+                .disabled(!store.liveBarHasSnapshot || store.liveBarIsWorking)
                 .help("Put the live SketchyBar back to the state it had before the first push of this app.")
 
                 Button {

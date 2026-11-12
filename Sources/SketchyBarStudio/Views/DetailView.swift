@@ -2,6 +2,10 @@ import SwiftUI
 
 struct DetailView: View {
     @ObservedObject var store: SketchyBarStore
+    /// The rendered bar and its selection survive a switch to the editor and
+    /// back, so the pane does not restart or lose the item the user picked.
+    @StateObject private var renderState = BarRenderState()
+    @State private var simulationSelection: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -58,7 +62,9 @@ struct DetailView: View {
 
             Spacer()
 
-            LiveUpdateModePicker(store: store)
+            if store.detailPaneMode == .edit {
+                LiveUpdateModePicker(store: store)
+            }
         }
     }
 
@@ -113,7 +119,10 @@ struct DetailView: View {
                 )
             }
         case .preview:
-            BarRenderView(store: store, theme: store.appTheme)
+            BarRenderView(store: store,
+                          theme: store.appTheme,
+                          state: renderState,
+                          selectedAlias: $simulationSelection)
                 .padding()
         }
     }
@@ -166,6 +175,8 @@ private struct EditableFileView: View {
         }
         .onChange(of: file.id) { _, _ in
             selectedValueID = nil
+            saveNotice = nil
+            saveReview = nil
             codePreviewVersion += 1
         }
         .sheet(isPresented: $isShowingSaveReview) {

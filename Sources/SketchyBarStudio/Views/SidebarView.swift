@@ -369,27 +369,32 @@ private struct ProfilePanel: View {
                 .accessibilityLabel("Save profile")
             }
 
-            ForEach(store.profiles) { profile in
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(profile.name)
-                            .lineLimit(1)
-                        Text(profile.createdAt, style: .date)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(store.profiles) { profile in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(profile.name)
+                                    .lineLimit(1)
+                                Text(profile.createdAt, style: .date)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
 
-                    Spacer()
+                            Spacer()
 
-                    Button {
-                        restoreCandidate = profile
-                    } label: {
-                        Image(systemName: "arrow.uturn.backward")
+                            Button {
+                                restoreCandidate = profile
+                            } label: {
+                                Image(systemName: "arrow.uturn.backward")
+                            }
+                            .help("Restore profile")
+                            .accessibilityLabel("Restore profile \(profile.name)")
+                        }
                     }
-                    .help("Restore profile")
-                    .accessibilityLabel("Restore profile \(profile.name)")
                 }
             }
+            .frame(maxHeight: 170)
         }
         .confirmationDialog(
             "Restore profile?",

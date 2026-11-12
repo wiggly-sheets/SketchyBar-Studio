@@ -173,9 +173,9 @@ struct BarPreviewItem: Identifiable {
 
     init?(file: ConfigFile) {
         let values = file.values
-        let lookup = Dictionary(values.map { ($0.keyPath.lowercased(), $0) }, uniquingKeysWith: { first, _ in first })
+        let lookup = Dictionary(values.map { ($0.keyPath.lowercased(), $0) }, uniquingKeysWith: { _, last in last })
 
-        let positionValue = values.first { $0.leafKey == "position" }
+        let positionValue = values.last { $0.leafKey == "position" }
         let fallbackPosition: BarPreviewPosition? = file.displayName.lowercased().contains("/left/") ? .left :
             file.displayName.lowercased().contains("/center/") ? .center :
             file.displayName.lowercased().contains("/right/") ? .right : nil
@@ -186,9 +186,9 @@ struct BarPreviewItem: Identifiable {
         self.file = file
         self.position = position
         self.positionValue = positionValue
-        widthValue = lookup["width"] ?? values.first { $0.leafKey == "width" }
-        leftPaddingValue = lookup["padding_left"] ?? values.first { $0.leafKey == "padding_left" }
-        rightPaddingValue = lookup["padding_right"] ?? values.first { $0.leafKey == "padding_right" }
+        widthValue = lookup["width"] ?? values.last { $0.leafKey == "width" }
+        leftPaddingValue = lookup["padding_left"] ?? values.last { $0.leafKey == "padding_left" }
+        rightPaddingValue = lookup["padding_right"] ?? values.last { $0.leafKey == "padding_right" }
 
         icon = SketchyBarIcon.parse((lookup["icon.string"] ?? lookup["icon"])?.draftValue ?? "")
         iconColor = Self.color(lookup["icon.color"] ?? lookup["icon_color"])
