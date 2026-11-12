@@ -149,6 +149,57 @@ extension BarRenderPlan {
     }
 }
 
+extension BarRenderPlan {
+    /// The plan with the items in the order of the loader.
+    ///
+    /// A resolved config keeps the order of the files on disk. The staged
+    /// reorder of the app is not on disk, so the items of a file are moved
+    /// to the rank of the file. Items without an origin keep their place
+    /// after the files the order names, and the declaration index keeps the
+    /// items of one file in their own order.
+    func reordered(byFileOrder order: [String]) -> BarRenderPlan {
+        guard !order.isEmpty else { return self }
+        var rank: [String: Int] = [:]
+        for (index, file) in order.enumerated() where rank[file] == nil {
+            rank[file] = index
+        }
+
+        // The ranked items are put back in the slots that items of a ranked
+        // file already occupy. An item whose file is not in the order (a
+        // file added directly in `init.lua`, or loaded through another
+        // module) keeps its place, so the app's approximation of the loader
+        // never moves an item the loader does not name.
+        let ranked = items.enumerated()
+            .filter { $0.element.origin.flatMap { rank[$0.file] } != nil }
+            .sorted { lhs, rhs in
+                let lhsRank = lhs.element.origin.flatMap { rank[$0.file] } ?? Int.max
+                let rhsRank = rhs.element.origin.flatMap { rank[$0.file] } ?? Int.max
+                if lhsRank != rhsRank { return lhsRank < rhsRank }
+                let lhsIndex = lhs.element.origin?.index ?? lhs.offset
+                let rhsIndex = rhs.element.origin?.index ?? rhs.offset
+                if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+
+        var next = 0
+        var reorderedItems: [BarRenderItemModel] = []
+        reorderedItems.reserveCapacity(items.count)
+        for item in items {
+            if item.origin.flatMap({ rank[$0.file] }) != nil, next < ranked.count {
+                reorderedItems.append(ranked[next])
+                next += 1
+            } else {
+                reorderedItems.append(item)
+            }
+        }
+        return BarRenderPlan(defaults: defaults,
+                             bar: bar,
+                             items: reorderedItems,
+                             warnings: warnings)
+    }
+}
+
 extension BarRenderItemModel {
     /// The item with the draft of the app on top.
     ///

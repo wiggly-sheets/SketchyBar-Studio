@@ -59,6 +59,13 @@ struct BarRenderRequest: Sendable {
     /// requires of the config, so it reads the config from the disk and
     /// the draft of the app is applied on top of the resolved tree.
     let root: URL?
+    /// The files of the config in the order of the loader, when the source
+    /// has a loader order.
+    ///
+    /// The resolved Lua tree keeps the order of the files on disk. A staged
+    /// reorder of the app is not on disk yet, so the render puts the items
+    /// in the staged order here. The value is a path relative to the root.
+    let fileOrder: [String]?
     /// True when the files of the request come in the order of their
     /// names.
     ///
@@ -80,12 +87,14 @@ struct BarRenderRequest: Sendable {
 
     init(files: [BarRenderFile],
          root: URL? = nil,
+         fileOrder: [String]? = nil,
          filesAreInFileOrder: Bool = true,
          displayWidthPoints: Double,
          displayHeightPoints: Double,
          warnings: [String] = []) {
         self.files = files
         self.root = root
+        self.fileOrder = fileOrder
         self.filesAreInFileOrder = filesAreInFileOrder
         self.displayWidthPoints = displayWidthPoints
         self.displayHeightPoints = displayHeightPoints
@@ -113,12 +122,26 @@ struct BarRenderResult: @unchecked Sendable {
     /// The rectangle of every item, relative to the bar, with the y
     /// growing downwards from the top of the bar.
     ///
-    /// The image of the bar is in the coordinate system of CoreGraphics,
-    /// where the y grows upwards, so this rectangle is not a rectangle of
-    /// the image.
+    /// The value is already in the top-left coordinate space of the drawn
+    /// image: the y of a rectangle is the distance from the top of the bar,
+    /// so the interactive layer maps it directly.
     let barRelativeRects: [String: CGRect]
     /// The frame of the bar, in the points of the display.
     let barFrame: CGRect?
+    /// The file that declared each item, when the render knows it.
+    ///
+    /// The interactive simulation maps an item of the rendered bar back to
+    /// the file of the config, so a click, a drag and a resize edit the
+    /// right file.
+    let itemOrigins: [String: BarRenderOrigin]
+    /// True when at least one item of the plan has a script, so the values
+    /// of the bar can change while it is shown.
+    let hasScripts: Bool
+    /// The revision of the values of the scripts when the render ran.
+    ///
+    /// The simulation compares it with the revision of the service on a
+    /// timer, so a new value of a script repaints the bar.
+    let liveValuesRevision: Int
     /// The problems of the config and of the vendored code.
     let warnings: [String]
 }
@@ -194,6 +217,14 @@ actor BarRendererService {
     /// it, so the items have the same place on the bar.
     private var liveDisplay: (width: Double, height: Double)?
 
+    /// Bumped when the scripts of the items produced new values.
+    ///
+    /// The simulation polls the number and renders again when it changed,
+    /// so a bar with scripts really shows the values the scripts produce.
+    /// A tick that produced nothing does not bump it, so the bar is not
+    /// painted again for nothing.
+    private(set) var liveValuesRevision = 0
+
     /// The core has one preview at a time, so there is one service.
     private init() {}
 
@@ -252,7 +283,11 @@ actor BarRendererService {
             let frame = SketchyBarPreviewC.barFrame(handle)
             var rects: [String: CGRect] = [:]
             var barRects: [String: CGRect] = [:]
+            var origins: [String: BarRenderOrigin] = [:]
             for item in plan.items {
+                if let origin = item.origin {
+                    origins[item.alias] = origin
+                }
                 guard let rect = SketchyBarPreviewC.itemRect(handle, alias: item.alias) else { continue }
                 rects[item.alias] = rect
                 barRects[item.alias] = Self.barRelative(rect, in: frame)
@@ -268,6 +303,9 @@ actor BarRendererService {
                 itemRects: rects,
                 barRelativeRects: barRects,
                 barFrame: frame,
+                itemOrigins: origins,
+                hasScripts: !scripts.isEmpty,
+                liveValuesRevision: liveValuesRevision,
                 warnings: warnings
             )
         }
@@ -346,9 +384,12 @@ actor BarRendererService {
         }) else { return }
 
         autoreleasepool {
-            _ = runner.runItems(of: plan,
-                                widthPoints: display.width,
-                                heightPoints: display.height)
+            let outcome = runner.runItems(of: plan,
+                                          widthPoints: display.width,
+                                          heightPoints: display.height)
+            if !outcome.assignments.isEmpty {
+                liveValuesRevision &+= 1
+            }
         }
     }
 
@@ -368,6 +409,14 @@ actor BarRendererService {
         stopLiveValuesTimer()
         livePlan = nil
         liveDisplay = nil
+    }
+
+    /// Marks the simulation as still on screen.
+    ///
+    /// The pane calls this while it polls the revision, so the timer of the
+    /// scripts does not stop under a bar whose scripts have a slow cadence.
+    func keepAlive() {
+        runner.touch()
     }
 
     /// The values the scripts of the items produced.
@@ -444,33 +493,30 @@ actor BarRendererService {
     /// The plan of the parser is built only then, and a warning says why
     /// the config was not resolved.
     static func plan(for request: BarRenderRequest) -> BarRenderPlan {
-        guard let root = request.root else {
-            return parserFallback(
+        let plan: BarRenderPlan
+        if let root = request.root, let entrypoint = LuaConfigRunner.entrypoint(in: root) {
+            do {
+                let resolved = try resolvedPlan(of: root,
+                                                entrypoint: entrypoint,
+                                                signature: diskSignature(of: request.files))
+                let draft = PreviewConfigBridge.draft(of: request.files, root: root)
+                plan = resolved.overlaying(draft: draft)
+            } catch {
+                plan = parserFallback(
+                    for: request,
+                    reason: "The config could not be resolved with Lua: \(PreviewConfigBridge.reason(of: error))",
+                    addsFileOrder: true
+                )
+            }
+        } else {
+            plan = parserFallback(
                 for: request,
                 reason: PreviewWarning.noLuaEntrypoint()
             )
         }
 
-        guard let entrypoint = LuaConfigRunner.entrypoint(in: root) else {
-            return parserFallback(
-                for: request,
-                reason: PreviewWarning.noLuaEntrypoint()
-            )
-        }
-
-        do {
-            let resolved = try resolvedPlan(of: root,
-                                            entrypoint: entrypoint,
-                                            signature: diskSignature(of: request.files))
-            let draft = PreviewConfigBridge.draft(of: request.files, root: root)
-            return resolved.overlaying(draft: draft)
-        } catch {
-            return parserFallback(
-                for: request,
-                reason: "The config could not be resolved with Lua: \(PreviewConfigBridge.reason(of: error))",
-                addsFileOrder: true
-            )
-        }
+        guard let fileOrder = request.fileOrder, !fileOrder.isEmpty else { return plan }
+        return plan.reordered(byFileOrder: fileOrder)
     }
 
     /// The plan of the resolved config, reused while the files on disk are
@@ -497,7 +543,7 @@ actor BarRendererService {
     private static func parserFallback(for request: BarRenderRequest,
                                        reason: String,
                                        addsFileOrder: Bool = false) -> BarRenderPlan {
-        let parsed = parserPlan(for: request.files)
+        let parsed = parserPlan(for: request.files, root: request.root)
         var warnings = parsed.warnings
         warnings.append(PreviewWarning.luaFallback(reason))
         if addsFileOrder, request.filesAreInFileOrder {
@@ -507,6 +553,26 @@ actor BarRendererService {
                              bar: parsed.bar,
                              items: parsed.items,
                              warnings: warnings)
+    }
+
+    /// The file that added each alias of a shell config.
+    ///
+    /// The whole shell config is parsed as one text, so the parse no longer
+    /// knows which file declared an item. The add commands of each file
+    /// name the alias and the declaration number, which is the origin the
+    /// simulation and the draft need.
+    private static func shellOrigins(for files: [(file: BarRenderFile, contents: String)],
+                                     root: URL?) -> [String: BarRenderOrigin] {
+        var origins: [String: BarRenderOrigin] = [:]
+        for entry in files {
+            let relative = root.map { PreviewConfigBridge.relativePath(of: entry.file.url, in: $0) }
+                ?? entry.file.url.lastPathComponent
+            let adds = ShellConfigCommandParser.addCommands(in: entry.contents)
+            for (index, add) in adds.enumerated() where origins[add.alias] == nil {
+                origins[add.alias] = BarRenderOrigin(file: relative, index: index)
+            }
+        }
+        return origins
     }
 
     /// A signature of the files of a config on disk.
@@ -535,9 +601,16 @@ actor BarRendererService {
     /// The tree of the parser: the plan of every file is combined, so the
     /// defaults of the whole config reach every item, and the items keep
     /// the order of the files.
-    private static func parserPlan(for files: [BarRenderFile]) -> BarRenderPlan {
+    ///
+    /// Every item of a file carries the file that declared it and the number
+    /// of the declaration, so the simulation can map the item back to the
+    /// file the user edits. The parser path has no origin from the resolver,
+    /// so the origin is built here; the two paths count the declarations the
+    /// same way.
+    private static func parserPlan(for files: [BarRenderFile], root: URL?) -> BarRenderPlan {
         var combined = BarRenderPlan(defaults: [], bar: [], items: [], warnings: [])
         var readable = 0
+        var shellFiles: [(file: BarRenderFile, contents: String)] = []
 
         for file in files {
             guard let contents = contents(of: file) else { continue }
@@ -545,10 +618,54 @@ actor BarRendererService {
             // A `.lua` file is Lua. A file without an extension, such as the
             // `sketchybarrc` of the sketchybar-package, is decided by its
             // text, the same way the bridge decides it.
-            let filePlan = file.kind == .lua || LuaSourceDetection.isLua(contents)
-                ? PreviewConfigBridge.plan(forLua: contents)
-                : PreviewConfigBridge.plan(forShell: contents)
-            combined = combined.combined(with: filePlan)
+            let isLua = file.kind == .lua || LuaSourceDetection.isLua(contents)
+            if !isLua {
+                shellFiles.append((file, contents))
+                continue
+            }
+            let filePlan = PreviewConfigBridge.plan(forLua: contents)
+            let relative = root.map { PreviewConfigBridge.relativePath(of: file.url, in: $0) }
+                ?? file.url.lastPathComponent
+            let withOrigins = BarRenderPlan(
+                defaults: filePlan.defaults,
+                bar: filePlan.bar,
+                items: filePlan.items.enumerated().map { index, item in
+                    BarRenderItemModel(alias: item.alias,
+                                       properties: item.properties,
+                                       addPosition: item.addPosition,
+                                       type: item.type,
+                                       argument: item.argument,
+                                       origin: BarRenderOrigin(file: relative, index: index))
+                },
+                warnings: filePlan.warnings
+            )
+            combined = combined.combined(with: withOrigins)
+        }
+
+        if !shellFiles.isEmpty {
+            // A shell config can add an item in one file and set it in
+            // another. The parser resolves a `--set` against the adds of the
+            // text it reads, so the whole shell config is read as one text.
+            let shellPlan = PreviewConfigBridge.plan(forShell: shellFiles.map(\.contents).joined(separator: "\n"))
+            let origins = shellOrigins(for: shellFiles, root: root)
+            let withOrigins = BarRenderPlan(
+                defaults: shellPlan.defaults,
+                bar: shellPlan.bar,
+                items: shellPlan.items.enumerated().map { index, item in
+                    BarRenderItemModel(alias: item.alias,
+                                       properties: item.properties,
+                                       addPosition: item.addPosition,
+                                       type: item.type,
+                                       argument: item.argument,
+                                       origin: origins[item.alias] ?? BarRenderOrigin(
+                                           file: root.map { PreviewConfigBridge.relativePath(of: shellFiles[0].file.url, in: $0) }
+                                               ?? shellFiles[0].file.url.lastPathComponent,
+                                           index: index
+                                       ))
+                },
+                warnings: shellPlan.warnings
+            )
+            combined = combined.combined(with: withOrigins)
         }
 
         // A source without a readable file paints an empty bar, so the
@@ -776,11 +893,13 @@ extension SketchyBarStore {
     /// put on top of it.
     func barRenderFiles(for source: BarRenderSource) -> [BarRenderFile] {
         if case .config(let id) = source, id == selectedConfig?.id {
-            return filesInPreviewOrder.map { file in
-                BarRenderFile(url: file.url,
-                              kind: file.kind,
-                              contents: hasUnsavedChanges(fileID: file.id) ? effectiveContents(for: file) : nil)
-            }
+            return filesInPreviewOrder
+                .filter(\.isActive)
+                .map { file in
+                    BarRenderFile(url: file.url,
+                                  kind: file.kind,
+                                  contents: hasUnsavedChanges(fileID: file.id) ? effectiveContents(for: file) : nil)
+                }
         }
 
         guard let root = barRenderRoot(for: source) else { return [] }
@@ -800,5 +919,56 @@ extension SketchyBarStore {
         case .profile(let profilePath):
             return libraryProfiles.first { $0.profile.id == profilePath }?.profile.url
         }
+    }
+
+    /// The files of a source in the order of the loader, when the source is
+    /// the config the app has open.
+    ///
+    /// A staged reorder is not on disk, so the render needs the order the
+    /// sidebar shows. A config or profile that is not open has no staged
+    /// order, and its Lua tree already comes in the order of its files.
+    func barRenderFileOrder(for source: BarRenderSource) -> [String]? {
+        guard case .config(let id) = source, id == selectedConfig?.id else { return nil }
+        // Without a staged order the Lua tree is already in the order of the
+        // load, which is the order of the daemon. Reordering it by the app's
+        // approximation of the loader would move items that the loader does
+        // not name.
+        guard hasStagedLoaderOrder else { return nil }
+        return filesInPreviewOrder.map {
+            PreviewConfigBridge.relativePath(of: $0.url, in: configRoot)
+        }
+    }
+
+    /// The file of the open config that declared an item of the rendered
+    /// bar, when the render knows the declaration.
+    ///
+    /// The simulation maps an item of the rendered bar back to the file the
+    /// user edits through this lookup. A file is matched by its path relative
+    /// to the root of the config; a render without a root falls back to the
+    /// file name, and only when that name is unique.
+    func configFile(for origin: BarRenderOrigin?) -> ConfigFile? {
+        guard let origin else { return nil }
+        let byPath = files.filter {
+            PreviewConfigBridge.relativePath(of: $0.url, in: configRoot) == origin.file
+        }
+        if byPath.count == 1 { return byPath[0] }
+        let byName = files.filter { $0.url.lastPathComponent == origin.file }
+        return byName.count == 1 ? byName[0] : nil
+    }
+
+    /// The value of a setting of the bar, such as `bar.height`.
+    ///
+    /// The bar values carry the `bar.` prefix, so a plain `height` of an item
+    /// is never mistaken for the height of the bar. SketchyBar applies the
+    /// last assignment of a key, so the last value wins here too.
+    func barValue(_ key: String) -> LuaEditableValue? {
+        let wanted = "bar.\(key)".lowercased()
+        var value: LuaEditableValue?
+        for file in filesInPreviewOrder where file.isActive {
+            for candidate in file.values where candidate.keyPath.lowercased() == wanted {
+                value = candidate
+            }
+        }
+        return value
     }
 }

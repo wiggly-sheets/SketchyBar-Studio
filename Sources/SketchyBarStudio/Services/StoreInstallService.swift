@@ -240,8 +240,31 @@ struct StoreInstallService {
             loaderEdit: Self.loaderEdit(from: loader),
             installedAt: .now
         )
-        try manifest.append(record, configRoot: root, configID: configID)
+        do {
+            try manifest.append(record, configRoot: root, configID: configID)
+        } catch {
+            // The file and the loader line are already on disk. A manifest
+            // that cannot be written must not leave an install the app
+            // cannot see, so both are put back before the error escapes.
+            try? fileManager.removeItem(at: entryTarget)
+            if isMultiFile {
+                try? fileManager.removeItem(at: directory)
+            }
+            try? rollbackLoader(loader, root: root)
+            throw error
+        }
         return StoreInstallOutcome(record: record, installedURL: entryDestination, loader: loader)
+    }
+
+    /// Reverts a loader line the installer just added.
+    private func rollbackLoader(_ loader: StoreLoaderOutcome, root: URL) throws {
+        guard let edit = Self.loaderEdit(from: loader) else { return }
+        let plan = try loaderRevertPlan(edit, root: root)
+        try backupRemoval(of: plan.url, root: root)
+        try replacer.writeAtomicallyPreservingSymlinks(
+            plan.mark + plan.revertedContents,
+            to: plan.url
+        )
     }
 
     /// Copies a fetched setup tree into a new profile. The live config is not
@@ -257,8 +280,7 @@ struct StoreInstallService {
         }
 
         let profileName = uniqueProfileName(entry.name, configID: configID)
-        try profiles.saveProfile(named: profileName, from: tree, configID: configID)
-        let profileURL = profiles.profilesRoot(for: configID).appendingPathComponent(profileName, isDirectory: true)
+        let profileURL = try profiles.saveProfile(named: profileName, from: tree, configID: configID)
 
         let record = StoreInstallRecord(
             id: UUID(),
@@ -299,13 +321,6 @@ struct StoreInstallService {
                 try loaderRevertPlan(edit, root: root)
             }
 
-            if let loaderPlan {
-                try backupRemoval(of: loaderPlan.url, root: root)
-                try replacer.writeAtomicallyPreservingSymlinks(
-                    loaderPlan.mark + loaderPlan.revertedContents,
-                    to: loaderPlan.url
-                )
-            }
             var removed: [URL] = []
             if fileManager.fileExists(atPath: targetURL.path) {
                 var isDir: ObjCBool = false
@@ -318,6 +333,20 @@ struct StoreInstallService {
                     try fileManager.removeItem(at: targetURL)
                 }
                 removed.append(targetURL)
+            }
+            if let loaderPlan {
+                // The file is gone now. A loader write that fails leaves the
+                // record in the manifest, and the retry can still revert the
+                // line because the line is still there.
+                try backupRemoval(of: loaderPlan.url, root: root)
+                let current = try String(contentsOf: loaderPlan.url, encoding: .utf8)
+                guard current == loaderPlan.originalContents else {
+                    throw StoreInstallError.loaderEditChanged(loaderPlan.url.lastPathComponent)
+                }
+                try replacer.writeAtomicallyPreservingSymlinks(
+                    loaderPlan.mark + loaderPlan.revertedContents,
+                    to: loaderPlan.url
+                )
             }
             _ = try manifestStore.remove(recordID: recordID, configRoot: root, configID: configID)
             if let loaderPlan {
@@ -425,6 +454,7 @@ struct StoreInstallService {
     private struct LoaderRevertPlan {
         let url: URL
         let mark: String
+        let originalContents: String
         let revertedContents: String
     }
 
@@ -444,7 +474,10 @@ struct StoreInstallService {
             throw StoreInstallError.loaderEditChanged(url.lastPathComponent)
         }
         lines.remove(at: matches[0])
-        return LoaderRevertPlan(url: url, mark: mark, revertedContents: lines.joined(separator: "\n"))
+        return LoaderRevertPlan(url: url,
+                                mark: mark,
+                                originalContents: text,
+                                revertedContents: lines.joined(separator: "\n"))
     }
 
     private func backupRemoval(of url: URL, root: URL) throws {

@@ -42,7 +42,8 @@ struct ProfileArchiveService {
         .sorted { $0.createdAt > $1.createdAt }
     }
 
-    func saveProfile(named name: String, from configRoot: URL, configID: String) throws {
+    @discardableResult
+    func saveProfile(named name: String, from configRoot: URL, configID: String) throws -> URL {
         let cleanName = sanitizedProfileName(name)
         guard !cleanName.isEmpty else {
             throw ProfileError.emptyName
@@ -59,12 +60,13 @@ struct ProfileArchiveService {
 
         let root = profilesRoot(for: configID)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        let destination = try replacer.containedChild(named: cleanName, of: root)
+        let destination = try replacer.containedChild(named: availableProfileName(cleanName, in: root), of: root)
+        let destinationName = destination.lastPathComponent
 
         replacer.sweepStagingItems(in: root, keeping: destination)
 
         let staging = root.appendingPathComponent(
-            ".\(cleanName).studio-profile-\(UUID().uuidString)",
+            ".\(destinationName).studio-profile-\(UUID().uuidString)",
             isDirectory: true
         )
         defer {
@@ -78,8 +80,24 @@ struct ProfileArchiveService {
             stagedItem: staging,
             at: destination,
             keepDisplaced: false,
-            displacedPrefix: ".\(cleanName).studio-rollback-"
+            displacedPrefix: ".\(destinationName).studio-rollback-"
         )
+        return destination
+    }
+
+    /// A name that does not replace a profile the user saved before.
+    ///
+    /// "Save profile" adds a snapshot; it never silently replaces an older
+    /// one. A name that is already taken gets a suffix.
+    private func availableProfileName(_ base: String, in root: URL) -> String {
+        guard replacer.itemExists(at: root.appendingPathComponent(base)) else { return base }
+        for index in 2...999 {
+            let candidate = "\(base) \(index)"
+            if !replacer.itemExists(at: root.appendingPathComponent(candidate)) {
+                return candidate
+            }
+        }
+        return "\(base) \(UUID().uuidString)"
     }
 
     func restore(profile: ConfigProfile, to configRoot: URL) throws {

@@ -99,6 +99,17 @@ final class PreviewScriptRunner: @unchecked Sendable {
         self.lastRequest = Date()
     }
 
+    /// Marks the preview as still in use, without changing its scripts.
+    ///
+    /// The pane calls this while it is visible, so a script with a slow
+    /// `update_freq` that produced nothing for a while does not stop the
+    /// timer under it.
+    func touch() {
+        lock.lock()
+        defer { lock.unlock() }
+        lastRequest = Date()
+    }
+
     /// Whether the runner has been idle for longer than the timeout.
     var isIdle: Bool {
         lock.lock()

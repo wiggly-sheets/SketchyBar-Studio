@@ -89,18 +89,23 @@ struct StoreDependencyService {
     // MARK: - Presence
 
     /// Checks each dependency and returns one result per input, in order.
+    ///
+    /// The task group yields the results in completion order, so the index
+    /// travels with the result. A caller reads the results side by side with
+    /// its dependencies, and a reordered result would name the wrong state of
+    /// the wrong dependency.
     func check(_ deps: [StoreDependency]) async -> [StoreDependencyPresence] {
-        await withTaskGroup(of: StoreDependencyPresence.self) { group in
-            for dep in deps {
+        await withTaskGroup(of: (Int, StoreDependencyPresence).self) { group in
+            for (index, dep) in deps.enumerated() {
                 group.addTask {
-                    await presence(of: dep)
+                    (index, await presence(of: dep))
                 }
             }
-            var results: [StoreDependencyPresence] = []
-            for _ in deps {
-                results.append(await group.next()!)
+            var results = [StoreDependencyPresence?](repeating: nil, count: deps.count)
+            for await (index, presence) in group {
+                results[index] = presence
             }
-            return results
+            return results.map { $0 ?? .unknown("The dependency could not be checked.") }
         }
     }
 
@@ -111,14 +116,14 @@ struct StoreDependencyService {
         case .command:
             return commandPresence(name: dep.name)
         case .font:
-            return fontPresence(name: dep.name)
+            return await fontPresence(name: dep.name)
         case .sketchybar:
             return commandPresence(name: "sketchybar")
         }
     }
 
     private func brewPresence(name: String) async -> StoreDependencyPresence {
-        guard let brew = Self.resolveURL(for: "brew") else {
+        guard let brew = Self.binURL(for: "brew") else {
             return .unknownBecauseBrewAbsent
         }
         // `brew list <name>` reports 0 when the formula/cask is installed.
@@ -127,17 +132,17 @@ struct StoreDependencyService {
     }
 
     private func commandPresence(name: String) -> StoreDependencyPresence {
-        if Self.resolveURL(for: name) != nil {
+        if Self.binURL(for: name) != nil {
             return .present
         }
         return .missing
     }
 
-    private func fontPresence(name: String) -> StoreDependencyPresence {
-        guard let fcList = Self.resolveURL(for: "fc-list") else {
+    private func fontPresence(name: String) async -> StoreDependencyPresence {
+        guard let fcList = Self.binURL(for: "fc-list") else {
             return .unknownBecauseFontconfigAbsent
         }
-        let outcome = run([fcList.path, ":spacing:lang=en", name])
+        let outcome = await runner.run(fcList.lastPathComponent, [":spacing:lang=en", name])
         return outcome.status == 0 ? .present : .missing
     }
 
@@ -186,7 +191,7 @@ struct StoreDependencyService {
             )
         }
 
-        guard let brew = Self.resolveURL(for: "brew") else {
+        guard let brew = Self.binURL(for: "brew") else {
             return StoreDependencyInstallResult(
                 name: dep.name,
                 status: .unknownBecauseBrewAbsent,
@@ -209,9 +214,10 @@ struct StoreDependencyService {
             outcome = await streaming.runStreaming(brewExec, args, output: { @Sendable line in
                 await output(line)
             })
-        } else if let runner = self.runner as? RealCommandRunner {
-            outcome = runner.runBlocking(brewExec, args)
         } else {
+            // The runner reads the pipes on a background queue and waits
+            // with a timeout there, so a long brew install does not block
+            // the thread that started it.
             outcome = await self.runner.run(brewExec, args)
         }
 
@@ -230,28 +236,6 @@ struct StoreDependencyService {
         )
     }
 
-    // MARK: - Process running
-
-    /// Synchronous blocking runner used for quick presence probes.
-    private func run(_ launch: [String]) -> CommandOutcome {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: launch[0])
-        process.arguments = Array(launch.dropFirst())
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-        do {
-            try process.run()
-        } catch {
-            return CommandOutcome(status: -1, stdout: "", stderr: error.localizedDescription)
-        }
-        process.waitUntilExit()
-        let out = String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let err = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        return CommandOutcome(status: process.terminationStatus, stdout: out, stderr: err)
-    }
-
     // MARK: - Re-check after install
 
     /// Re-checks a dependency after install.
@@ -260,41 +244,52 @@ struct StoreDependencyService {
     }
 }
 
+/// A thread-safe box for the output of a command.
+///
+/// The readers run on two queues. A command that stops and leaves a child
+/// holding the pipe open must not make the caller read a value the reader
+/// is still writing, and the caller must not wait forever for the drain.
+private final class CommandDataBox {
+    private let lock = NSLock()
+    private var data = Data()
+    private var finished = false
+
+    func finish(_ value: Data) {
+        lock.lock()
+        data = value
+        finished = true
+        lock.unlock()
+    }
+
+    /// The data when the reader finished, otherwise nil.
+    func value() -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return finished ? data : nil
+    }
+}
+
 /// Default command runner that execs the system shell binaries.
 struct RealCommandRunner: CommandRunner, Sendable {
     func run(_ command: String, _ args: [String]) async -> CommandOutcome {
         await withCheckedContinuation { continuation in
             DispatchQueue.global().async {
-                let process = Process()
-                if let url = StoreDependencyService.resolveURL(for: command) {
-                    process.executableURL = url
-                } else {
-                    process.executableURL = URL(fileURLWithPath: command)
-                }
-                process.arguments = args
-                let stdout = Pipe()
-                let stderr = Pipe()
-                process.standardOutput = stdout
-                process.standardError = stderr
-                do {
-                    try process.run()
-                } catch {
-                    continuation.resume(returning: CommandOutcome(status: -1, stdout: "", stderr: error.localizedDescription))
-                    return
-                }
-                process.waitUntilExit()
-                let out = String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                let err = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                continuation.resume(returning: CommandOutcome(status: process.terminationStatus, stdout: out, stderr: err))
+                continuation.resume(returning: self.runBlocking(command, args))
             }
         }
     }
 
     /// Blocking variant used for the synchronous presence probes and the
     /// fallback install path when no streaming runner is injected.
-    func runBlocking(_ command: String, _ args: [String]) -> CommandOutcome {
+    ///
+    /// The pipes are drained on two background queues while the process
+    /// runs. Reading them only after `waitUntilExit` deadlocks as soon as a
+    /// child writes more than a pipe buffer, which `brew install` does.
+    /// A command that runs past the timeout is terminated, so a stuck
+    /// dependency install cannot block the app for good.
+    func runBlocking(_ command: String, _ args: [String], timeout: TimeInterval = 900) -> CommandOutcome {
         let process = Process()
-        if let url = StoreDependencyService.resolveURL(for: command) {
+        if let url = StoreDependencyService.binURL(for: command) {
             process.executableURL = url
         } else {
             process.executableURL = URL(fileURLWithPath: command)
@@ -309,9 +304,46 @@ struct RealCommandRunner: CommandRunner, Sendable {
         } catch {
             return CommandOutcome(status: -1, stdout: "", stderr: error.localizedDescription)
         }
+
+        let group = DispatchGroup()
+        let outBox = CommandDataBox()
+        let errBox = CommandDataBox()
+        group.enter()
+        DispatchQueue.global().async {
+            outBox.finish(stdout.fileHandleForReading.readDataToEndOfFile())
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global().async {
+            errBox.finish(stderr.fileHandleForReading.readDataToEndOfFile())
+            group.leave()
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            process.terminate()
+            Thread.sleep(forTimeInterval: 0.5)
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
         process.waitUntilExit()
-        let out = String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let err = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        return CommandOutcome(status: process.terminationStatus, stdout: out, stderr: err)
+        // The drain is bounded: a child that the command left behind can
+        // hold the pipe open, and the app must not wait for it forever.
+        let drained = group.wait(timeout: .now() + 2) == .success
+        let out = outBox.value() ?? Data()
+        let err = errBox.value() ?? Data()
+
+        let timedOut = Date() >= deadline && process.terminationStatus != 0
+        var stderrText = String(decoding: err, as: UTF8.self)
+        if timedOut {
+            stderrText += "\nThe command did not finish within \(Int(timeout)) seconds."
+        } else if !drained {
+            stderrText += "\nThe command left a child process holding its output open."
+        }
+        return CommandOutcome(status: process.terminationStatus,
+                              stdout: String(decoding: out, as: UTF8.self),
+                              stderr: stderrText)
     }
 }

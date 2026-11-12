@@ -50,6 +50,12 @@ struct SafeFileReplacer {
         try contents.write(to: resolvedFileURL(for: url), atomically: true, encoding: .utf8)
     }
 
+    /// Writes exact bytes atomically, the way the text overload does, so an
+    /// undo can put a file back byte for byte.
+    func writeAtomicallyPreservingSymlinks(_ data: Data, to url: URL) throws {
+        try data.write(to: resolvedFileURL(for: url), options: .atomic)
+    }
+
     /// Resolves `url` to the file it points at when `url` is a symlink.
     func resolvedFileURL(for url: URL) -> URL {
         guard isSymlink(url) else { return url }

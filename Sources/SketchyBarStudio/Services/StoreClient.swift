@@ -156,7 +156,20 @@ struct StoreClient {
     static let maxReadmeBytes = 256 * 1024
 
     private final class ReadmeCache {
-        var results: [String: StoreReadmeResult] = [:]
+        private let lock = NSLock()
+        private var results: [String: StoreReadmeResult] = [:]
+
+        func result(for key: String) -> StoreReadmeResult? {
+            lock.lock()
+            defer { lock.unlock() }
+            return results[key]
+        }
+
+        func store(_ result: StoreReadmeResult, for key: String) {
+            lock.lock()
+            defer { lock.unlock() }
+            results[key] = result
+        }
     }
 
     private let transport: any StoreTransport
@@ -230,7 +243,7 @@ struct StoreClient {
     /// re-selecting an entry does not hammer a dead URL.
     func readme(for entry: StoreEntry) async -> StoreReadmeResult {
         let key = "\(entry.id)@\(entry.ref)"
-        if let cached = readmeCache.results[key] { return cached }
+        if let cached = readmeCache.result(for: key) { return cached }
 
         var lastURL = entry.rawFileURLString
         for candidate in Self.readmeCandidates(for: entry) {
@@ -240,28 +253,28 @@ struct StoreClient {
                 let data = try await transport.fetch(url, limit: Self.maxReadmeBytes)
                 guard data.count <= Self.maxReadmeBytes else {
                     let result = StoreReadmeResult.unavailable(url: url.absoluteString)
-                    readmeCache.results[key] = result
+                    readmeCache.store(result, for: key)
                     return result
                 }
                 guard let text = String(data: data, encoding: .utf8) else {
                     let result = StoreReadmeResult.unavailable(url: url.absoluteString)
-                    readmeCache.results[key] = result
+                    readmeCache.store(result, for: key)
                     return result
                 }
                 let result = StoreReadmeResult.loaded(StoreReadme(text: text, url: url))
-                readmeCache.results[key] = result
+                readmeCache.store(result, for: key)
                 return result
             } catch StoreError.notFound {
                 continue
             } catch {
                 let result = StoreReadmeResult.unavailable(url: url.absoluteString)
-                readmeCache.results[key] = result
+                readmeCache.store(result, for: key)
                 return result
             }
         }
 
         let result = StoreReadmeResult.unavailable(url: lastURL)
-        readmeCache.results[key] = result
+        readmeCache.store(result, for: key)
         return result
     }
 

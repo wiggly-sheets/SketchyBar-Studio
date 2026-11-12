@@ -73,7 +73,7 @@ enum DetailPaneMode: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .edit: return "Edit"
-        case .preview: return "Preview"
+        case .preview: return "Simulation"
         }
     }
 
@@ -194,6 +194,8 @@ final class SketchyBarStore: ObservableObject {
     /// True when a snapshot of the live bar is on disk, so the Restore can
     /// put the live bar back.
     @Published private(set) var liveBarHasSnapshot: Bool = false
+    /// True while a push or a restore of the live bar runs.
+    @Published private(set) var liveBarIsWorking = false
 
     private var sessions: [ConfigFile.ID: DocumentSession] = [:]
     private var valueIndex: [LuaEditableValue.ID: ValueLocation] = [:]
@@ -215,6 +217,10 @@ final class SketchyBarStore: ObservableObject {
     @Published private(set) var sourceDraftRevision = 0
     /// Guards against an out-of-order background reload.
     private var reloadGeneration = 0
+    /// The last disk signature of a rendered source, with the time it was
+    /// read. The signature of a config that is not open is read from disk,
+    /// and the body of the preview asks for it on every pass.
+    var diskSignatureCache: [String: (signature: Int, date: Date)] = [:]
     /// Kept so the status message can report a config library that could
     /// not be read.
     private var libraryErrorMessage: String?
@@ -240,6 +246,14 @@ final class SketchyBarStore: ObservableObject {
     private var liveBarPreviewGeneration = 0
     /// True while a push runs.
     private var liveBarPushIsRunning = false
+    /// True while a restore runs.
+    ///
+    /// A restore and a push write the same bar and the same snapshot file,
+    /// so they never run at the same time: a restore that overlaps a push
+    /// could delete the snapshot the push just recorded.
+    private var liveBarRestoreIsRunning = false
+    /// The number of the restores of the session.
+    private var liveBarRestoreGeneration = 0
     /// The push that waits for the running push to end.
     ///
     /// A new request replaces the one that waits, so the newest values of
@@ -251,6 +265,12 @@ final class SketchyBarStore: ObservableObject {
     /// these, so a push does not ask the daemon about every item of the
     /// config.
     private var liveBarKnownValues: [String: [String: String]] = [:]
+    /// The number of the invalidations of the known values.
+    ///
+    /// A push that started before a reload or a switch carries the cache of
+    /// the older state. Its result is dropped, so it cannot put the stale
+    /// values back into the cache.
+    private var liveBarKnownEpoch = 0
     /// The defaults of the app, where the live update mode is saved.
     private let defaults: UserDefaults
 
@@ -355,6 +375,10 @@ final class SketchyBarStore: ObservableObject {
     var hasUnsavedChanges: Bool {
         sessions.contains { $0.value.hasUnsavedChanges } || !stagedLoaderOrders.isEmpty
     }
+
+    /// True when the loader order of the open config is staged and not on
+    /// disk.
+    var hasStagedLoaderOrder: Bool { !stagedLoaderOrders.isEmpty }
 
     var selectedHasLoadError: Bool {
         selectedFile.map { loadError(for: $0) != nil } ?? false
@@ -496,11 +520,16 @@ final class SketchyBarStore: ObservableObject {
         // The preview follows the config the app has open, so the choice
         // of the picker starts over with the new config.
         barRenderSource = nil
+        // The live bar belongs to the new config now, so the first push of
+        // that config asks the user before it changes the bar.
+        hasPushedLiveBar = false
+        clearLiveBarKnownValues()
         UserDefaults.standard.set(id, forKey: "selectedConfigID")
         UserDefaults.standard.set(config.path, forKey: "configRoot")
         selectedFileID = nil
         sessions.removeAll()
         valueIndex.removeAll()
+        diskSignatureCache.removeAll()
         // The steps belong to the old root, so they go with its drafts.
         if !keepHistory {
             undoStack.clear()
@@ -560,6 +589,8 @@ final class SketchyBarStore: ObservableObject {
         guard let selectedConfig else { return }
         do {
             try configSwitchService.activate(config: selectedConfig)
+            hasPushedLiveBar = false
+            clearLiveBarKnownValues()
             statusMessage = "Activated \(selectedConfig.name) as ~/.config/sketchybar symlink."
             applySketchyBarReload()
         } catch {
@@ -567,16 +598,17 @@ final class SketchyBarStore: ObservableObject {
         }
     }
 
-    func update(valueID: LuaEditableValue.ID, draftValue: String) {
+    @discardableResult
+    func update(valueID: LuaEditableValue.ID, draftValue: String) -> Bool {
         guard let location = valueIndex[valueID] else {
             statusMessage = "That value no longer exists — reload the file to pick up changes."
-            return
+            return false
         }
         guard let previous = value(at: location)?.draftValue else {
             statusMessage = "That value no longer exists — reload the file to pick up changes."
-            return
+            return false
         }
-        guard applyDraft(valueID: valueID, draftValue: draftValue) else { return }
+        guard applyDraft(valueID: valueID, draftValue: draftValue) else { return false }
         registerUndo(UndoAction(
             title: "Change \(value(at: location)?.keyPath ?? "value")",
             coalescingKey: "value:\(location.fileID):\(valueID)",
@@ -606,6 +638,7 @@ final class SketchyBarStore: ObservableObject {
             // history for good.
             isDead: { [weak self] in self?.valueIsGone(valueID) ?? true }
         ))
+        return true
     }
 
     /// Writes a draft into a value without adding an undo step.
@@ -637,6 +670,9 @@ final class SketchyBarStore: ObservableObject {
         )
         sessions[location.fileID] = session
         syncFiles()
+        // A background scan that started before this edit must not replace
+        // the saved text with an older copy when it finishes.
+        reloadGeneration &+= 1
         // The live bar follows the edit when the mode says so.
         scheduleLiveBarPush()
         return true
@@ -674,6 +710,10 @@ final class SketchyBarStore: ObservableObject {
     @discardableResult
     func saveSelectedFile() -> Bool {
         guard let selectedFile, var session = sessions[selectedFile.id] else { return false }
+        if session.file.isMissingFromDisk {
+            statusMessage = "\(selectedFile.displayName) is missing from disk, so its draft was kept. Put the file back, then save it."
+            return false
+        }
         guard !(session.hasRawDraft && session.hasStructuredDraft) else {
             statusMessage = DocumentSessionError.competingDrafts.localizedDescription
             return false
@@ -948,6 +988,7 @@ final class SketchyBarStore: ObservableObject {
         }
         store(session: session)
         sourceDraftRevision &+= 1
+        reloadGeneration &+= 1
         registerUndo(UndoAction(
             title: "Edit source of \(file.displayName)",
             coalescingKey: "source:\(file.id)",
@@ -1059,6 +1100,11 @@ final class SketchyBarStore: ObservableObject {
     /// reach the live bar.
     private func finishSketchyBarReload(_ message: String) {
         setStatusMessage(message)
+        // The reload rebuilds every item from the files on disk, so the
+        // values of the last push are gone. The next push has to ask the
+        // daemon again, or it would report "nothing changed" for exactly
+        // the items the reload reset.
+        clearLiveBarKnownValues()
         guard liveUpdateMode == .onApply else { return }
         requestLiveBarPush(structuredOnly: true)
     }
@@ -1212,14 +1258,16 @@ final class SketchyBarStore: ObservableObject {
     /// bar, so a push that waits while the mode is turned off does not
     /// run.
     private func startQueuedLiveBarPush() {
-        guard !liveBarPushIsRunning, let request = queuedLiveBarPush else { return }
+        guard !liveBarPushIsRunning, !liveBarRestoreIsRunning, let request = queuedLiveBarPush else { return }
         queuedLiveBarPush = nil
         if request.pushesItems, liveUpdateMode == .never {
             statusMessage = "The live bar update mode is 'Never', so the live bar is not changed."
             return
         }
         liveBarPushIsRunning = true
+        liveBarIsWorking = true
         let generation = liveBarPushGeneration
+        let knownEpoch = liveBarKnownEpoch
         let plan = liveBarPlan(structuredOnly: request.structuredOnly)
         let known = liveBarKnownValues
         let runner = liveBarRunner
@@ -1237,7 +1285,10 @@ final class SketchyBarStore: ObservableObject {
                                                          snapshotStore: snapshotStore,
                                                          runner: runner)
             }
-            await self?.finishLiveBarPush(outcome, generation: generation, request: request)
+            await self?.finishLiveBarPush(outcome,
+                                          generation: generation,
+                                          knownEpoch: knownEpoch,
+                                          request: request)
         }
     }
 
@@ -1248,9 +1299,11 @@ final class SketchyBarStore: ObservableObject {
     /// would be the wrong ones.
     private func finishLiveBarPush(_ outcome: LiveBarService.PushOutcome,
                                    generation: Int,
+                                   knownEpoch: Int,
                                    request: LiveBarPushRequest) {
         liveBarPushIsRunning = false
-        if generation == liveBarPushGeneration {
+        liveBarIsWorking = false
+        if generation == liveBarPushGeneration, knownEpoch == liveBarKnownEpoch {
             if request.pushesItems {
                 // The known values are the values of the items, so a push
                 // of the settings of the bar does not throw them away.
@@ -1271,22 +1324,43 @@ final class SketchyBarStore: ObservableObject {
 
     /// Puts the live bar back to the state it had before the first push.
     func restoreLiveBar() {
+        guard !liveBarPushIsRunning, !liveBarRestoreIsRunning else {
+            statusMessage = "Wait for the live bar update that is running, then restore it."
+            return
+        }
+        liveBarRestoreIsRunning = true
+        liveBarIsWorking = true
+        liveBarRestoreGeneration &+= 1
+        let generation = liveBarRestoreGeneration
         let runner = liveBarRunner
         let snapshotStore = liveBarSnapshotStore
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = LiveBarService.restore(snapshotStore: snapshotStore, runner: runner)
-            await self?.finishLiveBarRestore(outcome)
+            await self?.finishLiveBarRestore(outcome, generation: generation)
         }
     }
 
     /// Takes over the result of a restore.
-    private func finishLiveBarRestore(_ outcome: LiveBarService.RestoreOutcome) {
+    private func finishLiveBarRestore(_ outcome: LiveBarService.RestoreOutcome, generation: Int) {
+        guard generation == liveBarRestoreGeneration else { return }
+        liveBarRestoreIsRunning = false
+        liveBarIsWorking = false
         // The live bar has the old values again, so the values of the last
-        // push are dropped: the next push asks the daemon again.
-        liveBarKnownValues = [:]
+        // push are dropped: the next push asks the daemon again. The first
+        // push after a restore asks the user again, like the first push of
+        // a session.
+        clearLiveBarKnownValues()
+        hasPushedLiveBar = false
         liveBarHasSnapshot = liveBarSnapshotStore.exists
         liveBarMessage = outcome.message
         statusMessage = outcome.message
+        // A push that waited for the restore goes now.
+        startQueuedLiveBarPush()
+    }
+
+    private func clearLiveBarKnownValues() {
+        liveBarKnownValues = [:]
+        liveBarKnownEpoch &+= 1
     }
 
     /// Schedules a push of the previewed bar to the live bar.
@@ -1329,6 +1403,18 @@ final class SketchyBarStore: ObservableObject {
 
     @discardableResult
     func moveItem(fileID: ConfigFile.ID, before targetFileID: ConfigFile.ID) -> Bool {
+        moveItem(fileID: fileID, relativeTo: targetFileID, after: false)
+    }
+
+    @discardableResult
+    func moveItem(fileID: ConfigFile.ID, after targetFileID: ConfigFile.ID) -> Bool {
+        moveItem(fileID: fileID, relativeTo: targetFileID, after: true)
+    }
+
+    @discardableResult
+    private func moveItem(fileID: ConfigFile.ID,
+                          relativeTo targetFileID: ConfigFile.ID,
+                          after: Bool) -> Bool {
         guard let file = files.first(where: { $0.id == fileID }),
               let targetFile = files.first(where: { $0.id == targetFileID }),
               file.id != targetFile.id else {
@@ -1344,18 +1430,23 @@ final class SketchyBarStore: ObservableObject {
             return false
         }
         var order = stagedLoaderOrders[key] ?? baseLoaderOrder(forKey: key)
-        guard let sourceIndex = order.firstIndex(of: fileID), let targetIndex = order.firstIndex(of: targetFileID) else {
+        guard let sourceIndex = order.firstIndex(of: fileID),
+              order.contains(targetFileID) else {
             statusMessage = "That item cannot be moved here."
             return false
         }
         let previous = stagedLoaderOrders[key]
         order.remove(at: sourceIndex)
-        order.insert(fileID, at: sourceIndex < targetIndex ? targetIndex - 1 : targetIndex)
+        guard let targetIndex = order.firstIndex(of: targetFileID) else {
+            statusMessage = "That item cannot be moved here."
+            return false
+        }
+        order.insert(fileID, at: after ? targetIndex + 1 : targetIndex)
         let staged = order
         setStagedLoaderOrder(order, forKey: key)
-        statusMessage = "Staged \(file.displayName) before \(targetFile.displayName). Save to update the loader."
+        statusMessage = "Staged \(file.displayName) \(after ? "after" : "before") \(targetFile.displayName). Save to update the loader."
         registerUndo(UndoAction(
-            title: "Move \(file.displayName) before \(targetFile.displayName)",
+            title: "Move \(file.displayName) \(after ? "after" : "before") \(targetFile.displayName)",
             coalescingKey: "order:\(key):\(fileID)",
             undo: { [weak self] in self?.restoreStagedOrder(previous, forKey: key) ?? false },
             redo: { [weak self] in self?.restoreStagedOrder(staged, forKey: key) ?? false }
@@ -1376,11 +1467,25 @@ final class SketchyBarStore: ObservableObject {
         return true
     }
 
-    /// Moves an item to another bar position and stages its loader order in
-    /// one step. The position is only changed when the order change is
-    /// accepted, so a rejected move never leaves half of the edit behind.
+    /// Moves an item to another bar position and stages its loader order.
+    ///
+    /// The position is only changed when the order change is accepted, so a
+    /// rejected move never leaves half of the edit behind. The order and the
+    /// position are two drafts, so undo takes them back one after the other.
     @discardableResult
     func moveItem(fileID: ConfigFile.ID, before targetFileID: ConfigFile.ID?, to position: String) -> Bool {
+        moveItem(fileID: fileID, relativeTo: targetFileID, after: false, to: position)
+    }
+
+    @discardableResult
+    func moveItem(fileID: ConfigFile.ID, after targetFileID: ConfigFile.ID?, to position: String) -> Bool {
+        moveItem(fileID: fileID, relativeTo: targetFileID, after: true, to: position)
+    }
+
+    private func moveItem(fileID: ConfigFile.ID,
+                          relativeTo targetFileID: ConfigFile.ID?,
+                          after: Bool,
+                          to position: String) -> Bool {
         guard let file = files.first(where: { $0.id == fileID }) else {
             statusMessage = "That item is no longer in the config."
             return false
@@ -1389,13 +1494,33 @@ final class SketchyBarStore: ObservableObject {
             statusMessage = "Save or revert the source draft before moving this item."
             return false
         }
+        // The position is resolved before the order is touched, so a file
+        // whose position lives in its add command (a shell config) is
+        // refused without staging half of the move.
+        guard let positionValue = file.values.last(where: {
+            SketchyBarValueRules.leaf(of: $0.keyPath) == "position"
+        }) else {
+            statusMessage = "The position of \(file.displayName) is part of its add command. Edit the file source to change it."
+            return false
+        }
+
         if let targetFileID {
-            guard moveItem(fileID: fileID, before: targetFileID) else { return false }
+            let reordered = after
+                ? moveItem(fileID: fileID, after: targetFileID)
+                : moveItem(fileID: fileID, before: targetFileID)
+            if !reordered {
+                guard let target = files.first(where: { $0.id == targetFileID }),
+                      loaderKey(for: file) != loaderKey(for: target) else {
+                    return false
+                }
+                // Items of different loaders cannot share an order, but a
+                // move to another position still works: the item keeps its
+                // loader and changes only its position.
+            }
         }
-        if let positionValue = file.values.first(where: { SketchyBarValueRules.leaf(of: $0.keyPath) == "position" }) {
-            update(valueID: positionValue.id, draftValue: position)
-        }
-        return true
+
+        guard positionValue.draftValue != position || targetFileID == nil else { return true }
+        return update(valueID: positionValue.id, draftValue: position)
     }
 
     /// The position of every file in the loader order, with the staged
@@ -1619,12 +1744,13 @@ final class SketchyBarStore: ObservableObject {
         let files = ConfigScaffolder().fileContents(style: style, starterItems: starterItems)
         let rootExisted = FileManager.default.fileExists(atPath: rootURL.path)
 
-        guard let written = writeNewConfigFiles(files, rootURL: rootURL, overwrite: overwrite) else {
+        guard let write = writeNewConfigFiles(files, rootURL: rootURL, overwrite: overwrite) else {
             // The write took the files it wrote with it. The folder of the
             // config only goes when the app created it.
             if !rootExisted { try? FileManager.default.removeItem(at: rootURL) }
             return nil
         }
+        let written = write.urls
 
         let config = ConfigWorkspace.make(name: trimmedName, url: rootURL)
         configs.append(config)
@@ -1639,7 +1765,11 @@ final class SketchyBarStore: ObservableObject {
             // The creation of a config is never merged with another change.
             coalescingKey: nil,
             undo: { [weak self] in
-                self?.undoNewConfig(config: config, files: written, rootURL: rootURL, removeRoot: !rootExisted) ?? false
+                self?.undoNewConfig(config: config,
+                                    files: written,
+                                    previous: write.previous,
+                                    rootURL: rootURL,
+                                    removeRoot: !rootExisted) ?? false
             },
             redo: { [weak self] in
                 self?.redoNewConfig(config: config, files: files, rootURL: rootURL) ?? false
@@ -1648,45 +1778,63 @@ final class SketchyBarStore: ObservableObject {
         return NewConfigResult(rootURL: rootURL, fileURLs: written, configID: config.id)
     }
 
+    /// What a write of a new config produced: the files that were written
+    /// and the bytes of the files that were replaced.
+    private struct NewConfigWrite {
+        let urls: [URL]
+        /// The exact text of every file that existed before the write, so
+        /// undoing the creation puts the user's file back instead of
+        /// deleting it.
+        let previous: [URL: Data]
+    }
+
     /// Writes the files of a new config.
     ///
     /// The files are written through the guarded write of the app, so a
     /// symlinked file keeps its link. A file that already exists is only
     /// replaced with `overwrite`, and a replaced file is kept in the backup
-    /// mirror first.
+    /// mirror first. The bytes of a replaced file travel back with the
+    /// result, so an undo restores the file instead of removing it.
     ///
     /// A file that cannot be written takes the files that were written
     /// before it with it, so a half written config is never left behind.
-    /// The method returns the files that were written, or nil when the
-    /// creation was refused.
     private func writeNewConfigFiles(
         _ files: [String: String],
         rootURL: URL,
         overwrite: Bool
-    ) -> [URL]? {
+    ) -> NewConfigWrite? {
         let replacer = SafeFileReplacer()
         var written: [URL] = []
+        var previous: [URL: Data] = [:]
+
+        func rollback() {
+            rollbackNewConfigFiles(written, previous: previous, rootURL: rootURL, removeRoot: false)
+        }
 
         for (relativePath, contents) in files.sorted(by: { $0.key < $1.key }) {
             let url = rootURL.appendingPathComponent(relativePath).standardizedFileURL
             guard isInside(url, root: rootURL) else {
-                removeNewConfigFiles(written, rootURL: rootURL, removeRoot: false)
+                rollback()
                 statusMessage = "Refusing to write outside the config folder: \(url.path)"
                 return nil
             }
 
             if replacer.itemExists(at: url) {
                 guard overwrite else {
-                    removeNewConfigFiles(written, rootURL: rootURL, removeRoot: false)
+                    rollback()
                     statusMessage = "\(relativePath) already exists. Confirm to replace it."
                     return nil
                 }
                 do {
+                    // The bytes are kept before the write, so the undo of the
+                    // creation can put the user's file back.
+                    let data = try Data(contentsOf: replacer.resolvedFileURL(for: url))
+                    previous[url] = data
                     // A file that is replaced is kept in the backup mirror
                     // first.
                     _ = try backupService.backup(fileURL: url, rootURL: rootURL)
                 } catch {
-                    removeNewConfigFiles(written, rootURL: rootURL, removeRoot: false)
+                    rollback()
                     statusMessage = "Could not back up \(relativePath): \(error.localizedDescription)"
                     return nil
                 }
@@ -1699,26 +1847,47 @@ final class SketchyBarStore: ObservableObject {
                 )
                 try replacer.writeAtomicallyPreservingSymlinks(contents, to: url)
             } catch {
-                removeNewConfigFiles(written, rootURL: rootURL, removeRoot: false)
+                rollback()
                 statusMessage = "Could not create \(relativePath): \(error.localizedDescription)"
                 return nil
             }
             written.append(url)
         }
 
-        return written
+        return NewConfigWrite(urls: written, previous: previous)
     }
 
-    /// Removes the files of a new config and the folders that are empty
-    /// afterwards.
+    /// Puts the files of a refused creation back.
     ///
-    /// A folder that still holds something is kept, so nothing of the user
-    /// is lost. The folder of the config only goes when the app created it.
-    private func removeNewConfigFiles(_ urls: [URL], rootURL: URL, removeRoot: Bool) {
+    /// A file that existed before gets its exact bytes back; a file the
+    /// creation introduced is removed. This runs when the creation fails
+    /// halfway, so the user's folder is exactly what it was.
+    @discardableResult
+    private func rollbackNewConfigFiles(
+        _ urls: [URL],
+        previous: [URL: Data],
+        rootURL: URL,
+        removeRoot: Bool
+    ) -> [String] {
+        let replacer = SafeFileReplacer()
+        var failures: [String] = []
         for url in urls.reversed() {
-            try? FileManager.default.removeItem(at: url)
+            do {
+                if let data = previous[url] {
+                    try replacer.writeAtomicallyPreservingSymlinks(data, to: url)
+                } else {
+                    try FileManager.default.removeItem(at: url)
+                }
+            } catch {
+                failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+            }
         }
+        removeEmptyNewConfigFolders(urls, rootURL: rootURL, removeRoot: removeRoot)
+        return failures
+    }
 
+    /// Removes the folders a new config created, when they are empty.
+    private func removeEmptyNewConfigFolders(_ urls: [URL], rootURL: URL, removeRoot: Bool) {
         let rootPath = rootURL.standardizedFileURL.path
         let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
         var folders: Set<URL> = []
@@ -1740,13 +1909,21 @@ final class SketchyBarStore: ObservableObject {
     }
 
     /// Takes a new config back: the files and the entry of the library go.
+    ///
+    /// A file the creation replaced gets its exact previous bytes back; only
+    /// a file the creation introduced is removed.
     private func undoNewConfig(
         config: ConfigWorkspace,
         files: [URL],
+        previous: [URL: Data],
         rootURL: URL,
         removeRoot: Bool
     ) -> Bool {
-        removeNewConfigFiles(files, rootURL: rootURL, removeRoot: removeRoot)
+        let failures = rollbackNewConfigFiles(files, previous: previous, rootURL: rootURL, removeRoot: removeRoot)
+        guard failures.isEmpty else {
+            statusMessage = "Undo failed and part of the config was left on disk: \(failures.joined(separator: "; ")). The config stays in the library."
+            return false
+        }
         configs.removeAll { $0.id == config.id }
         saveConfigLibrary()
         if selectedConfigID == config.id, let first = configs.first {
@@ -1758,14 +1935,20 @@ final class SketchyBarStore: ObservableObject {
     }
 
     /// Creates a new config again after an undo.
+    ///
+    /// The undo put the previous files of a replaced config back, so the
+    /// redo writes over them; a file the creation introduced is gone and is
+    /// written anew. The write keeps the previous bytes again, so a second
+    /// undo restores the same files.
     private func redoNewConfig(
         config: ConfigWorkspace,
         files: [String: String],
         rootURL: URL
     ) -> Bool {
-        guard let written = writeNewConfigFiles(files, rootURL: rootURL, overwrite: false) else {
+        guard let write = writeNewConfigFiles(files, rootURL: rootURL, overwrite: true) else {
             return false
         }
+        let written = write.urls
         if !configs.contains(where: { $0.id == config.id }) {
             configs.append(config)
             saveConfigLibrary()
@@ -2062,15 +2245,30 @@ final class SketchyBarStore: ObservableObject {
     }
 
     func saveProfile() {
-        do {
-            try profileService.saveProfile(named: profileName, from: configRoot, configID: selectedConfigProfileID)
-            profileName = ""
-            profiles = profileService.listProfiles(for: selectedConfigProfileID)
-            refreshLibraryProfiles()
-            statusMessage = "Saved profile for \(selectedConfig?.name ?? "config")."
-        } catch {
-            statusMessage = "Profile save failed: \(error.localizedDescription)"
+        let name = profileName
+        let root = configRoot
+        let configID = selectedConfigProfileID
+        profileName = ""
+        statusMessage = "Saving profile…"
+        Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                try ProfileArchiveService().saveProfile(named: name, from: root, configID: configID)
+                await self?.finishProfileSave(configID: configID)
+            } catch {
+                await self?.finishProfileSaveFailure(error)
+            }
         }
+    }
+
+    /// Takes over a profile that was copied in the background.
+    private func finishProfileSave(configID: String) {
+        profiles = profileService.listProfiles(for: configID)
+        refreshLibraryProfiles()
+        statusMessage = "Saved profile for \(selectedConfig?.name ?? "config")."
+    }
+
+    private func finishProfileSaveFailure(_ error: Error) {
+        statusMessage = "Profile save failed: \(error.localizedDescription)"
     }
 
     func restore(profile: ConfigProfile) {
@@ -2078,13 +2276,26 @@ final class SketchyBarStore: ObservableObject {
             statusMessage = "Save or discard all edits in this config before restoring a profile."
             return
         }
-        do {
-            try profileService.restore(profile: profile, to: configRoot)
-            reload(preservingDraftsExcept: Set(files.map(\.id)))
-            statusMessage = "Restored \(profile.name). A timestamped copy of the previous config was kept in the app's Application Support folder."
-        } catch {
-            statusMessage = "Restore failed: \(error.localizedDescription)"
+        let root = configRoot
+        statusMessage = "Restoring \(profile.name)…"
+        Task.detached(priority: .userInitiated) { [weak self] in
+            do {
+                try ProfileArchiveService().restore(profile: profile, to: root)
+                await self?.finishProfileRestore(profile)
+            } catch {
+                await self?.finishProfileRestoreFailure(error)
+            }
         }
+    }
+
+    /// Takes over a profile that was restored in the background.
+    private func finishProfileRestore(_ profile: ConfigProfile) {
+        reloadAsync()
+        statusMessage = "Restored \(profile.name). A timestamped copy of the previous config was kept in the app's Application Support folder."
+    }
+
+    private func finishProfileRestoreFailure(_ error: Error) {
+        statusMessage = "Restore failed: \(error.localizedDescription)"
     }
 
     /// Reads the saved profiles of every config of the library.
@@ -2155,7 +2366,13 @@ final class SketchyBarStore: ObservableObject {
         if case .config(let id) = source, id == selectedConfig?.id {
             return draftsSignature()
         }
-        return diskSignature(for: source)
+        let now = Date()
+        if let cached = diskSignatureCache[source.id], now.timeIntervalSince(cached.date) < 1 {
+            return cached.signature
+        }
+        let signature = diskSignature(for: source)
+        diskSignatureCache[source.id] = (signature, now)
+        return signature
     }
 
     /// The signature of the drafts of the app.
@@ -2192,34 +2409,30 @@ final class SketchyBarStore: ObservableObject {
         let locator = SketchyBarConfigLocator()
         let activationReferences = ConfigActivationService().references(for: configURLs, rootURL: rootURL)
 
-        return configURLs.compactMap { url in
+        let scanned: [ScannedConfigFile] = configURLs.compactMap { url -> ScannedConfigFile? in
             guard let kind = locator.kind(for: url) else { return nil }
-
-            var contents: String?
-            var loadError: String?
-            do {
-                contents = try String(contentsOf: url, encoding: .utf8)
-            } catch {
-                loadError = error.localizedDescription
-            }
-
-            let text = contents ?? ""
-            let values: [LuaEditableValue]
-            switch kind {
-            case .lua: values = LuaConfigScanner().scan(fileURL: url, contents: text)
-            case .shell, .sketchybarRC: values = ShellConfigScanner().scan(fileURL: url, contents: text)
-            }
-
+            let scanned = Self.scanCache.scanned(url: url, kind: kind)
             let file = ConfigFile(
                 url: url,
                 rootURL: rootURL,
                 kind: kind,
-                values: values,
+                values: scanned.values,
                 activationReference: activationReferences[url.path]
             )
-            return ScannedConfigFile(file: file, contents: contents, loadError: loadError)
+            return ScannedConfigFile(file: file, contents: scanned.contents, loadError: scanned.loadError)
         }
+        Self.scanCache.prune(keeping: Set(configURLs.map(\.path)))
+        return scanned
     }
+
+    /// The parsed form of every file the app has seen, keyed by path and the
+    /// modification date and size on disk.
+    ///
+    /// A save, an undo, an activation toggle and a profile restore all reload
+    /// the config. Re-reading and re-parsing every file for one changed file
+    /// is what made those actions slow on a large dotfiles repository, so an
+    /// unchanged file hands back the values the previous scan produced.
+    private static let scanCache = ConfigScanCache()
 
     /// Re-reads every config file. Drafts are carried over by stable key, so
     /// they survive line shifts. Files that vanished from disk keep their
@@ -2228,6 +2441,7 @@ final class SketchyBarStore: ObservableObject {
     @discardableResult
     private func reload(preservingDraftsExcept discardedFileIDs: Set<ConfigFile.ID>) -> [String] {
         reloadGeneration += 1
+        diskSignatureCache.removeAll()
         let scanned = Self.scanConfig(rootURL: configRoot, configURLs: locator.configFiles(in: configRoot))
         return apply(scanned, preservingDraftsExcept: discardedFileIDs)
     }
@@ -2246,7 +2460,13 @@ final class SketchyBarStore: ObservableObject {
                     loadError: scannedFile.loadError
                 )
             } else if var existing = sessions[scannedConfig.id] {
-                if !existing.hasRawDraft { existing.refresh(with: scannedFile.contents, loadError: scannedFile.loadError) }
+                if !existing.hasRawDraft {
+                    existing.refresh(with: scannedFile.contents, loadError: scannedFile.loadError)
+                } else if scannedFile.contents != nil {
+                    // The file is back, even when a raw draft is still open.
+                    // The stale "missing from disk" error must not hide it.
+                    existing.clearMissingState()
+                }
                 let missingDrafts = existing.merge(from: scannedConfig)
                 if missingDrafts > 0 {
                     warnings.append("\(missingDrafts) edited \(missingDrafts == 1 ? "value" : "values") no longer \(missingDrafts == 1 ? "exists" : "exist") in \(scannedConfig.url.lastPathComponent) and \(missingDrafts == 1 ? "was kept as a draft" : "were kept as drafts").")
@@ -2309,9 +2529,12 @@ final class SketchyBarStore: ObservableObject {
     /// Runs `sketchybar --reload` and waits for it with a timeout, so an
     /// Automation prompt cannot freeze the app.
     nonisolated private static func runSketchyBarReload() -> String {
+        guard let binary = StoreDependencyService.binURL(for: "sketchybar") else {
+            return "Could not run sketchybar --reload: the SketchyBar binary was not found. Install SketchyBar with Homebrew, then try again."
+        }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["sketchybar", "--reload"]
+        process.executableURL = binary
+        process.arguments = ["--reload"]
 
         let finished = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in finished.signal() }
@@ -2428,6 +2651,12 @@ final class SketchyBarStore: ObservableObject {
     /// in files that vanished from disk are counted too. Sessions only exist
     /// for the current config root.
     private func hasUnsavedChanges(in rootURL: URL) -> Bool {
+        // A staged loader order belongs to the open root, so it counts as
+        // unsaved work of that root too. Without this, switching configs
+        // would drop a reorder the user has not saved yet.
+        if Self.isSameConfigFolder(rootURL, configRoot), !stagedLoaderOrders.isEmpty {
+            return true
+        }
         let rootPath = rootURL.standardizedFileURL.path + "/"
         return sessions.contains { fileID, session in
             URL(fileURLWithPath: fileID).standardizedFileURL.path.hasPrefix(rootPath) && session.hasUnsavedChanges
@@ -2548,5 +2777,70 @@ final class SketchyBarStore: ObservableObject {
     private static func savedTheme() -> AppTheme {
         guard let rawValue = UserDefaults.standard.string(forKey: "appTheme"), let theme = AppTheme(rawValue: rawValue) else { return .nord }
         return theme
+    }
+}
+
+/// The parsed form of the config files between reloads.
+///
+/// The key is the path, the modification date and the size. A file that did
+/// not change hands back the text and the values the last scan produced, so
+/// a reload after one save parses one file instead of the whole config.
+private final class ConfigScanCache: @unchecked Sendable {
+    private struct Entry {
+        let modified: Date?
+        let size: Int
+        let contents: String?
+        let loadError: String?
+        let values: [LuaEditableValue]
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+
+    struct Scanned {
+        let contents: String?
+        let loadError: String?
+        let values: [LuaEditableValue]
+    }
+
+    func scanned(url: URL, kind: ConfigFileKind) -> Scanned {
+        let resource = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        let modified = resource?.contentModificationDate
+        let size = resource?.fileSize ?? -1
+        let key = url.path
+
+        lock.lock()
+        let cached = entries[key]
+        lock.unlock()
+        if let cached, cached.modified == modified, cached.size == size {
+            return Scanned(contents: cached.contents, loadError: cached.loadError, values: cached.values)
+        }
+
+        var contents: String?
+        var loadError: String?
+        do {
+            contents = try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            loadError = error.localizedDescription
+        }
+        let text = contents ?? ""
+        let values: [LuaEditableValue]
+        switch kind {
+        case .lua: values = LuaConfigScanner().scan(fileURL: url, contents: text)
+        case .shell, .sketchybarRC: values = ShellConfigScanner().scan(fileURL: url, contents: text)
+        }
+
+        let entry = Entry(modified: modified, size: size, contents: contents, loadError: loadError, values: values)
+        lock.lock()
+        entries[key] = entry
+        lock.unlock()
+        return Scanned(contents: contents, loadError: loadError, values: values)
+    }
+
+    /// Drops the files that are no longer part of the config.
+    func prune(keeping paths: Set<String>) {
+        lock.lock()
+        entries = entries.filter { paths.contains($0.key) }
+        lock.unlock()
     }
 }

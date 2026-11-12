@@ -184,9 +184,17 @@ struct SketchyBarRunner: LiveBarRunning {
     }
 
     func run(_ command: LiveBarCommand) -> LiveBarCommandResult {
+        guard let binary = StoreDependencyService.binURL(for: Self.executableName) else {
+            return LiveBarCommandResult(
+                output: "",
+                failure: "The SketchyBar binary was not found. Install SketchyBar with Homebrew, then try again."
+            )
+        }
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [Self.executableName] + command.arguments
+        // The app runs from Finder, where PATH does not hold the Homebrew
+        // directories, so the binary is resolved explicitly before it runs.
+        process.executableURL = binary
+        process.arguments = command.arguments
 
         let output = Pipe()
         let errors = Pipe()
@@ -1211,22 +1219,43 @@ enum LiveBarService {
         }
 
         var remaining: [LiveBarSnapshot.Property] = []
+        // One command per owner: the bar properties go together, and the
+        // properties of an item go together. A snapshot of 200 properties
+        // used to spawn 200 clients; it now spawns one per item.
+        var order: [String] = []
+        var grouped: [String: [LiveBarSnapshot.Property]] = [:]
         for property in snapshot.properties {
-            guard canRestore(key: property.key, value: property.value) else {
-                outcome.failures.append("The property '\(property.key)' of \(name(of: property.alias)) could not be put back, because the live bar does not say which popup it was in.")
-                remaining.append(property)
-                continue
+            if grouped[property.alias] == nil { order.append(property.alias) }
+            grouped[property.alias, default: []].append(property)
+        }
+
+        for alias in order {
+            let properties = grouped[alias] ?? []
+            var restorable: [LiveBarProperty] = []
+            var refused: [LiveBarSnapshot.Property] = []
+            for property in properties {
+                if canRestore(key: property.key, value: property.value) {
+                    restorable.append(LiveBarProperty(key: property.key, value: property.value))
+                } else {
+                    outcome.failures.append("The property '\(property.key)' of \(name(of: property.alias)) could not be put back, because the live bar does not say which popup it was in.")
+                    refused.append(property)
+                }
             }
-            let command = property.alias.isEmpty
-                ? LiveBarCommand.setBar(properties: [LiveBarProperty(key: property.key, value: property.value)])
-                : LiveBarCommand.set(alias: property.alias, properties: [LiveBarProperty(key: property.key, value: property.value)])
+            remaining.append(contentsOf: refused)
+            guard !restorable.isEmpty else { continue }
+
+            let command = alias.isEmpty
+                ? LiveBarCommand.setBar(properties: restorable)
+                : LiveBarCommand.set(alias: alias, properties: restorable)
             let result = runner.run(command)
             if let failure = result.failure {
-                outcome.failures.append("The property '\(property.key)' of \(name(of: property.alias)) could not be put back: \(failure)")
-                remaining.append(property)
+                outcome.failures.append("The properties of \(name(of: alias)) could not be put back: \(failure)")
+                remaining.append(contentsOf: properties.filter { property in
+                    restorable.contains { $0.key == property.key }
+                })
                 continue
             }
-            outcome.restoredProperties += 1
+            outcome.restoredProperties += restorable.count
         }
 
         // The snapshot keeps what could not be put back, so the Restore
