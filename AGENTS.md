@@ -59,6 +59,7 @@ The package is ad-hoc signed after the complete bundle is assembled, but it is n
 - Never run destructive git commands or delete user config files.
 - When editing user SketchyBar configs, keep the mirrored `backups/` behavior intact.
 - Use native macOS affordances before custom UI.
+- Liquid Glass is macOS 26 and later. Keep the macOS 14 deployment target and gate every glass API with `#available(macOS 26.0, *)` or the helpers in `Support/LiquidGlass.swift`; do not paint an opaque background over a native glass surface. Bundle builds must record the real SDK in `LC_BUILD_VERSION`, which `script/build_and_run.sh` stamps before signing.
 - Avoid adding external Swift package dependencies unless the benefit is clear and CI/release impact is handled.
 
 ## SketchyBar Config Safety

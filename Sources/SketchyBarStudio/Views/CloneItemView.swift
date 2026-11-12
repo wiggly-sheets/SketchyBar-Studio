@@ -36,15 +36,15 @@ struct CloneItemView: View {
                 Text("The copy was created, but the loader file was not changed. \(loaderFailureMessage)")
             }
 
-            HStack {
-                Spacer()
+            GlassActionBar {
                 Button("Cancel") { dismiss() }
                     .accessibilityLabel("Cancel the copy")
+                    .liquidGlassButton()
                 Button("Clone Item") { clone() }
                     .disabled(!isValid)
                     .accessibilityLabel("Clone the item")
+                    .liquidGlassButton(prominent: true)
             }
-            .padding()
         }
         .frame(width: 640, height: 620)
         .onAppear { load() }

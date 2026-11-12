@@ -31,7 +31,11 @@ struct BarRenderView: View {
             messages
         }
         .padding(16)
-        .background(theme.background.opacity(0.34), in: RoundedRectangle(cornerRadius: 12))
+        .liquidGlassSurface(
+            cornerRadius: 12,
+            tint: theme.background.opacity(0.18),
+            fallback: theme.background.opacity(0.34)
+        )
         .task(id: requestKey) { await renderCurrent() }
     }
 

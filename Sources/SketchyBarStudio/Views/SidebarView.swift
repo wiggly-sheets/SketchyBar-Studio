@@ -48,8 +48,7 @@ struct SidebarView: View {
             }
             .listStyle(.sidebar)
 
-            ProfilePanel(store: store)
-                .padding()
+            profilePanel
         }
         .navigationTitle("SketchyBar")
         .sheet(item: $cloneFile) { file in
@@ -69,6 +68,26 @@ struct SidebarView: View {
         .onChange(of: store.stagedOrderRevision) { _, _ in rebuildGroups() }
         .onChange(of: expandedGroups) { _, newValue in
             expandedGroupStorage = newValue.sorted().joined(separator: "|")
+        }
+    }
+
+    @ViewBuilder
+    private var profilePanel: some View {
+        if #available(macOS 26.0, *) {
+            ProfilePanel(store: store)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .liquidGlassSurface(
+                    cornerRadius: 14,
+                    tint: store.appTheme.accent.opacity(0.08),
+                    interactive: true
+                )
+                .padding(.horizontal, 8)
+                .padding(.top, 6)
+                .padding(.bottom, 8)
+        } else {
+            ProfilePanel(store: store)
+                .padding()
         }
     }
 

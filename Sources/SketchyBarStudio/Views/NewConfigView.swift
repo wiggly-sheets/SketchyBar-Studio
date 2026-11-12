@@ -33,15 +33,15 @@ struct NewConfigView: View {
                 Text("\(targetFolder?.path ?? "The folder") already holds files. The files with the same name are replaced, and the old ones are kept in the backups folder.")
             }
 
-            HStack {
-                Spacer()
+            GlassActionBar {
                 Button("Cancel") { dismiss() }
                     .accessibilityLabel("Cancel the new config")
+                    .liquidGlassButton()
                 Button("Create Config") { create(overwrite: false) }
                     .disabled(!isValid)
                     .accessibilityLabel("Create the config")
+                    .liquidGlassButton(prominent: true)
             }
-            .padding()
         }
         .frame(width: 660, height: 700)
         .onAppear {

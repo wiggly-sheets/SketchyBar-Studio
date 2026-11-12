@@ -346,6 +346,7 @@ struct StoreView: View {
                 Label(entry.kind == .plugin ? "Install Plugin…" : "Install Setup…", systemImage: "arrow.down.circle")
             }
             .disabled(!model.canInstall(entry) || model.isWorking)
+            .liquidGlassButton(prominent: true)
 
             if model.isWorking {
                 ProgressView().controlSize(.small)
@@ -502,13 +503,19 @@ private struct StoreInstallSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Install") {
-                    onConfirm(overridePolicy)
+                LiquidGlassContainer(spacing: 10) {
+                    HStack(spacing: 10) {
+                        Button("Cancel") { dismiss() }
+                            .keyboardShortcut(.cancelAction)
+                            .liquidGlassButton()
+                        Button("Install") {
+                            onConfirm(overridePolicy)
+                        }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!accepted || model.isWorking || installBlocked)
+                        .liquidGlassButton(prominent: true)
+                    }
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!accepted || model.isWorking || installBlocked)
             }
         }
         .padding(20)
@@ -633,11 +640,17 @@ private struct StoreResolveSheet: View {
             }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Resolve") { onConfirm() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(model.isWorking)
+                LiquidGlassContainer(spacing: 10) {
+                    HStack(spacing: 10) {
+                        Button("Cancel") { dismiss() }
+                            .keyboardShortcut(.cancelAction)
+                            .liquidGlassButton()
+                        Button("Resolve") { onConfirm() }
+                            .keyboardShortcut(.defaultAction)
+                            .disabled(model.isWorking)
+                            .liquidGlassButton(prominent: true)
+                    }
+                }
             }
         }
         .padding(20)

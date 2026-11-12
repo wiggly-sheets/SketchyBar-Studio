@@ -6,6 +6,15 @@ APP_NAME="SketchyBarStudio"
 BUNDLE_ID="app.codex.SketchyBarStudio"
 MIN_SYSTEM_VERSION="14.0"
 
+# Liquid Glass lives in the macOS 26 SDK and later. The app still runs on
+# macOS 14, but the build needs a recent SDK to compile the gated code.
+SDK_VERSION="$(/usr/bin/xcrun --sdk macosx --show-sdk-version)"
+SDK_MAJOR="${SDK_VERSION%%.*}"
+if [[ ! "$SDK_MAJOR" =~ ^[0-9]+$ ]] || (( SDK_MAJOR < 26 )); then
+  echo "SketchyBar Studio needs the macOS 26 SDK or later to build; found ${SDK_VERSION:-an unknown SDK}." >&2
+  exit 2
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
@@ -44,6 +53,18 @@ if [[ "$MODE" == "--universal-package" || "$MODE" == "universal-package" ]]; the
   UNIVERSAL_BUILD="true"
 fi
 
+# Swift 6.4's SwiftPM records the deployment target in the sdk field of
+# LC_BUILD_VERSION. macOS decides from that field whether an app gets the
+# Liquid Glass design, so stamp the SDK the binary was really built with.
+stamp_linker_sdk() {
+  local binary="$1"
+  local stamped="${binary}.sdk-stamped"
+  /usr/bin/vtool -set-build-version macos "$MIN_SYSTEM_VERSION" "$SDK_VERSION" \
+    -replace -output "$stamped" "$binary"
+  mv "$stamped" "$binary"
+  chmod +x "$binary"
+}
+
 build_bundle() {
   if [[ "$UNIVERSAL_BUILD" == "true" ]]; then
     swift build --configuration "$SWIFT_CONFIGURATION" --arch arm64 --arch x86_64
@@ -58,6 +79,7 @@ build_bundle() {
   mkdir -p "$APP_MACOS" "$APP_RESOURCES"
   cp "$BUILD_BINARY" "$APP_BINARY"
   chmod +x "$APP_BINARY"
+  stamp_linker_sdk "$APP_BINARY"
   if [[ -f "$APP_ICON" ]]; then
     cp "$APP_ICON" "$APP_RESOURCES/SketchyBarStudio.icns"
   fi
@@ -99,6 +121,20 @@ verify_bundle() {
   test -f "$INFO_PLIST"
   test -f "$APP_RESOURCES/SketchyBarStudio.icns"
   /usr/bin/plutil -lint "$INFO_PLIST" >/dev/null
+
+  # The app must not opt out of the system design, and the linked SDK must
+  # be the real one or macOS renders the pre-Liquid-Glass appearance.
+  if /usr/bin/plutil -extract UIDesignRequiresCompatibility raw "$INFO_PLIST" >/dev/null 2>&1; then
+    echo "Info.plist opts out of the current system design" >&2
+    exit 1
+  fi
+  local stamped_sdks
+  stamped_sdks="$(/usr/bin/vtool -show-build "$APP_BINARY" | awk '/^[[:space:]]*sdk / { print $2 }' | sort -u)"
+  if [[ "$stamped_sdks" != "$SDK_VERSION" ]]; then
+    echo "the bundle records SDK ${stamped_sdks:-unknown}, expected $SDK_VERSION" >&2
+    exit 1
+  fi
+
   /usr/bin/codesign --verify --deep --strict "$APP_BUNDLE"
 }
 

@@ -82,15 +82,15 @@ struct AddItemWizard: View {
                 Text("\(pendingURL?.lastPathComponent ?? "The file") already exists. The old file is kept in the backups folder before it is replaced.")
             }
 
-            HStack {
-                Spacer()
+            GlassActionBar {
                 Button("Cancel") { dismiss() }
                     .accessibilityLabel("Cancel the new item")
+                    .liquidGlassButton()
                 Button("Create Item") { create() }
                     .disabled(!isValid)
                     .accessibilityLabel("Create the item")
+                    .liquidGlassButton(prominent: true)
             }
-            .padding()
         }
         .frame(width: 640, height: 720)
         .onAppear {

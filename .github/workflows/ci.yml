@@ -20,6 +20,15 @@ jobs:
           swift --version
           xcodebuild -version
 
+      - name: Require the macOS 26 SDK
+        run: |
+          SDK="$(xcrun --sdk macosx --show-sdk-version)"
+          MAJOR="${SDK%%.*}"
+          if (( MAJOR < 26 )); then
+            echo "This build needs the macOS 26 SDK or later; found $SDK." >&2
+            exit 1
+          fi
+
       - name: Clean SwiftPM cache for workspace
         run: swift package clean
 

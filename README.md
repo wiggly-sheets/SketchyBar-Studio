@@ -114,6 +114,7 @@ What you can do now: render any config or profile in the library as a live bar p
 ### Native macOS experience
 
 - Built as a native SwiftUI app for macOS 14 and later.
+- On macOS 26 and later, the app uses the system Liquid Glass design. Standard toolbars, the sidebar, sheets, popovers, menus, and dialogs adopt the native material automatically, and the app's custom chrome uses `glassEffect`, glass button styles, and `GlassEffectContainer`: the editor's mode bar, status bar, sidebar profile panel, preview stages, and sheet actions. macOS 14 and 15 keep the flat appearance.
 - Uses familiar macOS controls, including file panels, color picker, font panel, settings, and split views.
 - Includes Nord, Dracula, Monokai, Tokyo Night, and Catppuccin app-only themes.
 
@@ -189,8 +190,8 @@ You can use the GUI for routine changes and keep the code preview open whenever 
 
 ### Requirements
 
-- macOS 14 or later
-- Xcode with Swift 5.9 or later
+- macOS 14 or later to run the app
+- Xcode 26 or later, with the macOS 26 SDK or later, to build it; the Liquid Glass code is compiled in and gated at runtime
 - [SketchyBar](https://github.com/FelixKratz/SketchyBar) installed when testing live reload behavior
 
 ### Clone and run

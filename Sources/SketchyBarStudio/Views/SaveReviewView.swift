@@ -29,7 +29,11 @@ struct SaveReviewView: View {
             footer
         }
         .frame(width: 780, height: 560)
-        .background(theme.background.opacity(0.35))
+        .background {
+            if #unavailable(macOS 26.0) {
+                theme.background.opacity(0.35)
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Review the changes to \(fileName)")
         .onAppear {
@@ -113,21 +117,20 @@ struct SaveReviewView: View {
     // MARK: - Footer
 
     private var footer: some View {
-        HStack {
-            Spacer()
-
+        GlassActionBar {
             Button("Cancel") {
                 onCancel()
             }
             .keyboardShortcut(.cancelAction)
+            .liquidGlassButton()
 
             Button("Save") {
                 onSave()
             }
             .keyboardShortcut("s", modifiers: .command)
             .disabled(readError != nil)
+            .liquidGlassButton(prominent: true)
         }
-        .padding()
     }
 
     private var summaryText: String {

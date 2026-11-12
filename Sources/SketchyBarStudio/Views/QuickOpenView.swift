@@ -24,7 +24,9 @@ struct QuickOpenView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             searchField
-            Divider()
+            if #unavailable(macOS 26.0) {
+                Divider()
+            }
             content
         }
         .frame(width: 640, height: 460)
@@ -41,6 +43,23 @@ struct QuickOpenView: View {
     // MARK: - Search field
 
     private var searchField: some View {
+        Group {
+            if #available(macOS 26.0, *) {
+                searchFieldContent
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .liquidGlassSurface(cornerRadius: 12, interactive: true)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 10)
+            } else {
+                searchFieldContent
+                    .padding()
+            }
+        }
+        .onChange(of: query) { _, _ in refresh() }
+    }
+
+    private var searchFieldContent: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
@@ -68,8 +87,6 @@ struct QuickOpenView: View {
             }
             .keyboardShortcut(.cancelAction)
         }
-        .padding()
-        .onChange(of: query) { _, _ in refresh() }
     }
 
     // MARK: - Results

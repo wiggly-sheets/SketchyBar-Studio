@@ -45,6 +45,8 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ### Changed
 
+- On macOS 26 and later, the app adopts the system Liquid Glass design. Standard toolbars, the sidebar, sheets, popovers, menus, and dialogs use the native material, and the app's custom chrome now uses `glassEffect`, glass button styles, and `GlassEffectContainer`: the editor's mode bar and status bar, the sidebar profile panel, the preview stages, the Quick Open field, and the action footers of the editing and store sheets. Primary sheet actions use `glassProminent` and secondary actions use `glass`, with nearby buttons merged into one piece of glass. macOS 14 and 15 keep the previous flat appearance, and every glass call is gated with `#available(macOS 26.0, *)`.
+- Builds now record the real linked SDK in `LC_BUILD_VERSION`. SwiftPM 6.4 stamps the deployment target in that field, and macOS uses it to decide whether an app gets Liquid Glass, so the build script restamps it with the SDK that compiled the binary before signing and verifies the result. The app still records `minos 14.0`, so it runs on macOS 14 and later, but building now requires the macOS 26 SDK or later.
 - The project licence is now GPL-3.0 instead of MIT. The full licence text is in LICENSE.
 - The install instructions now point at the consolidated Homebrew tap `wiggly-sheets/homebrew-tap`. The old tap `wiggly-sheets/sketchybar-studio` is deprecated. Move over with `brew untap wiggly-sheets/sketchybar-studio` and `brew tap wiggly-sheets/homebrew-tap`.
 

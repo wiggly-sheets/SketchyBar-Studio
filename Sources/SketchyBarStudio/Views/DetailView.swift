@@ -9,23 +9,7 @@ struct DetailView: View {
 
             pane
 
-            Divider()
-
-            HStack(spacing: 6) {
-                Image(systemName: store.statusKind.symbolName)
-                    .foregroundStyle(store.statusKind.tint)
-                    .accessibilityHidden(true)
-
-                Text(store.statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(store.statusKind.tint)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(store.statusMessage)
-            .accessibilityAddTraits(.isStaticText)
+            statusBar
         }
         .background(store.appTheme.background.opacity(0.18))
         .onChange(of: store.statusMessage) { _, message in
@@ -41,7 +25,27 @@ struct DetailView: View {
     ///
     /// The picker of the live bar sits next to it, so the mode is visible
     /// where the user writes and not only in the preview pane.
+    @ViewBuilder
     private var modePicker: some View {
+        if #available(macOS 26.0, *) {
+            modePickerContent
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .liquidGlassSurface(
+                    cornerRadius: 14,
+                    tint: store.appTheme.accent.opacity(0.10),
+                    interactive: true
+                )
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+        } else {
+            modePickerContent
+                .padding(.horizontal)
+                .padding(.top, 8)
+        }
+    }
+
+    private var modePickerContent: some View {
         HStack {
             Picker("Mode", selection: $store.detailPaneMode) {
                 ForEach(DetailPaneMode.allCases) { mode in
@@ -56,8 +60,40 @@ struct DetailView: View {
 
             LiveUpdateModePicker(store: store)
         }
-        .padding(.horizontal)
-        .padding(.top, 8)
+    }
+
+    @ViewBuilder
+    private var statusBar: some View {
+        if #available(macOS 26.0, *) {
+            statusBarContent
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .liquidGlassSurface(cornerRadius: 12)
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+                .padding(.bottom, 10)
+        } else {
+            Divider()
+            statusBarContent
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+        }
+    }
+
+    private var statusBarContent: some View {
+        HStack(spacing: 6) {
+            Image(systemName: store.statusKind.symbolName)
+                .foregroundStyle(store.statusKind.tint)
+                .accessibilityHidden(true)
+
+            Text(store.statusMessage)
+                .font(.caption)
+                .foregroundStyle(store.statusKind.tint)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(store.statusMessage)
+        .accessibilityAddTraits(.isStaticText)
     }
 
     @ViewBuilder
