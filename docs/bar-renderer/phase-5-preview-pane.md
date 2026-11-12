@@ -72,3 +72,37 @@ The current preview is `Sources/SketchyBarStudio/Views/BarPreviewView.swift`. It
 ## Done when
 
 The user can open the preview of any config or profile from the detail view, the scaled-to-fit view keeps the real menu-bar proportions, the 1:1 view scrolls horizontally, drafts survive the Edit / Preview switch, the tests pass, and the branch is merged into master with `git merge --no-ff` and master is green.
+
+## Follow-up: the interactive simulation
+
+The pane is the editor of the bar now. The render returns the bar-relative
+rectangle of every item and the file that declared it (`BarRenderResult`,
+`BarRenderOrigin`), and the pane puts a hit target on each rectangle. The
+target uses the same geometry as the image: the drawn point count per point
+of the bar is `drawnSize.width / (image.width / 2)`.
+
+* A click selects the item and selects its file in the store, a double-click
+  opens the structured editor, and a click on the empty part of the bar clears
+  the selection. The selection follows `selectedFileID`, and the first
+  declaration of a file wins when a file declares more than one item.
+* A drag carries the alias of the item. A drop picks the third of the bar under
+  the pointer as the position, and the next item of that third as the place.
+  A move between entrypoints changes only the position; the loader order is
+  left alone. A shell item keeps its position in its `--add` line, so that
+  move is refused with a message.
+* The width handle uses a named coordinate space and keeps the start point, so
+  a handle that moves under the pointer does not feed its own movement back
+  into the width.
+* The inspector edits the same drafts as the structured editor: position,
+  label, icon, width and colours of an item, and position, height, margin,
+  padding and colour of the bar. It reads the last declaration of a key,
+  because SketchyBar applies the last assignment.
+* The render key follows the drafts, the loader order, the activation state,
+  the display and the width override. A 120 ms wait collapses a run of
+  keystrokes into one render. A bar with scripts reads the revision of the
+  script runner on a one-second timer and repaints only when the scripts
+  produced values.
+
+`Tests/SketchyBarStudioTests/BarSimulationTests.swift` covers the geometry,
+the drop position and target, the render origins, the staged order and the bar
+value lookup.

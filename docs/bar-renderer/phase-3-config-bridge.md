@@ -144,6 +144,8 @@ Unit tests in `Tests/SketchyBarStudioTests/PreviewConfigBridgeTests.swift`: one 
 
 Unit tests in `Tests/SketchyBarStudioTests/LuaConfigRunnerTests.swift` cover the Lua path of Stage 3b: the values of a config, the sandbox (the globals that are gone, the debug library, the read-only `io.open` and `io.output`, a file outside of the config root), the deadline of an endless loop, the generated names of the items without a name, an item type the daemon does not support, and the text of a number. The shared strategy is in [testing.md](testing.md).
 
+The parser path now reads a whole shell config as one text: an item may be added in one file and set in another, and the `--set` resolves against the add of the other file. Every item of that parse carries an origin built from the add commands of the file that declared it, so the simulation can still map it back to a file. `BarSimulationTests` covers the cross-file set and the origin.
+
 ## Risks and unknowns
 
 * Open question 3: what exactly does `sbar.default({...})` do when a script overrides it? The defaults are applied to `default_item` (`src/bar_item.c:883-933`), but the order between a default set at load time and a later `--default` at runtime, and the behaviour when an item script sets a property that a default also sets, is not confirmed. Confirm before relying on the inheritance order. See [reference.md](reference.md#open-questions).

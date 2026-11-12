@@ -63,6 +63,7 @@ What you can do now: render any config or profile in the library as a live bar p
 - Uses dropdowns for known SketchyBar options and toggles for ordinary booleans.
 - Shows an option reference for most SketchyBar options: an info button next to the key path opens a popover with the meaning, the type, the accepted values and the default of the option. The entries follow the SketchyBar property table, and the summary names the level of the option.
 - Includes an interactive draft bar preview: drag items to reorder them or move them between left, center, and right; drag a numeric-width handle to resize; and adjust available left/right padding without writing files until you save.
+- The rendered Simulation pane is editable too. Click an item of the real rendered bar to select it, double-click it to open its file, drag it to another place or third of the bar, and drag the handle of a selected item to change its width. The inspector under the bar edits the item's position, label, icon, width and colours, and the bar's position, height, margin, padding and colour. Every edit is a normal draft, so the simulation updates live, undo covers it, and nothing is written until you save.
 - Draws the bar preview with the real values of the config: an SF Symbol, the icon of an installed app, a media artwork or the text of the icon, the real label, and the font, the text color and the background color of the item. A symbol SketchyBar would reject is marked with a warning.
 - Provides a built-in source editor for complete Lua and `sketchybarrc` files, with optional Vim-style navigation (`h/j/k/l`, words, line start/end, `i`/`a`, Escape). Source saves use the same backup protection as structured edits. The editor has syntax highlighting for Lua, `sketchybarrc`, and shell files with theme-aware colours, and a native find bar (Cmd-F, Cmd-G, Cmd-Shift-G) that searches the draft and the file on disk.
 - Opens the native macOS color picker, saving colors as `0xAARRGGBB`.
@@ -250,7 +251,7 @@ make release VERSION=1.0.3
 - Shell support covers common `key=value` SketchyBar property assignments.
 - Unusual loader patterns may require future activation-detection support.
 - The preview renderer cannot produce window-server content: `alias` items, `space` items, the front-app icon, and `media.artwork` render as placeholders with the same geometry.
-- Popups are not rendered. Interaction with the preview is not supported.
+- Popups are not rendered. The Simulation pane is interactive for the config the app has open: click to select, double-click to open the file, drag to move, and use the width handle. A shell item keeps its position in its `--add` line, so its position is changed through the source editor.
 - The differential test only claims geometry it can check; window-server-backed item types are excluded.
 
 ## Inspiration
