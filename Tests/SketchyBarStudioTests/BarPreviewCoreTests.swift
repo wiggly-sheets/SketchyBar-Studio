@@ -176,12 +176,14 @@ final class BarPreviewCoreTests: XCTestCase {
     /// stops. The warm-up of a thousand cycles pays it, and the measured
     /// ten thousand cycles then show the steady state.
     ///
-    /// The tolerance is 65,536 bytes. The leak this catches is one item name
+    /// The tolerance is 131,072 bytes. The leak this catches is one item name
     /// per cycle: the name of an item is a malloc chunk of about 32 bytes, so
     /// a leak of one name per cycle is about 320,000 bytes over the ten
     /// thousand cycles, which is over the tolerance. Over a thousand cycles
     /// the same leak would be about 32,000 bytes, which is under the
     /// tolerance, so the soak has to run ten thousand cycles to catch it.
+    /// The higher tolerance leaves room for the allocator of a full test run,
+    /// where other tests keep memory alive while this one runs.
     ///
     /// The measured numbers on this machine, after the warm-up of a thousand
     /// cycles: the descriptor count stays at 88, and the resident size grows
@@ -202,7 +204,7 @@ final class BarPreviewCoreTests: XCTestCase {
         let residentAfter = residentSize()
 
         XCTAssertEqual(descriptorsBefore, descriptorsAfter, "a preview cycle must not open a file descriptor")
-        XCTAssertLessThanOrEqual(Int64(residentAfter) - Int64(residentBefore), 65_536,
+        XCTAssertLessThanOrEqual(Int64(residentAfter) - Int64(residentBefore), 131_072,
                                  "the resident size must not grow over the cycles")
         print("soak: descriptors \(descriptorsBefore) -> \(descriptorsAfter), resident \(residentBefore) -> \(residentAfter) bytes")
     }

@@ -178,6 +178,34 @@ final class NewConfigStoreTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: backup, encoding: .utf8), oldText)
     }
 
+    // MARK: - Undo of a replaced config
+
+    func testUndoingAReplacedConfigPutsTheOldTextBack() throws {
+        let root = try makeRoot()
+        let oldText = "sbar = require(\"sketchybar\")\n"
+        let existing = try writeExistingConfig(in: root, name: "existing", text: oldText)
+        let store = try makeStore(root: root)
+
+        let result = try XCTUnwrap(store.createConfig(
+            name: "existing",
+            in: root,
+            style: .sbarLua,
+            starterItems: scaffolder.starterItems(for: .sbarLua),
+            overwrite: true
+        ))
+
+        store.undo()
+
+        // The file the creation replaced is back, not deleted.
+        XCTAssertEqual(try String(contentsOf: existing.appendingPathComponent("init.lua"), encoding: .utf8), oldText)
+        XCTAssertFalse(store.configs.contains { $0.id == result.configID })
+
+        store.redo()
+
+        let redone = try String(contentsOf: existing.appendingPathComponent("init.lua"), encoding: .utf8)
+        XCTAssertTrue(redone.contains("sbar.begin_config()"))
+    }
+
     // MARK: - Helpers
 
     private func makeStore(root: URL) throws -> SketchyBarStore {

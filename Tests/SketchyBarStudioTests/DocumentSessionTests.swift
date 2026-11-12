@@ -75,6 +75,30 @@ final class DocumentSessionTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: fileURL, encoding: .utf8), "width = 11\nheight = 20\n")
     }
 
+    func testAValueTheScannerCannotWriteKeepsTheDraftAndRefusesTheSave() throws {
+        let root = try makeConfigRoot()
+        let fileURL = root.appendingPathComponent("items/first.lua")
+        try write("label = \"a\"\n", to: fileURL)
+        let scanner = LuaConfigScanner()
+        let file = ConfigFile(url: fileURL, rootURL: root, kind: .lua, values: scanner.scan(fileURL: fileURL), activationReference: nil)
+        var session = DocumentSession.loading(file)
+        var values = session.file.values
+        values[0].draftValue = "a\nb"
+        session.file = ConfigFile(url: fileURL, rootURL: root, kind: .lua, values: values, activationReference: nil)
+
+        XCTAssertThrowsError(try session.save(using: LuaConfigScanner(),
+                                             shellScanner: ShellConfigScanner(),
+                                             backupService: ConfigBackupService())) { error in
+            guard case DocumentSessionError.unrepresentableValue = error else {
+                return XCTFail("Expected unrepresentableValue, got \(error)")
+            }
+        }
+
+        XCTAssertEqual(try String(contentsOf: fileURL, encoding: .utf8), "label = \"a\"\n",
+                       "the file keeps its text")
+        XCTAssertTrue(session.hasUnsavedChanges, "the draft stays in memory")
+    }
+
     func testMergePreservesValueDraftsAcrossReload() throws {
         let root = try makeConfigRoot()
         let fileURL = root.appendingPathComponent("items/first.lua")

@@ -1086,12 +1086,15 @@ extension StoreTests {
 
     func testFormulaPresenceBrewAbsent() async {
         StoreDependencyService.pathEnvironment = ["PATH": "/usr/bin:/bin"]
-        let service = StoreDependencyService(runner: MockCommandRunner())
+        // The fixed Homebrew directories are empty too, so brew is absent
+        // even when the machine has a real Homebrew.
+        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
         // brew not on PATH; binURL(for: "brew") will return nil
         let dep = StoreDependency(kind: .formula, name: "jq", required: true)
         let presence = await service.presence(of: dep)
         XCTAssertEqual(presence, .unknownBecauseBrewAbsent)
         StoreDependencyService.pathEnvironment = nil
+        StoreDependencyService.testBinSearchPaths = nil
     }
 
     func testCommandPresencePresent() async {
@@ -1116,7 +1119,7 @@ extension StoreTests {
 
     func testFontPresencePresent() async {
         let mock = MockCommandRunner()
-        mock.addStub("/usr/bin/fc-list", [":spacing:lang=en", "sf-symbols"], CommandOutcome(status: 0, stdout: "/path/to/font.ttf: SF Symbols\n", stderr: ""))
+        mock.addStub("fc-list", [":spacing:lang=en", "sf-symbols"], CommandOutcome(status: 0, stdout: "/path/to/font.ttf: SF Symbols\n", stderr: ""))
         let service = StoreDependencyService(runner: mock)
         let dep = StoreDependency(kind: .font, name: "sf-symbols", required: false)
         let presence = await service.presence(of: dep)
@@ -1125,12 +1128,13 @@ extension StoreTests {
 
     func testFontPresenceFontconfigAbsent() async {
         StoreDependencyService.pathEnvironment = ["PATH": "/usr/bin:/bin"]
-        let service = StoreDependencyService(runner: MockCommandRunner())
-        // fc-list not on PATH
+        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
+        // fc-list not on PATH and not in the fixed directories
         let dep = StoreDependency(kind: .font, name: "sf-symbols", required: false)
         let presence = await service.presence(of: dep)
         XCTAssertEqual(presence, .unknownBecauseFontconfigAbsent)
         StoreDependencyService.pathEnvironment = nil
+        StoreDependencyService.testBinSearchPaths = nil
     }
 
     func testSketchybarPresence() async {
@@ -1179,12 +1183,14 @@ extension StoreTests {
 
     func testInstallRefusesWhenBrewAbsent() async {
         StoreDependencyService.pathEnvironment = ["PATH": "/usr/bin:/bin"]
-        let service = StoreDependencyService(runner: MockCommandRunner())
+        // The fixed Homebrew directories are empty too, so brew is absent.
+        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
         let dep = StoreDependency(kind: .formula, name: "jq", required: true)
         let result = await service.install(dep) { _ in }
         XCTAssertEqual(result.status, .unknownBecauseBrewAbsent)
         XCTAssertEqual(result.error, "Homebrew is not installed; cannot install 'jq'.")
         StoreDependencyService.pathEnvironment = nil
+        StoreDependencyService.testBinSearchPaths = nil
     }
 
     // MARK: - Policy gating via StoreModel

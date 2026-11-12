@@ -213,6 +213,18 @@ final class ConfigGraphTests: XCTestCase {
         XCTAssertLessThan(elapsed, 2.0, "Analyzing 1000 files took \(elapsed) seconds")
     }
 
+    func testAShellLoaderWithTheConfigDirVariableReachesItsFile() throws {
+        let root = try makeConfigRoot()
+        try write(". \"${CONFIG_DIR}/items/clock.sh\"\n", to: root.appendingPathComponent("sketchybarrc"))
+        try write("sketchybar --add item clock right\n", to: root.appendingPathComponent("items/clock.sh"))
+
+        let report = ConfigGraphService().report(for: root)
+
+        XCTAssertEqual(report.reachableFiles.map { $0.lastPathComponent }.sorted(),
+                       ["clock.sh", "sketchybarrc"])
+        XCTAssertTrue(report.orphanFiles.isEmpty)
+    }
+
     private func makeConfigRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("SketchyBarStudioTests")

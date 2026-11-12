@@ -239,7 +239,35 @@ final class ParserValueCorrectnessTests: XCTestCase {
         XCTAssertEqual(values.first?.originalValue, "left")
     }
 
-    // MARK: - Booleans
+    func testALuaStringDoesNotMakeAShellFileLua() {
+        XCTAssertFalse(LuaSourceDetection.isLua("# require(\"items.clock\")\necho hi\n"))
+        XCTAssertFalse(LuaSourceDetection.isLua("echo \"require(items.clock)\"\n"))
+        XCTAssertTrue(LuaSourceDetection.isLua("local clock = require(\"items.clock\")\n"))
+    }
+
+    // MARK: - Phantom assignments inside strings
+
+    func testALuaStringDoesNotOfferAValue() throws {
+        let root = try makeConfigRoot()
+        let fileURL = root.appendingPathComponent("items/phantom.lua")
+        try write("local msg = string.format(\"x, updates=on\")\nwidth = 10\n", to: fileURL)
+
+        let values = LuaConfigScanner().scan(fileURL: fileURL)
+
+        XCTAssertEqual(values.map(\.keyPath), ["width"])
+    }
+
+    func testAShellStringDoesNotOfferAValue() throws {
+        let root = try makeConfigRoot()
+        let fileURL = root.appendingPathComponent("items/phantom.sh")
+        try write("printf 'a, size=12\\n'\nsketchybar --set clock label=x\n", to: fileURL)
+
+        let values = ShellConfigScanner().scan(fileURL: fileURL)
+
+        XCTAssertEqual(values.map(\.keyPath), ["label"])
+    }
+
+    // MARK: - Boolean keys
 
     func testBooleanKindIsDetectedWithoutAKnownKey() throws {
         let root = try makeConfigRoot()

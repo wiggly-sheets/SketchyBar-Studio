@@ -444,6 +444,14 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertFalse(SketchyBarValueRules.isValidNumber("1); os.execute(\"curl evil\")"))
         XCTAssertFalse(SketchyBarValueRules.isValidNumber("dynamic"))
         XCTAssertFalse(SketchyBarValueRules.isValidNumber(""))
+        XCTAssertFalse(SketchyBarValueRules.isValidNumber("inf"))
+        XCTAssertFalse(SketchyBarValueRules.isValidNumber("nan"))
+    }
+
+    func testNumberSerializationTrimsAndRefusesNonFiniteValues() {
+        XCTAssertEqual(SketchyBarValueRules.serializedNumber(" 5 ", original: "10"), "5")
+        XCTAssertEqual(SketchyBarValueRules.serializedNumber("inf", original: "10"), "10")
+        XCTAssertEqual(SketchyBarValueRules.serializedNumber(" dynamic ", original: "10"), "dynamic")
     }
 
     func testNumberValidationAcceptsRealNumbers() {
@@ -755,7 +763,7 @@ final class ViewLogicTests: XCTestCase {
     func testTheDetailPaneHasAnEditAndAPreviewMode() {
         XCTAssertEqual(DetailPaneMode.allCases, [.edit, .preview])
         XCTAssertEqual(DetailPaneMode.edit.title, "Edit")
-        XCTAssertEqual(DetailPaneMode.preview.title, "Preview")
+        XCTAssertEqual(DetailPaneMode.preview.title, "Simulation")
     }
 
     // MARK: - The picker of the preview

@@ -246,6 +246,41 @@ final class ConfigValidatorTests: XCTestCase {
         XCTAssertLessThan(elapsed, 5.0, "Analyzing 500 files took \(elapsed) seconds")
     }
 
+    func testAPopupPositionIsAccepted() throws {
+        let root = try makeConfigRoot()
+        try write(
+            "sbar.add(\"item\", \"clock\", {\n\tposition = \"popup.calendar\",\n})\n",
+            to: root.appendingPathComponent("items/left/clock.lua")
+        )
+
+        let diagnostics = ConfigValidator().validate(rootURL: root)
+
+        XCTAssertTrue(diagnostics.filter { $0.kind == .invalidValue }.isEmpty)
+    }
+
+    func testANumericDisplayIsAccepted() throws {
+        let root = try makeConfigRoot()
+        try write(
+            "sbar.add(\"item\", \"clock\", {\n\tdisplay = \"2\",\n})\n",
+            to: root.appendingPathComponent("items/left/clock.lua")
+        )
+
+        let diagnostics = ConfigValidator().validate(rootURL: root)
+
+        XCTAssertTrue(diagnostics.filter { $0.kind == .invalidValue }.isEmpty)
+    }
+
+    func testAnAmbiguousLoaderLineIsReported() throws {
+        let root = try makeConfigRoot()
+        try write(#"require("items.a")"# + "\n", to: root.appendingPathComponent("init.lua"))
+        try write("return {}\n", to: root.appendingPathComponent("items/a.lua"))
+        try write("return {}\n", to: root.appendingPathComponent("items/a/init.lua"))
+
+        let diagnostics = ConfigValidator().validate(rootURL: root)
+
+        XCTAssertEqual(diagnostics.filter { $0.kind == .ambiguousLoader }.count, 1)
+    }
+
     private func makeConfigRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("SketchyBarStudioTests")

@@ -255,6 +255,30 @@ final class ParserActivationSafetyTests: XCTestCase {
         )
     }
 
+    func testTheLanguageOfTheLoaderPicksTheFileOfTheSameLanguage() throws {
+        let luaRoot = try makeConfigRoot()
+        try write(#"require("items.a")"# + "\n", to: luaRoot.appendingPathComponent("init.lua"))
+        let luaFile = luaRoot.appendingPathComponent("items/a.lua")
+        let shellFile = luaRoot.appendingPathComponent("items/a.sh")
+        try write("return {}\n", to: luaFile)
+        try write("sketchybar --add item a right\n", to: shellFile)
+
+        let luaReferences = ConfigActivationService().references(for: [luaFile, shellFile], rootURL: luaRoot)
+        XCTAssertNotNil(luaReferences[luaFile.path], "a Lua require must reach the Lua file")
+        XCTAssertNil(luaReferences[shellFile.path], "a Lua require must not reach the shell file")
+
+        let shellRoot = try makeConfigRoot()
+        try write(#"source "items/a""# + "\n", to: shellRoot.appendingPathComponent("sketchybarrc"))
+        let shellLua = shellRoot.appendingPathComponent("items/a.lua")
+        let shellScript = shellRoot.appendingPathComponent("items/a.sh")
+        try write("return {}\n", to: shellLua)
+        try write("sketchybar --add item a right\n", to: shellScript)
+
+        let shellReferences = ConfigActivationService().references(for: [shellLua, shellScript], rootURL: shellRoot)
+        XCTAssertNil(shellReferences[shellLua.path], "a shell source must not reach the Lua file")
+        XCTAssertNotNil(shellReferences[shellScript.path], "a shell source must reach the shell file")
+    }
+
     private func makeConfigRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("SketchyBarStudioParserTests")
