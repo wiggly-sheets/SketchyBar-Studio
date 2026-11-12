@@ -134,17 +134,29 @@ enum LuaConfigRunner {
         return nil
     }
 
+    /// Serializes the runs, because a run changes the working directory of
+    /// the whole process.
+    private static let runLock = NSLock()
+
     /// Runs the config and reads what it declares.
     ///
     /// The run never writes: it reads the files of the config and it
     /// reads the files the config reads.
     static func resolve(configRoot root: URL, entrypoint: URL) throws -> ResolvedConfig {
+        // Every run changes the working directory of the process, so two
+        // runs never overlap: their restores would interleave and leave the
+        // app in the root of a config.
+        runLock.lock()
+        defer { runLock.unlock() }
+
         // The daemon runs the config with the directory of the config as
         // the working directory (`exec_config_file`, `src/hotload.c`), so
         // a relative path of the config means the same thing in the
         // preview as in the daemon.
         let workingDirectory = FileManager.default.currentDirectoryPath
-        FileManager.default.changeCurrentDirectoryPath(root.path)
+        guard FileManager.default.changeCurrentDirectoryPath(root.path) else {
+            throw Failure.failed("the working directory could not be changed to \(root.path)")
+        }
         defer { FileManager.default.changeCurrentDirectoryPath(workingDirectory) }
 
         guard let state = clua_create(memoryLimitBytes, timeoutSeconds) else {

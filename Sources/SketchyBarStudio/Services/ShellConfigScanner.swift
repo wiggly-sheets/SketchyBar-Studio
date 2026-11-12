@@ -82,9 +82,19 @@ struct ShellConfigScanner {
                 }
 
                 let rawValue = String(line[valueRange])
+                // A command substitution or a backtick is built by the
+                // shell. The scanner cannot read the whole expression, so
+                // it does not offer the head of it as an editable value.
+                guard !rawValue.hasPrefix("$("), !rawValue.contains("`") else {
+                    continue
+                }
+                let keyStart = lineStart + line.distance(from: line.startIndex, to: keyRange.lowerBound)
                 let valueStart = lineStart + line.distance(from: line.startIndex, to: valueRange.lowerBound)
                 let valueEnd = lineStart + line.distance(from: line.startIndex, to: valueRange.upperBound)
-                guard !ignoredRegions.contains(where: { $0.intersects(valueStart, valueEnd) }) else {
+                // The key must not sit inside a comment, a heredoc or a
+                // quoted string. A quoted value after a real key stays
+                // editable.
+                guard !ignoredRegions.contains(where: { $0.intersects(keyStart, keyStart + 1) }) else {
                     continue
                 }
                 guard !rawValue.hasPrefix("("), !rawValue.hasPrefix("["), !rawValue.hasPrefix("{") else {
@@ -93,8 +103,12 @@ struct ShellConfigScanner {
                 }
 
                 // The properties after the `--bar` flag belong to the bar,
-                // so they get the key paths of the bar level.
-                let isBarProperty = barFlag.map { keyRange.lowerBound > $0.upperBound } ?? false
+                // so they get the key paths of the bar level. A command
+                // separator between the flag and the key ends that command.
+                let isBarProperty = barFlag.map { flag in
+                    keyRange.lowerBound > flag.upperBound
+                        && !Self.hasCommandSeparator(in: line[flag.upperBound..<keyRange.lowerBound])
+                } ?? false
                 let keyPath = isBarProperty
                     ? SketchyBarOptionCatalog.barKeyPath(for: String(line[keyRange]))
                     : String(line[keyRange])
@@ -330,6 +344,30 @@ struct ShellConfigScanner {
         }
 
         return nil
+    }
+
+    /// True when the text holds a command separator, outside quotes.
+    private static func hasCommandSeparator(in text: Substring) -> Bool {
+        var isSingle = false
+        var isDouble = false
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if character == "'", !isDouble {
+                isSingle.toggle()
+            } else if character == "\"", !isSingle {
+                isDouble.toggle()
+            } else if !isSingle, !isDouble {
+                if character == ";" || character == "|" { return true }
+                if character == "&",
+                   text.index(after: index) < text.endIndex,
+                   text[text.index(after: index)] == "&" {
+                    return true
+                }
+            }
+            index = text.index(after: index)
+        }
+        return false
     }
 
     /// True when the key is a SketchyBar option.

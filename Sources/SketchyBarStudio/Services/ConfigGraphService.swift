@@ -221,9 +221,22 @@ struct ConfigGraphService: Sendable {
         return items
     }
 
+    /// The compiled patterns of the graph, keyed by their source.
+    ///
+    /// The graph reads a line at a time, so a file with thousands of lines
+    /// would compile the same pattern thousands of times without the cache.
+    private static let regexCache = NSCache<NSString, NSRegularExpression>()
+
+    private static func regex(_ pattern: String) -> NSRegularExpression? {
+        if let cached = regexCache.object(forKey: pattern as NSString) { return cached }
+        guard let compiled = try? NSRegularExpression(pattern: pattern) else { return nil }
+        regexCache.setObject(compiled, forKey: pattern as NSString)
+        return compiled
+    }
+
     /// The string literals of a line with the place they sit at.
     private static func literals(in text: String, range: NSRange) -> [(value: String, start: String.Index)] {
-        guard let regex = try? NSRegularExpression(pattern: luaLiteralPattern) else { return [] }
+        guard let regex = regex(luaLiteralPattern) else { return [] }
 
         var found: [(value: String, start: String.Index)] = []
         for match in regex.matches(in: text, range: range) {
@@ -275,12 +288,12 @@ struct ConfigGraphService: Sendable {
     }
 
     private static func matches(_ pattern: String, in text: String, range: NSRange) -> Bool {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        guard let regex = regex(pattern) else { return false }
         return regex.firstMatch(in: text, range: range) != nil
     }
 
     private static func firstCapture(_ pattern: String, in text: String, range: NSRange) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        guard let regex = regex(pattern) else { return nil }
         guard let match = regex.firstMatch(in: text, range: range) else { return nil }
         for index in 1..<match.numberOfRanges where match.range(at: index).location != NSNotFound {
             guard let capture = Range(match.range(at: index), in: text) else { continue }
@@ -350,10 +363,16 @@ struct ConfigGraphService: Sendable {
         let configPrefixes = [
             "$config_dir/",
             "${config_dir}/",
+            "$CONFIG_DIR/",
+            "${CONFIG_DIR}/",
             "$sketchybar_config_dir/",
             "${sketchybar_config_dir}/",
+            "$SKETCHYBAR_CONFIG_DIR/",
+            "${SKETCHYBAR_CONFIG_DIR}/",
             "$home/.config/sketchybar/",
             "${home}/.config/sketchybar/",
+            "$HOME/.config/sketchybar/",
+            "${HOME}/.config/sketchybar/",
             "~/.config/sketchybar/"
         ]
         if let prefix = configPrefixes.first(where: { target.hasPrefix($0) }) {

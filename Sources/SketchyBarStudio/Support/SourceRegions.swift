@@ -19,6 +19,20 @@ enum SourceRegions {
 
     /// Lua comments (`--`) and long strings (`[[ ]]`).
     static func luaIgnoredRegions(in source: String) -> [Region] {
+        luaRegions(in: source, includesQuotedStrings: false)
+    }
+
+    /// The comments, long strings and quoted strings of a Lua file.
+    ///
+    /// The scanners use this set: a key inside a quoted string is text, not
+    /// an assignment. The theme and bracket readers keep
+    /// `luaIgnoredRegions`: a match that starts at a real `require` may
+    /// still contain the quoted theme name.
+    static func luaCodeRegions(in source: String) -> [Region] {
+        luaRegions(in: source, includesQuotedStrings: true)
+    }
+
+    private static func luaRegions(in source: String, includesQuotedStrings: Bool) -> [Region] {
         let characters = Array(source)
         var regions: [Region] = []
         var index = 0
@@ -26,9 +40,17 @@ enum SourceRegions {
         while index < characters.count {
             let character = characters[index]
             if character == "\"" {
-                index = endOfQuoted(characters, from: index, quote: "\"")
+                let end = endOfQuoted(characters, from: index, quote: "\"")
+                if includesQuotedStrings {
+                    regions.append(Region(start: index, end: end))
+                }
+                index = end
             } else if character == "'" {
-                index = endOfQuoted(characters, from: index, quote: "'")
+                let end = endOfQuoted(characters, from: index, quote: "'")
+                if includesQuotedStrings {
+                    regions.append(Region(start: index, end: end))
+                }
+                index = end
             } else if character == "-", index + 1 < characters.count, characters[index + 1] == "-" {
                 // A block comment covers every line until its end.
                 if index + 2 < characters.count, characters[index + 2] == "[",
@@ -62,6 +84,21 @@ enum SourceRegions {
             let line = Array(characters[index..<lineEnd])
             let commentStart = shellCommentStart(line)
             let heredoc = shellHeredocStart(line)
+
+            // A quoted string is not code. The scanner checks the start of
+            // the key, so `key="value"` stays editable while a `key=value`
+            // that is only text inside a string does not.
+            var quoteIndex = 0
+            while quoteIndex < line.count {
+                let character = line[quoteIndex]
+                if character == "\"" || character == "'" {
+                    let end = endOfQuoted(line, from: quoteIndex, quote: character)
+                    regions.append(Region(start: index + quoteIndex, end: index + end))
+                    quoteIndex = end
+                } else {
+                    quoteIndex += 1
+                }
+            }
 
             if let commentStart {
                 regions.append(Region(start: index + commentStart, end: lineEnd))
@@ -263,6 +300,11 @@ enum SourceRegions {
                 while content.first == "\t" {
                     content.removeFirst()
                 }
+            }
+            // A CRLF file keeps the carriage return in the line, so the
+            // terminator of the heredoc is compared without it.
+            if content.last == "\r" {
+                content.removeLast()
             }
             if String(content) == delimiter {
                 return lineEnd

@@ -9,6 +9,7 @@ enum ActivationUpdateError: LocalizedError {
     case referenceChanged(URL)
     case emptyLoaderLine(URL)
     case duplicateLoaderLine(URL)
+    case rollbackIncomplete(String)
 
     var errorDescription: String? {
         switch self {
@@ -18,6 +19,8 @@ enum ActivationUpdateError: LocalizedError {
             return "The loader line for \(entrypointURL.lastPathComponent) is empty."
         case .duplicateLoaderLine(let entrypointURL):
             return "\(entrypointURL.lastPathComponent) already loads this file."
+        case .rollbackIncomplete(let detail):
+            return "The change failed and part of the rollback could not be applied: \(detail)"
         }
     }
 }
@@ -47,12 +50,42 @@ struct ConfigActivationService {
         references(for: [fileURL], rootURL: rootURL)[fileURL.path]
     }
 
+    /// One loader line that names more than one file of the same language.
+    struct AmbiguousLoaderReference: Hashable {
+        let entrypointURL: URL
+        let lineNumber: Int
+        let target: String
+        let candidates: [URL]
+    }
+
     func references(for fileURLs: [URL], rootURL: URL) -> [String: ActivationReference] {
+        let scan = scanLoaders(for: fileURLs, rootURL: rootURL)
+        return scan.matches.mapValues { matches in
+            ActivationReference(
+                entrypointURL: matches[0].entrypointURL,
+                lineNumber: matches[0].lineNumber,
+                isActive: matches.contains { $0.isActive },
+                matches: matches
+            )
+        }
+    }
+
+    /// The loader lines that point at more than one file of the config.
+    ///
+    /// Such a line cannot be assigned safely, so the reference is dropped and
+    /// the validator tells the user why the file cannot be toggled.
+    func ambiguousLoaders(in fileURLs: [URL], rootURL: URL) -> [AmbiguousLoaderReference] {
+        scanLoaders(for: fileURLs, rootURL: rootURL).ambiguities
+    }
+
+    private func scanLoaders(for fileURLs: [URL], rootURL: URL) -> (matches: [String: [ActivationMatch]],
+                                                                    ambiguities: [AmbiguousLoaderReference]) {
         let candidates = fileURLs
             .filter { canToggle(fileURL: $0, rootURL: rootURL) }
             .map { ActivationLookupCandidate(fileURL: $0, targets: matchTargets(fileURL: $0, rootURL: rootURL)) }
             .filter { !$0.targets.isEmpty }
         var matchesByFile: [String: [ActivationMatch]] = [:]
+        var ambiguities: [AmbiguousLoaderReference] = []
 
         for entrypoint in entrypoints(in: rootURL) {
             guard let contents = try? readText(entrypoint) else { continue }
@@ -66,9 +99,29 @@ struct ConfigActivationService {
 
                 let parsedTargets = normalizedTargetForms(target, rootURL: rootURL)
                 let matched = candidates.filter { !$0.targets.isDisjoint(with: parsedTargets) }
-                guard matched.count == 1 else { continue }
+                // A target of the Lua language points at a Lua file, and a
+                // target of the shell points at a shell file. Without this,
+                // `items/a.lua` and `items/a.sh` would both answer to
+                // `require("items.a")` and neither could be toggled.
+                let languageMatches = matched.filter { candidate in
+                    let ext = candidate.fileURL.pathExtension.lowercased()
+                    if isLua { return ext == "lua" }
+                    return ext.isEmpty || ["sh", "bash", "zsh"].contains(ext)
+                }
+                let selected = languageMatches.isEmpty ? matched : languageMatches
+                guard selected.count == 1 else {
+                    if selected.count > 1 {
+                        ambiguities.append(AmbiguousLoaderReference(
+                            entrypointURL: entrypoint,
+                            lineNumber: offset + 1,
+                            target: target,
+                            candidates: selected.map(\.fileURL).sorted { $0.path < $1.path }
+                        ))
+                    }
+                    continue
+                }
 
-                matchesByFile[matched[0].fileURL.path, default: []].append(
+                matchesByFile[selected[0].fileURL.path, default: []].append(
                     ActivationMatch(
                         entrypointURL: entrypoint,
                         lineNumber: offset + 1,
@@ -78,14 +131,7 @@ struct ConfigActivationService {
             }
         }
 
-        return matchesByFile.mapValues { matches in
-            ActivationReference(
-                entrypointURL: matches[0].entrypointURL,
-                lineNumber: matches[0].lineNumber,
-                isActive: matches.contains { $0.isActive },
-                matches: matches
-            )
-        }
+        return (matchesByFile, ambiguities)
     }
 
     func moveReference(for file: ConfigFile, direction: MoveDirection) throws {
@@ -191,6 +237,7 @@ struct ConfigActivationService {
                 }
                 filesByEntrypoint[reference.entrypointURL.standardizedFileURL.path, default: []].append(file)
             }
+            var pending: [(url: URL, contents: String, lines: [String])] = []
             for entrypointFiles in filesByEntrypoint.values {
                 guard let firstFile = entrypointFiles.first,
                       let entrypointURL = currentReferences[firstFile.url.path]?.entrypointURL else {
@@ -227,12 +274,31 @@ struct ConfigActivationService {
                     }
                     lines[lineIndex] = loaderLine
                 }
-                try writeIfChanged(
-                    lines: lines,
-                    originalContents: contents,
-                    entrypointURL: entrypointURL,
-                    rootURL: rootURL
-                )
+                pending.append((entrypointURL, contents, lines))
+            }
+
+            // Every entrypoint is read and worked out before the first one
+            // is written, and a write that fails puts the entrypoints it
+            // already wrote back. A reorder therefore never leaves half of
+            // the loaders in the new order.
+            var changes: [ActivationChange] = []
+            for item in pending {
+                do {
+                    try writeIfChanged(
+                        lines: item.lines,
+                        originalContents: item.contents,
+                        entrypointURL: item.url,
+                        rootURL: rootURL
+                    )
+                    changes.append(ActivationChange(
+                        entrypointURL: item.url,
+                        previousContents: item.contents,
+                        newContents: item.lines.joined(separator: "\n")
+                    ))
+                } catch {
+                    try? restore(changes, rootURL: rootURL)
+                    throw error
+                }
             }
         }
     }
@@ -255,26 +321,35 @@ struct ConfigActivationService {
         for entrypointPath in matchesByEntrypoint.keys.sorted() {
             let matches = matchesByEntrypoint[entrypointPath] ?? []
             guard let entrypointURL = matches.first?.entrypointURL else { continue }
-            let contents = try readText(entrypointURL)
-            let lines = try activatedLines(
-                isActive,
-                for: file,
-                matches: matches,
-                in: contents,
-                entrypointURL: entrypointURL
-            )
+            do {
+                let contents = try readText(entrypointURL)
+                let lines = try activatedLines(
+                    isActive,
+                    for: file,
+                    matches: matches,
+                    in: contents,
+                    entrypointURL: entrypointURL
+                )
 
-            try writeIfChanged(
-                lines: lines,
-                originalContents: contents,
-                entrypointURL: entrypointURL,
-                rootURL: file.rootURL
-            )
-            changes.append(ActivationChange(
-                entrypointURL: entrypointURL,
-                previousContents: contents,
-                newContents: lines.joined(separator: "\n")
-            ))
+                try writeIfChanged(
+                    lines: lines,
+                    originalContents: contents,
+                    entrypointURL: entrypointURL,
+                    rootURL: file.rootURL
+                )
+                changes.append(ActivationChange(
+                    entrypointURL: entrypointURL,
+                    previousContents: contents,
+                    newContents: lines.joined(separator: "\n")
+                ))
+            } catch {
+                // A second entrypoint can refuse the change after the first
+                // one was written. Put the written entrypoints back before
+                // the error reaches the user, so no loader is left half
+                // toggled without an undo step.
+                try? restore(changes, rootURL: file.rootURL)
+                throw error
+            }
         }
         return changes
     }
@@ -329,29 +404,33 @@ struct ConfigActivationService {
     /// checked before any file is written, so a change that cannot be
     /// applied does not leave half of the loaders changed.
     func restore(_ changes: [ActivationChange], rootURL: URL) throws {
+        var failures: [String] = []
         for change in changes {
-            let contents = try readText(change.entrypointURL)
-            guard contents == change.newContents else {
-                throw ActivationUpdateError.referenceChanged(change.entrypointURL)
+            do {
+                let contents = try readText(change.entrypointURL)
+                guard contents == change.newContents else {
+                    throw ActivationUpdateError.referenceChanged(change.entrypointURL)
+                }
+                _ = try backupService.backup(fileURL: change.entrypointURL, rootURL: rootURL)
+                let finalText = try readTextWithMark(change.entrypointURL)
+                guard finalText.contents == change.newContents else {
+                    throw ActivationUpdateError.referenceChanged(change.entrypointURL)
+                }
+                // The byte-order mark is not part of the parsed text, so it is
+                // put back here.
+                try replacer.writeAtomicallyPreservingSymlinks(
+                    finalText.mark + change.previousContents,
+                    to: change.entrypointURL
+                )
+            } catch {
+                // One entrypoint that changed on disk must not stop the
+                // others from being put back. The failure is reported after
+                // the best effort.
+                failures.append("\(change.entrypointURL.lastPathComponent): \(error.localizedDescription)")
             }
         }
-
-        for change in changes {
-            let contents = try readText(change.entrypointURL)
-            guard contents == change.newContents else {
-                throw ActivationUpdateError.referenceChanged(change.entrypointURL)
-            }
-            _ = try backupService.backup(fileURL: change.entrypointURL, rootURL: rootURL)
-            let finalText = try readTextWithMark(change.entrypointURL)
-            guard finalText.contents == change.newContents else {
-                throw ActivationUpdateError.referenceChanged(change.entrypointURL)
-            }
-            // The byte-order mark is not part of the parsed text, so it is
-            // put back here.
-            try replacer.writeAtomicallyPreservingSymlinks(
-                finalText.mark + change.previousContents,
-                to: change.entrypointURL
-            )
+        if !failures.isEmpty {
+            throw ActivationUpdateError.rollbackIncomplete(failures.joined(separator: "; "))
         }
     }
 

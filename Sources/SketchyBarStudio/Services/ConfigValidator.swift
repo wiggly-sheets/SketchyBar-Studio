@@ -63,8 +63,30 @@ struct ConfigValidator: Sendable {
         // An alias is used in the whole config, so the files are compared
         // with each other.
         diagnostics.append(contentsOf: Self.duplicateAliasDiagnostics(aliases, root: root))
+        diagnostics.append(contentsOf: Self.ambiguousLoaderDiagnostics(root: root))
 
         return Self.sorted(diagnostics)
+    }
+
+    /// Loader lines that name more than one file of the same language.
+    ///
+    /// Such a line cannot be toggled or reordered, because the app cannot
+    /// prove which file the line reaches. The diagnostic names both files.
+    private static func ambiguousLoaderDiagnostics(root: URL) -> [ConfigDiagnostic] {
+        let files = SketchyBarConfigLocator().configFiles(in: root)
+        return ConfigActivationService().ambiguousLoaders(in: files, rootURL: root).map { ambiguity in
+            let names = ambiguity.candidates.map { $0.lastPathComponent }.joined(separator: ", ")
+            return ConfigDiagnostic(
+                id: "ambiguousLoader:\(ambiguity.entrypointURL.path):\(ambiguity.lineNumber):\(ambiguity.target)",
+                severity: .warning,
+                kind: .ambiguousLoader,
+                title: "Loader line '\(ambiguity.target)' matches more than one file",
+                detail: "The line reaches \(names). Name the file with its extension, or keep only one of them, so the item can be toggled and reordered.",
+                fileURL: ambiguity.entrypointURL,
+                line: ambiguity.lineNumber,
+                keyPath: ambiguity.target
+            )
+        }
     }
 
     /// Converts a shell diagnostic to a config diagnostic.
@@ -443,15 +465,23 @@ struct ConfigValidator: Sendable {
 
         let value = SketchyBarValueRules.unquoted(entry.text)
         guard !value.isEmpty else { return nil }
-        guard !isAccepted(value, by: doc) else { return nil }
+        guard !isAccepted(value, by: doc, keyPath: keyPath) else { return nil }
 
         return (value, doc.values)
     }
 
     /// True when SketchyBar can use the value.
-    private static func isAccepted(_ value: String, by doc: SketchyBarOptionDoc) -> Bool {
+    private static func isAccepted(_ value: String, by doc: SketchyBarOptionDoc, keyPath: String) -> Bool {
         let values = doc.values
         if values.contains(value) { return true }
+        // A position can name the item of a popup, such as "popup.apple".
+        if SketchyBarValueRules.leaf(of: keyPath) == "position", value.hasPrefix("popup.") {
+            return true
+        }
+        // A display can be a display id as well as the words of the option.
+        if SketchyBarValueRules.leaf(of: keyPath) == "display", Int(value) != nil {
+            return true
+        }
         // A position can name the item of a popup, such as "popup.apple".
         if let prefix = value.split(separator: ".").first.map(String.init), values.contains(prefix) {
             return true
@@ -478,6 +508,9 @@ struct ConfigValidator: Sendable {
         var best: (name: String, distance: Int)?
 
         for candidate in candidates {
+            // Two names that differ by more than two characters cannot be
+            // within the distance, so the edit table is not built for them.
+            guard abs(name.count - candidate.count) <= 2 else { continue }
             let distance = editDistance(name, candidate)
             guard distance <= 2 else { continue }
             guard best == nil || distance < best!.distance else { continue }
@@ -682,8 +715,16 @@ private struct LineMap {
 
     init(_ source: String) {
         var starts = [0]
-        for (index, character) in source.enumerated() where character.isNewline {
-            starts.append(index + 1)
+        var previousWasCarriageReturn = false
+        for (index, character) in source.enumerated() {
+            if character == "\n", previousWasCarriageReturn {
+                previousWasCarriageReturn = false
+                continue
+            }
+            if character.isNewline {
+                starts.append(index + 1)
+            }
+            previousWasCarriageReturn = character == "\r"
         }
         self.starts = starts
     }

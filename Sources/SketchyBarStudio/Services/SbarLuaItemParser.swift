@@ -357,6 +357,14 @@ enum SbarLuaItemParser {
     /// double quoted string (`lua-5.5.0/src/llex.c:404-464`). A backslash
     /// that starts no escape stays as it is, because Lua refuses such a
     /// string and the preview shows the text the user wrote.
+    /// The text of a Lua string with its escapes resolved.
+    ///
+    /// One decoder is shared by the value parser and the table parser, so a
+    /// string alias and a string value are read the same way.
+    static func decodedString(_ text: String) -> String {
+        resolved(text)
+    }
+
     private static func resolved(_ text: String) -> String {
         var result = ""
         let characters = Array(text)

@@ -155,6 +155,13 @@ struct DocumentSession {
         loadError = "The file is missing from disk."
     }
 
+    /// Clears the missing state when the file is back on disk, even when a
+    /// raw draft is still open.
+    mutating func clearMissingState() {
+        file.isMissingFromDisk = false
+        loadError = nil
+    }
+
     /// Validates, backs up, and writes the draft (raw or structured) to disk.
     /// Throws on competing drafts, an external edit (fingerprint change), or
     /// write failure. After a successful save, `savedContents` reflects the
@@ -162,6 +169,16 @@ struct DocumentSession {
     mutating func save(using luaScanner: LuaConfigScanner, shellScanner: ShellConfigScanner, backupService: ConfigBackupService) throws {
         guard hasUnsavedChanges else { return }
         guard !(hasRawDraft && hasStructuredDraft) else { throw DocumentSessionError.competingDrafts }
+        if !hasRawDraft,
+           let invalid = file.values.first(where: {
+               $0.draftValue != $0.originalValue
+                   && !$0.isMissingFromFile
+                   && !SketchyBarValueRules.canSerializeDraft($0)
+           }) {
+            // A value the scanner cannot write is not dropped silently: the
+            // draft stays in memory and the user is told why.
+            throw DocumentSessionError.unrepresentableValue(invalid.keyPath, file.displayName)
+        }
         let currentContents = try String(contentsOf: file.url, encoding: .utf8)
         guard currentContents == savedContents else { throw DocumentSessionError.changedOnDisk }
         // The backup holds the bytes that are about to be overwritten, not
@@ -187,6 +204,7 @@ struct DocumentSession {
 enum DocumentSessionError: LocalizedError {
     case changedOnDisk
     case competingDrafts
+    case unrepresentableValue(String, String)
 
     var errorDescription: String? {
         switch self {
@@ -194,6 +212,8 @@ enum DocumentSessionError: LocalizedError {
             return "The file changed on disk after editing began. Revert the draft to load the current file, then reapply your edit."
         case .competingDrafts:
             return "This file has both source and control edits. Discard one editing mode before saving so neither draft is overwritten."
+        case .unrepresentableValue(let keyPath, let fileName):
+            return "The value of \(keyPath) in \(fileName) cannot be written: use a single line for a text value, a real number for a number, a hex colour for a colour, and true or false for a switch. The draft was kept."
         }
     }
 }

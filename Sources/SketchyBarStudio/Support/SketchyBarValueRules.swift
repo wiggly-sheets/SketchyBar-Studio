@@ -94,15 +94,22 @@ enum SketchyBarValueRules {
         value.contains { $0 == "\n" || $0 == "\r" }
     }
 
-    /// Keeps the original text when the draft is not a number.
+    /// Keeps the original text when the draft is not a finite number.
+    ///
+    /// The draft is trimmed, so the check of the editor and the write use
+    /// the same rule. `inf` and `nan` are not numbers of a config: Lua reads
+    /// them as globals.
     static func serializedNumber(_ draft: String, original: String) -> String {
-        guard draft == "dynamic" || Double(draft) != nil else { return original }
-        return draft
+        let trimmed = draft.trimmingCharacters(in: .whitespaces)
+        if trimmed == "dynamic" { return trimmed }
+        guard let number = Double(trimmed), number.isFinite else { return original }
+        return trimmed
     }
 
     /// True when the draft is a number that can be written to the file.
     static func isValidNumber(_ draft: String) -> Bool {
-        Double(draft.trimmingCharacters(in: .whitespaces)) != nil
+        guard let number = Double(draft.trimmingCharacters(in: .whitespaces)) else { return false }
+        return number.isFinite
     }
 
     /// True when the draft is a number that is still being typed, such as
@@ -159,8 +166,104 @@ enum SketchyBarValueRules {
         return hex
     }
 
-    /// Keeps the original text when the draft is not a boolean.
+    /// Keeps the original text when the draft is not a boolean, and keeps
+    /// the quotes of a quoted value, so `bar = "false"` stays a string of
+    /// the config instead of becoming a bare Lua boolean.
     static func serializedBoolean(_ draft: String, original: String) -> String {
-        SketchyBarBoolean.normalized(draft) ?? original
+        guard let normalized = SketchyBarBoolean.normalized(draft) else { return original }
+        if original.hasPrefix("\"") {
+            return "\"\(normalized)\""
+        }
+        if original.hasPrefix("'") {
+            return "'\(normalized)'"
+        }
+        return normalized
+    }
+
+    /// True when the draft of a value can be written into the file.
+    ///
+    /// A draft the scanner cannot serialize is not written silently: the
+    /// save refuses it and keeps the draft, so a pasted multi-line label is
+    /// reported instead of being dropped under a "Saved" message.
+    static func canSerializeDraft(_ value: LuaEditableValue) -> Bool {
+        switch value.kind {
+        case .string:
+            guard !containsLineBreak(value.draftValue) else { return false }
+            if value.fileURL.pathExtension.lowercased() == "lua" {
+                // The Lua scanner keeps the backslashes of the file and only
+                // escapes the delimiter. A draft with an escape Lua cannot
+                // read would make the whole file unloadable, so it is
+                // refused instead of written.
+                return hasValidLuaEscapes(value.draftValue)
+            }
+            return true
+        case .number:
+            let trimmed = value.draftValue.trimmingCharacters(in: .whitespaces)
+            if trimmed == "dynamic" { return true }
+            guard let number = Double(trimmed) else { return false }
+            return number.isFinite
+        case .color:
+            return SketchyBarColor.parse(value.draftValue) != nil
+        case .boolean:
+            return SketchyBarBoolean.normalized(value.draftValue) != nil
+        }
+    }
+
+    /// True when every backslash of a Lua string starts an escape Lua knows.
+    ///
+    /// A newline after the backslash is a line continuation, and a decimal
+    /// or hexadecimal escape runs to its last digit. `\z` skips the
+    /// whitespace that follows it.
+    static func hasValidLuaEscapes(_ value: String) -> Bool {
+        let characters = Array(value)
+        var index = 0
+        while index < characters.count {
+            guard characters[index] == "\\" else {
+                index += 1
+                continue
+            }
+            index += 1
+            guard index < characters.count else { return false }
+            let escaped = characters[index]
+            switch escaped {
+            case "a", "b", "f", "n", "r", "t", "v", "\\", "\"", "'", "\n", "\r", "z":
+                index += 1
+            case "x":
+                index += 1
+                var digits = 0
+                while index < characters.count, characters[index].isHexDigit {
+                    digits += 1
+                    index += 1
+                }
+                guard digits == 2 else { return false }
+            case "u":
+                index += 1
+                guard index < characters.count, characters[index] == "{" else { return false }
+                index += 1
+                var digits = 0
+                var value = 0
+                while index < characters.count, characters[index] != "}" {
+                    guard let digit = characters[index].hexDigitValue else { return false }
+                    value = value * 16 + digit
+                    digits += 1
+                    index += 1
+                }
+                guard index < characters.count, characters[index] == "}", digits > 0 else { return false }
+                guard value <= 0x10FFFF, !(0xD800...0xDFFF).contains(value) else { return false }
+                index += 1
+            case "0"..."9":
+                var value = 0
+                var digits = 0
+                while index < characters.count, let digit = characters[index].wholeNumberValue {
+                    value = value * 10 + digit
+                    digits += 1
+                    index += 1
+                }
+                guard digits <= 3, value <= 255 else { return false }
+            default:
+                return false
+            }
+        }
+        return true
     }
 }

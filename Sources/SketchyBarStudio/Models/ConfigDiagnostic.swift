@@ -27,6 +27,7 @@ struct ConfigDiagnostic: Identifiable, Hashable {
         case unbalancedTable
         case noItemDeclaration
         case duplicateKey
+        case ambiguousLoader
     }
 
     /// The id of the diagnostic. It is the same for the same problem in

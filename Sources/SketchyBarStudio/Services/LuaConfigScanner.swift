@@ -37,14 +37,19 @@ struct LuaConfigScanner {
     private func structuredValues(fileURL: URL, contents: String) -> (values: [LuaEditableValue], excludedRanges: [LuaSourceRange]) {
         guard contents.contains("sbar") else { return ([], []) }
 
-        let items = SbarLuaItemParser.items(in: contents)
-        let bar = SbarLuaItemParser.bar(in: contents)
-        guard !items.isEmpty || bar != nil else { return ([], []) }
+        let declarations = SbarLuaItemParser.declarations(in: contents)
+        let items = declarations.items
+        // A file can call `sbar.bar({…})` more than once, and every call has
+        // its own `bar.` values. Reading only the first one leaves the later
+        // calls to the plain scan, which turns their `height` into an item
+        // option.
+        let bars = declarations.bars
+        guard !items.isEmpty || !bars.isEmpty else { return ([], []) }
 
         let lineStarts = Self.lineStarts(in: contents)
         var results: [LuaEditableValue] = []
 
-        for value in items.flatMap(\.values) + (bar?.values ?? []) {
+        for value in items.flatMap(\.values) + bars.flatMap(\.values) {
             let lineNumber = Self.lineNumber(for: value.valueStartOffset, lineStarts: lineStarts)
             let displayValue = SketchyBarValueRules.normalizedDisplayValue(
                 SketchyBarValueRules.displayValue(for: value.rawValue, keyPath: value.keyPath),
@@ -68,7 +73,7 @@ struct LuaConfigScanner {
             )
         }
 
-        let excludedRanges = items.flatMap(\.excludedRanges) + (bar?.excludedRanges ?? [])
+        let excludedRanges = items.flatMap(\.excludedRanges) + bars.flatMap(\.excludedRanges)
         return (results, excludedRanges)
     }
 
@@ -80,7 +85,7 @@ struct LuaConfigScanner {
             return []
         }
 
-        let ignoredRegions = SourceRegions.luaIgnoredRegions(in: contents)
+        let ignoredRegions = SourceRegions.luaCodeRegions(in: contents)
         var results: [LuaEditableValue] = []
         var lineNumber = 1
 
@@ -95,9 +100,13 @@ struct LuaConfigScanner {
                 }
 
                 let rawValue = String(line[valueRange])
+                let keyStart = lineStart + line.distance(from: line.startIndex, to: keyRange.lowerBound)
                 let valueStart = lineStart + line.distance(from: line.startIndex, to: valueRange.lowerBound)
                 let valueEnd = lineStart + line.distance(from: line.startIndex, to: valueRange.upperBound)
-                guard !ignoredRegions.contains(where: { $0.intersects(valueStart, valueEnd) }) else {
+                // The key must not sit inside a comment or a string. A
+                // string after a real key, such as `key = "value"`, is the
+                // value of the key and stays editable.
+                guard !ignoredRegions.contains(where: { $0.intersects(keyStart, keyStart + 1) }) else {
                     continue
                 }
                 guard !isClaimed(start: valueStart, end: valueEnd, in: claimed) else {
@@ -142,14 +151,23 @@ struct LuaConfigScanner {
     }
 
     /// The character offset of the start of every line.
+    ///
+    /// A CRLF pair is one line break, not two, so the lines of a file that
+    /// was written on Windows keep the number the rest of the editor shows.
     private static func lineStarts(in contents: String) -> [Int] {
         var starts = [0]
         var offset = 0
+        var previousWasCarriageReturn = false
         for character in contents {
             offset += 1
+            if character == "\n", previousWasCarriageReturn {
+                previousWasCarriageReturn = false
+                continue
+            }
             if character.isNewline {
                 starts.append(offset)
             }
+            previousWasCarriageReturn = character == "\r"
         }
         return starts
     }

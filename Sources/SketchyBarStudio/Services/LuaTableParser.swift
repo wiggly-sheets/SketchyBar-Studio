@@ -512,8 +512,20 @@ private struct LuaParser {
     /// `require("colors")`.
     ///
     /// The scan always takes at least one token, so a malformed file cannot
-    /// make the parser loop.
+    /// make the parser loop. A key at the very end of an unclosed table has
+    /// no token to read, so it is reported as an empty expression instead of
+    /// trapping on the missing token.
     private func expressionValue(at start: Int, limit: Int) -> ParsedValue {
+        guard tokens.indices.contains(start) else {
+            let position = tokens.last?.end ?? 0
+            return ParsedValue(
+                kind: .literal(.expression),
+                range: LuaSourceRange(start: position, end: position),
+                text: "",
+                table: nil,
+                endIndex: start
+            )
+        }
         var index = start
         var depth = 0
         var end = tokens[start].end
@@ -713,15 +725,11 @@ private struct LuaParser {
     }
 
     /// The text of a string without its quotes and without the escapes.
+    ///
+    /// The escapes are read left to right, so `"a\\nb"` (a backslash and an
+    /// `n`) stays a backslash and an `n` instead of becoming a newline.
     private func stringContent(of token: LuaToken) -> String {
         guard token.text.count >= 2 else { return token.text }
-        var content = String(token.text.dropFirst().dropLast())
-        content = content.replacingOccurrences(of: "\\n", with: "\n")
-        content = content.replacingOccurrences(of: "\\t", with: "\t")
-        content = content.replacingOccurrences(of: "\\r", with: "\r")
-        content = content.replacingOccurrences(of: "\\\"", with: "\"")
-        content = content.replacingOccurrences(of: "\\'", with: "'")
-        content = content.replacingOccurrences(of: "\\\\", with: "\\")
-        return content
+        return SbarLuaItemParser.decodedString(String(token.text.dropFirst().dropLast()))
     }
 }
