@@ -8,6 +8,8 @@ APP_NAME  := SketchyBarStudio
 APP_TITLE := SketchyBar Studio
 DIST_DIR  := dist
 SPM_DIR   := .build
+INSTALL_DIR ?= $(HOME)/Applications
+INSTALL_APP := $(INSTALL_DIR)/$(APP_NAME).app
 
 # Root of the repository, so every target works from any directory.
 ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
@@ -28,8 +30,8 @@ else ifneq ($(filter $(VERSION_TARGETS),$(MAKECMDGOALS)),)
 $(error $(firstword $(MAKECMDGOALS)) needs a version, for example: make $(firstword $(MAKECMDGOALS)) VERSION=1.0.3)
 endif
 
-.PHONY: help build test app-universal dmg-universal release-artifacts \
-	release clean
+.PHONY: help build test verify run install app app-universal dmg-universal \
+	release-artifacts release-notes release clean
 
 .DEFAULT_GOAL := help
 
@@ -41,18 +43,25 @@ help:
 		'' \
 		'  help                   List every target (default).' \
 		'  build                  Debug build of the SwiftPM package.' \
-		'  test                   Run the SwiftPM test suite.' \
+		'  test                   Run the changelog check and the SwiftPM test suite.' \
+		'  verify                 Check architecture, version, icon and signature.' \
+		'  run                    Install the bundle into ~/Applications and launch it.' \
+		'  install                Copy the bundle into ~/Applications.' \
+		'  app                    Build the universal bundle into dist/SketchyBarStudio.app.' \
 		'  app-universal          Build the universal bundle into dist/SketchyBarStudio.app.' \
 		'  dmg-universal          Build the universal disk image into dist/.' \
-		'  release-artifacts      Build the disk image and write its checksum sidecar.' \
-		'  release VERSION=x.y.z  Build the artifacts, tag v<x.y.z> locally, print the push commands.' \
+		'  release-artifacts      Build the disk image and its verified checksum sidecar.' \
+		'  release-notes VERSION=x.y.z  Print the changelog section of a version.' \
+		'  release VERSION=x.y.z  Bump the changelog, test, build, verify, commit and tag.' \
 		'  clean                  Remove .build/ and dist/.' \
 		'' \
 		'Notes' \
 		'  The version comes from the command line only, never from a file in the' \
-		'  repository. `make release VERSION=1.0.3` stamps 1.0.3 into the bundle and' \
-		'  names the disk image after it. A published release takes its version from' \
-		'  the tag, so the tag is the only source of truth for a release.' \
+		'  repository. `make release VERSION=1.0.3` moves [Unreleased] to 1.0.3,' \
+		'  stamps it into the bundle, runs the tests, builds and verifies the' \
+		'  artifacts, commits the bump and creates the tag. A published release takes' \
+		'  its version from the tag, so the tag is the only source of truth.' \
+		'  CHANGELOG.md follows the shared shape and `make test` checks it.' \
 		'  SketchyBar Studio ships one universal package, so there is no target per' \
 		'  architecture.' \
 		'  The release publishes dist/SketchyBarStudio-<version>-universal.dmg and the' \
@@ -71,7 +80,60 @@ build:
 ## test — test suite
 
 test:
+	cd "$(ROOT)" && ./scripts/changelog.sh check
 	cd "$(ROOT)" && swift test
+
+## verify — check the built bundle
+
+verify:
+	@bundle="$(ROOT)/$(DIST_DIR)/$(APP_NAME).app"; \
+	test -d "$$bundle" || { \
+		echo "error: $$bundle is missing. Run make app first."; \
+		exit 1; \
+	}; \
+	test -x "$$bundle/Contents/MacOS/$(APP_NAME)" || { \
+		echo "error: $$bundle has no executable."; \
+		exit 1; \
+	}; \
+	test -f "$$bundle/Contents/Resources/$(APP_NAME).icns" || { \
+		echo "error: $$bundle ships no $(APP_NAME).icns."; \
+		exit 1; \
+	}; \
+	archs="$$(lipo -archs "$$bundle/Contents/MacOS/$(APP_NAME)" | tr ' ' '\n' | sort | tr '\n' ' ' | xargs)"; \
+	echo "Architectures: $$archs"; \
+	test "$$archs" = "arm64 x86_64" || { \
+		echo "error: expected a universal binary, got [$$archs]."; \
+		exit 1; \
+	}; \
+	if [ -n "$(strip $(VERSION))" ]; then \
+		version="$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$$bundle/Contents/Info.plist")"; \
+		echo "Bundle version: $$version (expected $(VERSION))"; \
+		test "$$version" = "$(VERSION)" || { \
+			echo "error: the bundle reports $$version, but $(VERSION) was expected."; \
+			exit 1; \
+		}; \
+	else \
+		echo "Bundle version: $$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$$bundle/Contents/Info.plist") (no VERSION given)"; \
+	fi
+	codesign --verify --deep --strict "$(ROOT)/$(DIST_DIR)/$(APP_NAME).app"
+	@echo "Verified $(DIST_DIR)/$(APP_NAME).app."
+
+## install — copy the bundle into ~/Applications
+
+install: app
+	@mkdir -p "$(INSTALL_DIR)"
+	@rm -rf "$(INSTALL_APP)"
+	ditto "$(ROOT)/$(DIST_DIR)/$(APP_NAME).app" "$(INSTALL_APP)"
+	@echo "Installed $(INSTALL_APP)"
+
+## run — install the bundle and launch it
+
+run: install
+	open "$(INSTALL_APP)"
+
+## app — the bundle the product ships
+
+app: app-universal
 
 ## app-universal — the bundle the product ships
 
@@ -91,26 +153,26 @@ dmg-universal: app-universal
 
 release-artifacts: dmg-universal
 	cd "$(ROOT)/$(DIST_DIR)" && shasum -a 256 "$(DMG_NAME)" > "$(DMG_NAME).sha256"
+	cd "$(ROOT)/$(DIST_DIR)" && shasum -a 256 -c "$(DMG_NAME).sha256"
 	@cat "$(ROOT)/$(DIST_DIR)/$(DMG_NAME).sha256"
 
-## release — build the artifacts and tag them, without pushing
+## release-notes — print the changelog section of a version
+
+release-notes:
+	@if [ -z "$(strip $(VERSION))" ]; then \
+		echo "error: make release-notes needs a version, for example: make release-notes VERSION=1.0.3"; \
+		exit 1; \
+	fi
+	@./scripts/changelog.sh notes "$(VERSION)"
+
+## release — bump, test, build, verify, commit and tag, without pushing
 
 release:
-	@if [ -n "$$(git -C "$(ROOT)" status --porcelain)" ]; then \
-		echo "error: the working tree is dirty. Commit or stash your changes first."; \
-		git -C "$(ROOT)" status --short; \
+	@if [ -z "$(strip $(VERSION))" ]; then \
+		echo "error: make release needs a version, for example: make release VERSION=1.0.3"; \
 		exit 1; \
 	fi
-	@if git -C "$(ROOT)" rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null; then \
-		echo "error: the tag v$(VERSION) already exists."; \
-		exit 1; \
-	fi
-	$(MAKE) -C "$(ROOT)" release-artifacts VERSION=$(VERSION)
-	git -C "$(ROOT)" tag -a "v$(VERSION)" -m "$(APP_TITLE) $(VERSION)"
-	@echo ""
-	@echo "Tagged v$(VERSION). The target pushed nothing. Push the branch and the tag with:"
-	@echo "  git push origin master"
-	@echo "  git push origin v$(VERSION)"
+	@APP_NAME="$(APP_TITLE)" ./scripts/release.sh "$(VERSION)"
 
 ## clean — remove everything the build produces
 

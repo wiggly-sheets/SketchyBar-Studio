@@ -206,21 +206,24 @@ make help
 
 `make help` lists every build target.
 
-To build without launching:
+To build and install without launching:
 
 ```bash
 make build
-./script/build_and_run.sh --package
+make app             # dist/SketchyBarStudio.app
+make verify          # architecture, version, icon and signature
+make install         # ~/Applications/SketchyBarStudio.app
+make run             # install and launch
 ```
 
-The packaged app is written to `dist/SketchyBarStudio.app`.
+`make test` runs the changelog check before the SwiftPM suite.
 
 ### Build a universal app
 
 To package a release-style app for both Apple Silicon and Intel Macs:
 
 ```bash
-make app-universal
+make app             # equivalent to make app-universal
 lipo -info dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
 ```
 
@@ -233,13 +236,15 @@ make release-artifacts VERSION=1.0.3
 ```
 
 That writes `dist/SketchyBarStudio-1.0.3-universal.dmg` and the sidecar
-`dist/SketchyBarStudio-1.0.3-universal.dmg.sha256` next to it. The sidecar holds
-one line: the digest, two spaces and the bare file name.
+`dist/SketchyBarStudio-1.0.3-universal.dmg.sha256` next to it, then verifies the
+checksum. The sidecar holds one line: the digest, two spaces and the bare file
+name.
 
-To prepare a release, which builds the artifacts and creates the tag without
-pushing anything:
+To prepare a release, which moves `[Unreleased]` to the version, tests, builds,
+verifies, commits the changelog bump and creates the tag without pushing:
 
 ```bash
+make release-notes VERSION=1.0.3  # preview the changelog section
 make release VERSION=1.0.3
 ```
 

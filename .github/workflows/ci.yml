@@ -33,18 +33,15 @@ jobs:
         run: swift package clean
 
       - name: Build
-        run: swift build
+        run: make build
 
       - name: Test
-        run: swift test
+        run: make test
 
       - name: Package app bundle
-        run: bash ./script/build_and_run.sh --package
+        run: make app
 
+      # Checks the executable, the icon, the architecture, the version and the
+      # signature in one place, so the same gate runs locally.
       - name: Verify app bundle metadata
-        run: |
-          test -x dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
-          test -f dist/SketchyBarStudio.app/Contents/Resources/SketchyBarStudio.icns
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' dist/SketchyBarStudio.app/Contents/Info.plist | grep SketchyBarStudio
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/SketchyBarStudio.app/Contents/Info.plist)" = "0.0.0"
-          codesign --verify --deep --strict dist/SketchyBarStudio.app
+        run: make verify

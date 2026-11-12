@@ -39,7 +39,7 @@ swift build
 ./script/build_and_run.sh --universal-package
 ```
 
-The Makefile drives the same work: `make help` lists every target, `make build` builds the package, `make test` runs the test suite, `make app-universal` builds the universal bundle, `make dmg-universal` builds the disk image, `make release-artifacts VERSION=x.y.z` writes the disk image and its checksum sidecar, and `make release VERSION=x.y.z` builds the artifacts and creates the tag without pushing anything.
+The Makefile drives the same work: `make help` lists every target, `make build` builds the package, `make test` runs the changelog check and the test suite, `make verify` checks the built bundle, `make install` copies it to `~/Applications`, `make run` installs and launches it, `make app` (and `make app-universal`) builds the universal bundle, `make dmg-universal` builds the disk image, `make release-artifacts VERSION=x.y.z` writes the disk image and its verified checksum sidecar, `make release-notes VERSION=x.y.z` prints the changelog section, and `make release VERSION=x.y.z` bumps the changelog, tests, builds, verifies, commits the bump and creates the tag without pushing anything.
 
 For release sanity:
 
