@@ -117,6 +117,11 @@ void preview_set_script_environment(const char* shim_directory,
                                     const char* sink_path,
                                     const char* log_directory);
 
+/* True when the shim of the scripts is installed. A script must never run
+   with the environment of the app, because a `sketchybar` call would reach
+   the live daemon of the user. */
+bool preview_script_environment_ready(void);
+
 /* The alias of the script that is forked next. The caller sets it before it
    forks, so the report of a script knows the item it belongs to. */
 void preview_set_current_script(const char* alias);

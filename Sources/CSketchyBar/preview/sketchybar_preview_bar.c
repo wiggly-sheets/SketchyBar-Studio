@@ -207,7 +207,13 @@ bool preview_parse_bar_set_message(FILE* rsp, char* message) {
           display_pattern = DISPLAY_MAIN_PATTERN;
         }
         else {
-          display_pattern |= 1 << (strtoul(list[i], NULL, 0) - 1);
+          unsigned long display = strtoul(list[i], NULL, 0);
+          // The mask has one bit per display, so a display of 0 or above
+          // 32 is not a display at all. A shift of an unchecked value is
+          // undefined behaviour.
+          if (display >= 1 && display <= 32) {
+            display_pattern |= 1u << (display - 1);
+          }
         }
       }
       free(list);

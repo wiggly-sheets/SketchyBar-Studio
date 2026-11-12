@@ -419,6 +419,16 @@ void preview_set_script_environment(const char* shim_directory,
   g_preview_log_directory = preview_copy_string(log_directory);
 }
 
+/* True when the shim of the scripts is installed. A script must never run
+   with the environment of the app: a call of `sketchybar` would reach the
+   live daemon of the user. */
+bool preview_script_environment_ready(void) {
+  return g_preview_shim_directory
+      && g_preview_shim_directory[0] == '/'
+      && g_preview_sink_path
+      && g_preview_sink_path[0] != '\0';
+}
+
 void preview_set_current_script(const char* alias) {
   preview_free_string(&g_preview_current_alias);
   g_preview_current_alias = preview_copy_string(alias);
@@ -463,14 +473,15 @@ static void preview_add_message(const char* format, ...) {
 }
 
 /* The text of a file, or NULL when the file cannot be read.
-   The whole file is read: a log that is cut in the middle of a line loses
-   the message of the script. */
+   The whole file is read up to a fixed cap: a script that leaves a
+   background writer behind must not make the reader grow without bound. */
 static char* preview_read_file(const char* path) {
   if (!path) return NULL;
 
   FILE* file = fopen(path, "r");
   if (!file) return NULL;
 
+  const size_t maximum = 256 * 1024;
   size_t capacity = 1024;
   size_t length = 0;
   char* text = malloc(capacity);
@@ -479,16 +490,19 @@ static char* preview_read_file(const char* path) {
     return NULL;
   }
 
-  while (true) {
+  while (length < maximum) {
     if (length + 1 >= capacity) {
       size_t grown = capacity * 2;
+      if (grown > maximum + 1) grown = maximum + 1;
       char* bigger = realloc(text, grown);
       if (!bigger) break;
       text = bigger;
       capacity = grown;
     }
 
-    size_t read = fread(text + length, 1, capacity - length - 1, file);
+    size_t want = capacity - length - 1;
+    if (want > maximum - length) want = maximum - length;
+    size_t read = fread(text + length, 1, want, file);
     length += read;
     if (read == 0) break;
   }
@@ -575,12 +589,17 @@ void preview_wait_for_scripts(int timeout_milliseconds) {
 
     if (preview_now_milliseconds() >= deadline) {
       for (size_t i = 0; i < g_preview_child_count; i++) {
-        if (!g_preview_children[i].finished) kill(g_preview_children[i].pid, SIGKILL);
+        if (!g_preview_children[i].finished) {
+          if (kill(-g_preview_children[i].pid, SIGKILL) != 0) {
+            kill(g_preview_children[i].pid, SIGKILL);
+          }
+        }
       }
       for (size_t i = 0; i < g_preview_child_count; i++) {
         if (g_preview_children[i].finished) continue;
         int status = 0;
-        waitpid(g_preview_children[i].pid, &status, 0);
+        while (waitpid(g_preview_children[i].pid, &status, 0) == -1 && errno == EINTR) {
+        }
         g_preview_children[i].status = status;
         g_preview_children[i].finished = true;
         g_preview_children[i].timed_out = true;
@@ -739,6 +758,10 @@ bool fork_exec(char* command, struct env_vars* env_vars) {
     dup2(log_fd, STDOUT_FILENO);
     if (log_fd > STDERR_FILENO) close(log_fd);
   }
+
+  /* The child becomes the leader of its own process group, so a timeout
+     stops the background writers a script may have started as well. */
+  setpgid(0, 0);
 
   /* The alarm stops the script when it runs too long. The default action
      of the signal terminates the child, so the preview sees that the script

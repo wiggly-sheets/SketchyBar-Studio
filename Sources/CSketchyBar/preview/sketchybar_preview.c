@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "sketchybar_preview.h"
 
@@ -42,8 +43,11 @@ static char* preview_copy(const char* text) {
 static char* preview_build_message(const char* key, const char* value) {
   size_t key_length = strlen(key);
   size_t value_length = value ? strlen(value) : 0;
-  char* message = malloc(key_length + value_length + 3);
-  if (!message) return NULL;
+  /* The vendored token helpers copy a token into a stack buffer, so a
+     huge value from a config would overflow the stack of the render. The
+     limit is far above a real property value. */
+  if (key_length == 0 || key_length > 256 || value_length > 8192) return NULL;
+  char* message = malloc(key_length + value_length + 3);  if (!message) return NULL;
 
   memcpy(message, key, key_length);
   message[key_length] = '\0';
@@ -51,6 +55,24 @@ static char* preview_build_message(const char* key, const char* value) {
   message[key_length + 1 + value_length] = '\0';
   message[key_length + 2 + value_length] = '\0';
   return message;
+}
+
+/* True when the key and the value fit the limits of the preview. */
+static bool preview_arguments_fit(const char* key, const char* value) {
+  size_t key_length = key ? strlen(key) : 0;
+  size_t value_length = value ? strlen(value) : 0;
+  return key_length > 0 && key_length <= 256 && value_length <= 8192;
+}
+
+/* The message of a value that the preview refuses because it is too long. */
+static void preview_add_message(sb_preview_t* preview, const char* message);
+
+static void preview_report_long_value(sb_preview_t* preview, const char* key) {
+  char message[256];
+  snprintf(message, sizeof(message),
+           "[!] %s: the value is too long for the preview (limit 8192 bytes)\n",
+           key ? key : "property");
+  preview_add_message(preview, message);
 }
 
 static void preview_clear_messages(sb_preview_t* preview) {
@@ -114,34 +136,45 @@ static bool preview_apply_add_argument(sb_preview_t* preview,
                                        const char* argument,
                                        const char* alias) {
   if (item->type == BAR_COMPONENT_GRAPH) {
-    uint32_t width = argument ? (uint32_t)strtoul(argument, NULL, 0) : 0;
-    if (width == 0) {
-      /* The daemon draws a graph of no width and divides by the width of
-         the graph (src/graph.c:24), so it crashes. The preview refuses the
-         item instead, so the process of the app survives. */
+    unsigned long parsed = argument ? strtoul(argument, NULL, 0) : 0;
+    // A width the bitmap cannot hold would make the graph allocate a huge
+    // buffer and the surface a huge window. The daemon has no such guard;
+    // the preview refuses the item instead of crashing.
+    if (parsed == 0 || parsed > 4096) {
       char message[256];
       snprintf(message, sizeof(message),
-               "[!] Add %s: A graph needs a width\n",
+               "[!] Add %s: A graph needs a width between 1 and 4096\n",
                alias             );
       preview_clear_messages(preview);
       preview->messages = preview_copy(message);
       return false;
     }
+    uint32_t width = (uint32_t)parsed;
     graph_setup(&item->graph, width);
   } else if (item->type == BAR_COMPONENT_SLIDER) {
-    slider_setup(&item->slider, argument ? (uint32_t)strtoul(argument, NULL, 0) : 0);
-  } else if (item->type == BAR_COMPONENT_RING) {
-    int diameter = argument ? (int)strtol(argument, NULL, 0) : 0;
-    if (diameter <= 0) {
+    unsigned long parsed = argument ? strtoul(argument, NULL, 0) : 0;
+    if (parsed == 0 || parsed > 4096) {
       char message[256];
       snprintf(message, sizeof(message),
-               "[!] Add %s: Ring diameter must be positive\n",
+               "[!] Add %s: A slider needs a width between 1 and 4096\n",
                alias             );
       preview_clear_messages(preview);
       preview->messages = preview_copy(message);
       return false;
     }
-    ring_setup(&item->ring, (uint32_t)diameter);
+    slider_setup(&item->slider, (uint32_t)parsed);
+  } else if (item->type == BAR_COMPONENT_RING) {
+    long parsed = argument ? strtol(argument, NULL, 0) : 0;
+    if (parsed <= 0 || parsed > 4096) {
+      char message[256];
+      snprintf(message, sizeof(message),
+               "[!] Add %s: Ring diameter must be between 1 and 4096\n",
+               alias             );
+      preview_clear_messages(preview);
+      preview->messages = preview_copy(message);
+      return false;
+    }
+    ring_setup(&item->ring, (uint32_t)parsed);
   } else if (item->type == BAR_COMPONENT_ALIAS) {
     /* The daemon takes the owner and the name of an alias out of the name
        of the item, split at a comma, and it copies the two halves
@@ -199,7 +232,33 @@ static bool preview_apply_add_argument(sb_preview_t* preview,
 
       int index = bar_manager_get_item_index_for_name(&g_bar_manager, member);
       if (index >= 0) {
-        group_add_member(item->group, g_bar_manager.bar_items[index]);
+        struct bar_item* member_item = g_bar_manager.bar_items[index];
+        /* A nested bracket is not reparented into the outer group: its own
+           group owns it, and moving it would make its destroy release the
+           outer group. The preview says it cannot draw the nesting and
+           keeps both groups intact. */
+        if (member_item->type == BAR_COMPONENT_GROUP) {
+          char message[256];
+          snprintf(message, sizeof(message),
+                   "[?] Add (Group) %s: nested bracket '%s' is not supported by the preview\n",
+                   item->name ? item->name : alias,
+                   member              );
+          preview_add_message(preview, message);
+          if (first) {
+            free(list);
+            return false;
+          }
+          if (last) break;
+          member = end + 1;
+          continue;
+        }
+        /* A member can be listed in two brackets. Leaving the old group
+           first keeps its member list from pointing at an item that now
+           belongs to another group after the old bracket is destroyed. */
+        if (member_item->group && member_item->group != item->group) {
+          group_remove_member(member_item->group, member_item);
+        }
+        group_add_member(item->group, member_item);
         first = false;
       } else {
         char message[256];
@@ -236,6 +295,12 @@ static int preview_apply_item_property(sb_preview_t* preview,
     preview_reset_default_item();
     preview_clear_messages(preview);
     return SB_OK;
+  }
+
+  if (!preview_arguments_fit(key, value)) {
+    preview_clear_messages(preview);
+    preview_report_long_value(preview, key);
+    return SB_ERR_INVALID_ARGUMENT;
   }
 
   char* message = preview_build_message(key, value);
@@ -300,6 +365,11 @@ void sb_preview_destroy(sb_preview_t* preview) {
 
 int sb_preview_set_bar(sb_preview_t* preview, const char* key, const char* value) {
   if (!preview || !key) return SB_ERR_INVALID_ARGUMENT;
+  if (!preview_arguments_fit(key, value)) {
+    preview_clear_messages(preview);
+    preview_report_long_value(preview, key);
+    return SB_ERR_INVALID_ARGUMENT;
+  }
 
   char* message = preview_build_message(key, value);
   if (!message) return SB_ERR_OUT_OF_MEMORY;
@@ -358,7 +428,7 @@ int sb_preview_add_item(sb_preview_t* preview, const char* alias, const char* ty
              "[?] Add %s: Invalid type '%s', assuming 'item'\n",
              alias,
              type       );
-    preview->messages = preview_copy(message);
+    preview_add_message(preview, message);
   }
 
   /* The position of the add command. The daemon creates the item and
@@ -371,7 +441,7 @@ int sb_preview_add_item(sb_preview_t* preview, const char* alias, const char* ty
              "[!] Add %s: Illegal position '%s'\n",
              alias,
              position ? position : "");
-    preview->messages = preview_copy(message);
+    preview_add_message(preview, message);
     bar_manager_remove_item(&g_bar_manager, item);
     return SB_ERR_PROPERTY_REJECTED;
   }
@@ -397,6 +467,7 @@ int sb_preview_set_item(sb_preview_t* preview, const char* alias, const char* ke
 
 int sb_preview_set_display(sb_preview_t* preview, double widthPoints, double heightPoints, double scale) {
   if (!preview) return SB_ERR_INVALID_ARGUMENT;
+  if (!isfinite(widthPoints) || !isfinite(heightPoints)) return SB_ERR_INVALID_ARGUMENT;
   if (widthPoints <= 0 || heightPoints <= 0) return SB_ERR_INVALID_ARGUMENT;
 
   /* The preview keeps the fixed backing scale of 2.0 of SketchyBar
@@ -411,7 +482,7 @@ int sb_preview_set_display(sb_preview_t* preview, double widthPoints, double hei
 }
 
 int sb_preview_set_menu_bar(sb_preview_t* preview, double heightPoints) {
-  if (!preview || heightPoints < 0) return SB_ERR_INVALID_ARGUMENT;
+  if (!preview || !isfinite(heightPoints) || heightPoints < 0) return SB_ERR_INVALID_ARGUMENT;
   preview_display_set_menu_bar(heightPoints, heightPoints > 0);
   return SB_OK;
 }
@@ -449,6 +520,14 @@ int sb_preview_set_script_environment(const char* shim_directory,
 
 int sb_preview_run_item_scripts(sb_preview_t* preview) {
   if (!preview) return SB_ERR_INVALID_ARGUMENT;
+  if (!preview_script_environment_ready()) {
+    preview_add_message(preview, "The scripts of the items were not run, because the isolated environment of the preview is not installed.");
+    return SB_ERR_INVALID_ARGUMENT;
+  }
+
+  /* Lay the bar out before the scripts run, so the gate of `when_shown`
+     sees the bar of this tree and not the state of the previous one. */
+  bar_manager_refresh(&g_bar_manager, true);
 
   for (uint32_t i = 0; i < g_bar_manager.bar_item_count; i++) {
     struct bar_item* item = g_bar_manager.bar_items[i];
@@ -461,10 +540,12 @@ int sb_preview_run_item_scripts(sb_preview_t* preview) {
     /* The state of the item: the daemon keeps its items for as long as
        the config lives, so the counter of the item and the fact that it
        was on a bar survive there (src/bar_item.c:126-133). The preview
-       rebuilds its item tree, so the state comes from the registry of
-       the shim and goes back into it. */
+       rebuilds its item tree, so the counter comes from the registry of
+       the shim and goes back into it. Whether the item is shown comes from
+       the layout above, so the first render of a config runs the script
+       the daemon would run. */
     item->counter = preview_item_counter_for(item->name);
-    if (preview_item_shown_for(item->name)) {
+    if (bar_item_is_shown(item)) {
       bar_item_append_associated_bar(item, display_active_display_adid());
     }
 
@@ -493,6 +574,9 @@ int sb_preview_run_scripts(const char* const* aliases,
                             const char* const* scripts,
                             size_t count) {
   if (!aliases || !scripts) return SB_ERR_INVALID_ARGUMENT;
+  if (!preview_script_environment_ready()) {
+    return SB_ERR_INVALID_ARGUMENT;
+  }
 
   char** alias_buffer = calloc(count ? count : 1, sizeof(char*));
   char** script_buffer = calloc(count ? count : 1, sizeof(char*));
