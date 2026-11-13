@@ -426,8 +426,9 @@ final class BarRenderGoldenTests: XCTestCase {
     /// has no undefined symbol of the window server and no symbol of the
     /// Mach machinery.
     func testThePreviewDoesNotReachTheWindowServer() throws {
-        let object = try XCTUnwrap(Self.previewObjectURL(),
-                                    "the object of the preview core must be next to the test bundle")
+        let search = Self.previewObjectSearch()
+        let object = try XCTUnwrap(search.object,
+                                    "the object of the preview core must be in the build tree; searched \(search.directories.joined(separator: ", "))")
         let symbols = try XCTUnwrap(Self.undefinedSymbols(of: object),
                                     "the symbols of the preview core must be readable")
 
@@ -698,13 +699,87 @@ final class BarRenderGoldenTests: XCTestCase {
 
     // MARK: - The object of the preview core
 
-    /// The object file of the preview core. It is built next to the test
-    /// bundle.
-    private static func previewObjectURL() -> URL? {
-        let bundle = Bundle(for: BarRenderGoldenTests.self)
-        let directory = bundle.bundleURL.deletingLastPathComponent()
-        let object = directory.appendingPathComponent("CSketchyBar.o")
-        return FileManager.default.fileExists(atPath: object.path) ? object : nil
+    /// The object of the preview core and the directories that were searched
+    /// for it.
+    private struct PreviewObjectSearch {
+        let object: URL?
+        let directories: [String]
+    }
+
+    /// The directories of the scratch tree that cannot hold the object and
+    /// are expensive to walk.
+    private static let previewSearchSkippedDirectories: Set<String> = [
+        "artifacts", "checkouts", "repositories", "SourcePackages"
+    ]
+
+    /// The object file of the preview core.
+    ///
+    /// The Xcode-style product build writes the object next to the test
+    /// bundle. A plain `swift test` keeps it in the scratch tree of SwiftPM
+    /// instead, so the tree is walked when the sibling is absent.
+    private static func previewObjectSearch() -> PreviewObjectSearch {
+        let bundleDirectory = Bundle(for: BarRenderGoldenTests.self)
+            .bundleURL.deletingLastPathComponent()
+        let sibling = bundleDirectory.appendingPathComponent("CSketchyBar.o")
+        if FileManager.default.fileExists(atPath: sibling.path) {
+            return PreviewObjectSearch(object: sibling, directories: [bundleDirectory.path])
+        }
+        guard let root = scratchRoot(from: bundleDirectory) else {
+            return PreviewObjectSearch(object: nil, directories: [bundleDirectory.path])
+        }
+        return PreviewObjectSearch(object: findPreviewObject(in: root),
+                                   directories: [root.path])
+    }
+
+    /// The root of the scratch tree that holds the test bundle.
+    ///
+    /// The bundle sits inside the tree in both layouts: at
+    /// `<scratch>/debug` or below `<scratch>/out/Products`. The root is the
+    /// directory that holds the state file of SwiftPM.
+    private static func scratchRoot(from directory: URL) -> URL? {
+        var candidate = directory
+        for _ in 0..<6 {
+            let state = candidate.appendingPathComponent("workspace-state.json")
+            if FileManager.default.fileExists(atPath: state.path) {
+                return candidate
+            }
+            let parent = candidate.deletingLastPathComponent()
+            if parent.path == candidate.path {
+                return nil
+            }
+            candidate = parent
+        }
+        return nil
+    }
+
+    /// A bounded breadth-first search for `CSketchyBar.o` under the scratch
+    /// root. The aggregate object sits at most six directories down in the
+    /// layouts of the toolchains that ship it.
+    private static func findPreviewObject(in root: URL) -> URL? {
+        let fileManager = FileManager.default
+        var level = [root]
+        for _ in 0..<8 {
+            var next: [URL] = []
+            for directory in level {
+                guard let entries = try? fileManager.contentsOfDirectory(
+                    at: directory,
+                    includingPropertiesForKeys: [.isDirectoryKey],
+                    options: []
+                ) else { continue }
+                for entry in entries {
+                    if entry.lastPathComponent == "CSketchyBar.o" {
+                        return entry
+                    }
+                    guard (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+                          !previewSearchSkippedDirectories.contains(entry.lastPathComponent) else {
+                        continue
+                    }
+                    next.append(entry)
+                }
+            }
+            level = next
+        }
+        return nil
     }
 
     /// The symbols the preview core needs and does not define itself.

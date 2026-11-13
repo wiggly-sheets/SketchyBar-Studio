@@ -1062,6 +1062,20 @@ private final class MockCommandRunner: CommandRunner, StreamingCommandRunner, @u
 extension StoreTests {
     // MARK: - Presence checks
 
+    /// A fresh directory that holds an executable named `name`.
+    ///
+    /// The lookup of a test points at the directory, so the result does not
+    /// depend on the packages that are installed on the machine.
+    private func makeExecutableDirectory(named name: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sketchybar-studio-store-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executable = directory.appendingPathComponent(name)
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return directory
+    }
+
     func testFormulaPresencePresent() async {
         let mock = MockCommandRunner()
         mock.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 0, stdout: "jq 1.7\n", stderr: ""))
@@ -1097,13 +1111,19 @@ extension StoreTests {
         StoreDependencyService.testBinSearchPaths = nil
     }
 
-    func testCommandPresencePresent() async {
-        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: ["/fake/bin"])
+    func testCommandPresencePresent() async throws {
+        let directory = try makeExecutableDirectory(named: "sketchybar")
+        StoreDependencyService.pathEnvironment = ["PATH": directory.path]
+        defer {
+            StoreDependencyService.pathEnvironment = nil
+            StoreDependencyService.testBinSearchPaths = nil
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
         let dep = StoreDependency(kind: .command, name: "sketchybar", required: true)
         // commandPresence checks binURL first, then runs "command -v"
         let presence = await service.presence(of: dep)
         XCTAssertEqual(presence, .present)
-        StoreDependencyService.testBinSearchPaths = nil
     }
 
     func testCommandPresenceMissing() async {
@@ -1137,12 +1157,18 @@ extension StoreTests {
         StoreDependencyService.testBinSearchPaths = nil
     }
 
-    func testSketchybarPresence() async {
-        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: ["/fake/bin"])
+    func testSketchybarPresence() async throws {
+        let directory = try makeExecutableDirectory(named: "sketchybar")
+        StoreDependencyService.pathEnvironment = ["PATH": directory.path]
+        defer {
+            StoreDependencyService.pathEnvironment = nil
+            StoreDependencyService.testBinSearchPaths = nil
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
         let dep = StoreDependency(kind: .sketchybar, name: "sketchybar", required: true)
         let presence = await service.presence(of: dep)
         XCTAssertEqual(presence, .present)
-        StoreDependencyService.testBinSearchPaths = nil
     }
 
     // MARK: - Install argument array
