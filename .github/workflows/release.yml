@@ -11,7 +11,7 @@ permissions:
 jobs:
   release:
     name: Build DMG and publish release
-    runs-on: macos-latest
+    runs-on: macos-26
 
     steps:
       - name: Checkout

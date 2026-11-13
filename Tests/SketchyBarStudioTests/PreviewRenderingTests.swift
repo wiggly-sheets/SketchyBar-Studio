@@ -36,7 +36,11 @@ final class PreviewRenderingTests: XCTestCase {
     /// The red, green and blue parts of a color of a preview item.
     private func components(_ color: Color?) -> (red: Double, green: Double, blue: Double)? {
         guard let color, let converted = NSColor(color).usingColorSpace(.sRGB) else { return nil }
-        return (converted.redComponent, converted.greenComponent, converted.blueComponent)
+        return (
+            Double(converted.redComponent),
+            Double(converted.greenComponent),
+            Double(converted.blueComponent)
+        )
     }
 
     // MARK: - Icon values
