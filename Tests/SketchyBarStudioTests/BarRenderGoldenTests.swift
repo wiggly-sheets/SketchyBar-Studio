@@ -427,14 +427,15 @@ final class BarRenderGoldenTests: XCTestCase {
     /// Mach machinery.
     func testThePreviewDoesNotReachTheWindowServer() throws {
         let search = Self.previewObjectSearch()
-        let object = try XCTUnwrap(search.object,
-                                    "the object of the preview core must be in the build tree; searched \(search.directories.joined(separator: ", "))")
-        let symbols = try XCTUnwrap(Self.undefinedSymbols(of: object),
-                                    "the symbols of the preview core must be readable")
-
-        for forbidden in ["mach_send_message", "bootstrap_register", "_SLS"] {
-            XCTAssertFalse(symbols.contains { $0.contains(forbidden) },
-                           "the preview core must not reach \(forbidden): \(symbols.joined(separator: ", "))")
+        XCTAssertFalse(search.objects.isEmpty,
+                       "the object of the preview core must be in the build tree; searched \(search.directories.joined(separator: ", "))")
+        for object in search.objects {
+            let symbols = try XCTUnwrap(Self.undefinedSymbols(of: object),
+                                        "the symbols of \(object.lastPathComponent) must be readable")
+            for forbidden in ["mach_send_message", "bootstrap_register", "_SLS"] {
+                XCTAssertFalse(symbols.contains { $0.contains(forbidden) },
+                               "\(object.lastPathComponent) must not reach \(forbidden): \(symbols.joined(separator: ", "))")
+            }
         }
     }
 
@@ -699,35 +700,36 @@ final class BarRenderGoldenTests: XCTestCase {
 
     // MARK: - The object of the preview core
 
-    /// The object of the preview core and the directories that were searched
-    /// for it.
+    /// The objects of the preview core and the directories that were searched
+    /// for them.
     private struct PreviewObjectSearch {
-        let object: URL?
+        let objects: [URL]
         let directories: [String]
     }
 
-    /// The directories of the scratch tree that cannot hold the object and
+    /// The directories of the scratch tree that cannot hold the objects and
     /// are expensive to walk.
     private static let previewSearchSkippedDirectories: Set<String> = [
         "artifacts", "checkouts", "repositories", "SourcePackages", "ModuleCache.noindex"
     ]
 
-    /// The object file of the preview core.
+    /// The object files of the preview core.
     ///
-    /// The Xcode-style product build writes the object next to the test
-    /// bundle. A plain `swift test` keeps it in the scratch tree of SwiftPM
-    /// instead, so the tree is walked when the sibling is absent.
+    /// The Xcode-style product build writes one `CSketchyBar.o` next to the
+    /// test bundle. A plain `swift test` keeps one object per source file in
+    /// the `CSketchyBar.build` directory of the scratch tree instead, so the
+    /// tree is walked when the sibling is absent.
     private static func previewObjectSearch() -> PreviewObjectSearch {
         let bundleDirectory = Bundle(for: BarRenderGoldenTests.self)
             .bundleURL.deletingLastPathComponent()
         let sibling = bundleDirectory.appendingPathComponent("CSketchyBar.o")
         if FileManager.default.fileExists(atPath: sibling.path) {
-            return PreviewObjectSearch(object: sibling, directories: [bundleDirectory.path])
+            return PreviewObjectSearch(objects: [sibling], directories: [bundleDirectory.path])
         }
         guard let root = scratchRoot(from: bundleDirectory) else {
-            return PreviewObjectSearch(object: nil, directories: [bundleDirectory.path])
+            return PreviewObjectSearch(objects: [], directories: [bundleDirectory.path])
         }
-        return PreviewObjectSearch(object: findPreviewObject(in: root),
+        return PreviewObjectSearch(objects: findPreviewObjects(in: root),
                                    directories: [root.path])
     }
 
@@ -752,31 +754,32 @@ final class BarRenderGoldenTests: XCTestCase {
         return nil
     }
 
-    /// Walks the scratch tree for `CSketchyBar.o`.
+    /// Walks the scratch tree for the objects of the preview core.
     ///
-    /// The depth of the object depends on the toolchain: a current SwiftPM
-    /// writes it next to the products, an older one keeps it under
-    /// `Intermediates.noindex`, and the Xcode product build writes it next
-    /// to the bundle. So the tree is walked until the object is found, and
-    /// only the caches that cannot hold it are skipped.
-    private static func findPreviewObject(in root: URL) -> URL? {
+    /// An object belongs to the preview core when its path holds a
+    /// `CSketchyBar.build` component (SwiftPM, `CSketchyBar-t.build` for the
+    /// product build) or when the file itself is named `CSketchyBar.o`.
+    /// Only the caches that cannot hold an object are skipped.
+    private static func findPreviewObjects(in root: URL) -> [URL] {
         let fileManager = FileManager.default
         guard let walker = fileManager.enumerator(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [],
             errorHandler: { _, _ in true }
-        ) else { return nil }
+        ) else { return [] }
+        var objects: [URL] = []
         for case let entry as URL in walker {
-            if entry.lastPathComponent == "CSketchyBar.o" {
-                return entry
-            }
             let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            if !isDirectory, entry.pathExtension == "o",
+               entry.pathComponents.contains(where: { $0.hasPrefix("CSketchyBar") }) {
+                objects.append(entry)
+            }
             if isDirectory, previewSearchSkippedDirectories.contains(entry.lastPathComponent) {
                 walker.skipDescendants()
             }
         }
-        return nil
+        return objects.sorted { $0.path < $1.path }
     }
 
     /// The symbols the preview core needs and does not define itself.
