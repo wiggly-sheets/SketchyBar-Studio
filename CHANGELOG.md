@@ -59,6 +59,12 @@ This project follows a human-readable changelog style and aims to use semantic v
 - The project licence is now GPL-3.0 instead of MIT. The full licence text is in LICENSE.
 - The install instructions now point at the consolidated Homebrew tap `wiggly-sheets/homebrew-tap`. The old tap `wiggly-sheets/sketchybar-studio` is deprecated. Move over with `brew untap wiggly-sheets/sketchybar-studio` and `brew tap wiggly-sheets/homebrew-tap`.
 
+## [1.0.3] - 2026-11-13
+
+### Added
+
+- Release pipeline trial.
+
 <!-- pre-versioning -->
 
 ## [1.0.2] - 2026-10-20
