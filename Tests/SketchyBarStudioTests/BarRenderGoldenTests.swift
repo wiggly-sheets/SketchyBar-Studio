@@ -709,7 +709,7 @@ final class BarRenderGoldenTests: XCTestCase {
     /// The directories of the scratch tree that cannot hold the object and
     /// are expensive to walk.
     private static let previewSearchSkippedDirectories: Set<String> = [
-        "artifacts", "checkouts", "repositories", "SourcePackages"
+        "artifacts", "checkouts", "repositories", "SourcePackages", "ModuleCache.noindex"
     ]
 
     /// The object file of the preview core.
@@ -752,32 +752,29 @@ final class BarRenderGoldenTests: XCTestCase {
         return nil
     }
 
-    /// A bounded breadth-first search for `CSketchyBar.o` under the scratch
-    /// root. The aggregate object sits at most six directories down in the
-    /// layouts of the toolchains that ship it.
+    /// Walks the scratch tree for `CSketchyBar.o`.
+    ///
+    /// The depth of the object depends on the toolchain: a current SwiftPM
+    /// writes it next to the products, an older one keeps it under
+    /// `Intermediates.noindex`, and the Xcode product build writes it next
+    /// to the bundle. So the tree is walked until the object is found, and
+    /// only the caches that cannot hold it are skipped.
     private static func findPreviewObject(in root: URL) -> URL? {
         let fileManager = FileManager.default
-        var level = [root]
-        for _ in 0..<8 {
-            var next: [URL] = []
-            for directory in level {
-                guard let entries = try? fileManager.contentsOfDirectory(
-                    at: directory,
-                    includingPropertiesForKeys: [.isDirectoryKey],
-                    options: []
-                ) else { continue }
-                for entry in entries {
-                    if entry.lastPathComponent == "CSketchyBar.o" {
-                        return entry
-                    }
-                    guard (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
-                          !previewSearchSkippedDirectories.contains(entry.lastPathComponent) else {
-                        continue
-                    }
-                    next.append(entry)
-                }
+        guard let walker = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [],
+            errorHandler: { _, _ in true }
+        ) else { return nil }
+        for case let entry as URL in walker {
+            if entry.lastPathComponent == "CSketchyBar.o" {
+                return entry
             }
-            level = next
+            let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            if isDirectory, previewSearchSkippedDirectories.contains(entry.lastPathComponent) {
+                walker.skipDescendants()
+            }
         }
         return nil
     }
