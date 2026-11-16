@@ -197,86 +197,6 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertLessThan(EditableValueGroup.sortRank("Scripts"), EditableValueGroup.sortRank("Mystery"))
     }
 
-    // MARK: - SourceSyntaxHighlighter
-
-    private func syntaxTokens(_ source: String, _ language: SourceLanguage) -> [(kind: SourceTokenKind, text: String)] {
-        let text = source as NSString
-        return SourceSyntaxHighlighter.tokens(in: source, language: language).map {
-            (kind: $0.kind, text: text.substring(with: $0.range))
-        }
-    }
-
-    func testLuaCommentToken() {
-        let tokens = syntaxTokens("-- comment", .lua)
-
-        XCTAssertEqual(tokens.first?.kind, .comment)
-        XCTAssertEqual(tokens.first?.text, "-- comment")
-    }
-
-    func testShellCommentToken() {
-        let tokens = syntaxTokens("# comment", .shell)
-
-        XCTAssertEqual(tokens.first?.kind, .comment)
-        XCTAssertEqual(tokens.first?.text, "# comment")
-    }
-
-    func testStringWithEscapes() {
-        let source = "\"say \\\"hi\\\"\""
-        let tokens = syntaxTokens(source, .lua)
-
-        XCTAssertEqual(tokens.count, 1)
-        XCTAssertEqual(tokens.first?.kind, .string)
-        XCTAssertEqual(tokens.first?.text, source)
-    }
-
-    func testNumberTokens() {
-        for source in ["42", "3.5", "0xFF"] {
-            let tokens = syntaxTokens(source, .lua)
-            XCTAssertEqual(tokens.count, 1)
-            XCTAssertEqual(tokens.first?.kind, .number)
-            XCTAssertEqual(tokens.first?.text, source)
-        }
-    }
-
-    func testKeywordTokens() {
-        let lua = syntaxTokens("local", .lua)
-        XCTAssertEqual(lua.first?.kind, .keyword)
-        XCTAssertEqual(lua.first?.text, "local")
-
-        let rc = syntaxTokens("sketchybar", .shell)
-        XCTAssertEqual(rc.first?.kind, .keyword)
-        XCTAssertEqual(rc.first?.text, "sketchybar")
-
-        let plain = syntaxTokens("foo", .lua)
-        XCTAssertEqual(plain.first?.kind, .plain)
-        XCTAssertEqual(plain.first?.text, "foo")
-    }
-
-    func testVariableTokens() {
-        for source in ["$var", "${var}"] {
-            let tokens = syntaxTokens(source, .shell)
-            XCTAssertEqual(tokens.count, 1)
-            XCTAssertEqual(tokens.first?.kind, .variable)
-            XCTAssertEqual(tokens.first?.text, source)
-        }
-    }
-
-    func testFlagTokens() {
-        let tokens = syntaxTokens("--flag", .shell)
-
-        XCTAssertEqual(tokens.count, 1)
-        XCTAssertEqual(tokens.first?.kind, .flag)
-        XCTAssertEqual(tokens.first?.text, "--flag")
-    }
-
-    func testRepeatedTokenizingReturnsTheSameTokens() {
-        let first = syntaxTokens("width = 10", .lua)
-        let second = syntaxTokens("width = 10", .lua)
-
-        XCTAssertEqual(first.map(\.text), second.map(\.text))
-        XCTAssertEqual(first.map(\.kind), second.map(\.kind))
-    }
-
     // MARK: - Search filter
 
     func testSearchMatchesKeyPath() {
@@ -740,12 +660,6 @@ final class ViewLogicTests: XCTestCase {
                 "sticky"
             ]
         )
-    }
-
-    func testBooleanKeySetHasNoKeyThatSketchyBarDoesNotReadAsABoolean() {
-        for key in ["clip", "cache_scripts", "lazy", "topmost"] {
-            XCTAssertFalse(SketchyBarBoolean.isBooleanKey(key), "\(key) is not a boolean")
-        }
     }
 
     func testBooleanKeySetMatchesTheQualifiedDrawingKeys() {

@@ -161,52 +161,20 @@ final class AddItemWizardStoreTests: XCTestCase {
         XCTAssertTrue(store.insertLoaderLine("require(\"items.right.clock\")", into: loaderURL, forItemFile: url))
         XCTAssertTrue(try String(contentsOf: loaderURL, encoding: .utf8).contains("items.right.clock"))
 
+        // The loader line goes first, the file stays.
         store.undo()
-
         XCTAssertEqual(try Data(contentsOf: loaderURL), original)
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
 
+        // The file goes with it.
         store.undo()
-
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
         XCTAssertEqual(try Data(contentsOf: loaderURL), original)
         XCTAssertFalse(store.canUndo)
-    }
 
-    func testTheCreationCanBeUndoneWhenTheLoaderLineIsStillThere() throws {
-        let root = try makeConfigRoot()
-        let loaderURL = root.appendingPathComponent("init.lua")
-        try write("require(\"items.first\")\n", to: loaderURL)
-        let original = try Data(contentsOf: loaderURL)
-        let store = SketchyBarStore(configRoot: root)
-        let url = root.appendingPathComponent("items/right/clock.lua")
-
-        XCTAssertTrue(store.createItemFile(contents: itemContents, at: url))
-        XCTAssertTrue(store.insertLoaderLine("require(\"items.right.clock\")", into: loaderURL, forItemFile: url))
-
-        // The loader line is taken away first, then the file.
-        store.undo()
-        store.undo()
-
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
-        XCTAssertEqual(try Data(contentsOf: loaderURL), original)
-    }
-
-    func testTheCreationAndTheLoaderLineCanBeDoneAgain() throws {
-        let root = try makeConfigRoot()
-        let loaderURL = root.appendingPathComponent("init.lua")
-        try write("require(\"items.first\")\n", to: loaderURL)
-        let store = SketchyBarStore(configRoot: root)
-        let url = root.appendingPathComponent("items/right/clock.lua")
-
-        XCTAssertTrue(store.createItemFile(contents: itemContents, at: url))
-        XCTAssertTrue(store.insertLoaderLine("require(\"items.right.clock\")", into: loaderURL, forItemFile: url))
-
-        store.undo()
-        store.undo()
+        // The creation and the loader line can be done again.
         store.redo()
         store.redo()
-
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
         XCTAssertTrue(try String(contentsOf: loaderURL, encoding: .utf8).contains("items.right.clock"))
     }

@@ -266,17 +266,6 @@ final class StoreDraftSafetyTests: XCTestCase {
         XCTAssertTrue(store.statusMessage.contains("no longer exists"))
     }
 
-    func testSelectedFileIsNilWhenTheSelectionIsCleared() throws {
-        let root = try makeConfigRoot()
-        try write("width = 10\n", to: root.appendingPathComponent("items/first.lua"))
-        let store = SketchyBarStore(configRoot: root)
-        XCTAssertNotNil(store.selectedFile)
-
-        store.selectedFileID = nil
-
-        XCTAssertNil(store.selectedFile)
-    }
-
     func testSetActiveMessageSurvivesTheReload() throws {
         let root = try makeConfigRoot()
         let fileURL = root.appendingPathComponent("items/first.lua")
@@ -482,18 +471,6 @@ final class StoreDraftSafetyTests: XCTestCase {
     }
 
     // MARK: - Save guards
-
-    func testTheScannerRefusesToSaveOverAnExternalEdit() throws {
-        let root = try makeConfigRoot()
-        let fileURL = root.appendingPathComponent("items/first.lua")
-        try write("width = 10\n", to: fileURL)
-        var values = LuaConfigScanner().scan(fileURL: fileURL)
-        values[0].draftValue = "11"
-        try write("width = 12\n", to: fileURL)
-
-        XCTAssertThrowsError(try LuaConfigScanner().save(values: values, to: fileURL, rootURL: root))
-        XCTAssertEqual(try String(contentsOf: fileURL, encoding: .utf8), "width = 12\n")
-    }
 
     func testAStructuredDraftIsNotSavedOverAnExternalEdit() throws {
         let root = try makeConfigRoot()

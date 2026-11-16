@@ -248,13 +248,6 @@ final class BarSimulationTests: XCTestCase {
         XCTAssertEqual(store.barValue("position"), nil, "the bar does not set a position here")
     }
 
-    // MARK: - The pane
-
-    /// The preview mode is the simulation now, and the title says so.
-    func testThePreviewModeIsTheSimulation() {
-        XCTAssertEqual(DetailPaneMode.preview.title, "Simulation")
-    }
-
     // MARK: - The helpers
 
     private func makeConfigRoot() throws -> URL {

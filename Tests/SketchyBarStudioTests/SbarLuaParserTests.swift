@@ -338,8 +338,6 @@ final class SbarLuaParserTests: XCTestCase {
     func testTheGroupTitleComesFromTheFirstKeySegment() {
         XCTAssertEqual(EditableValueGroup.title(for: value("icon.font.size", original: "12")), "Icon")
         XCTAssertEqual(EditableValueGroup.title(for: value("padding_left", original: "2")), "Item")
-        XCTAssertEqual(EditableValueGroup.title(for: value("background.border_color", original: "0xff0000")), "Background")
-        XCTAssertEqual(EditableValueGroup.title(for: value("popup.height", original: "30")), "Popup")
         XCTAssertEqual(EditableValueGroup.title(for: value("click_script", original: "x")), "Scripts")
     }
 

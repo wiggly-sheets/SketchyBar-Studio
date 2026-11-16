@@ -166,7 +166,7 @@ final class AuditFixBatchYTests: XCTestCase {
 
     // MARK: - F6: a step whose value is gone must not block the history
 
-    func testTheUndoStackAdvancesAfterAnExternalEdit() throws {
+    func testTheHistoryAdvancesAfterAnExternalEdit() throws {
         let root = try makeConfigRoot()
         let fileURL = root.appendingPathComponent("items/clock.lua")
         try write("width = 10\n", to: fileURL)
@@ -174,39 +174,24 @@ final class AuditFixBatchYTests: XCTestCase {
         let file = try XCTUnwrap(store.files.first { $0.url == fileURL })
         let value = try XCTUnwrap(file.values.first)
 
+        // Undo: the step is dropped instead of blocking the history.
         store.update(valueID: value.id, draftValue: "20")
-        XCTAssertTrue(store.canUndo)
-
-        // Another program writes the file and the config is read again.
         try write("-- a comment\nwidth = 10\n", to: fileURL)
         store.reload()
-
         store.undo()
-
-        // The step was dropped instead of blocking the history.
         XCTAssertFalse(store.canUndo)
         XCTAssertTrue(store.statusMessage.contains("dropped"))
-    }
 
-    func testTheRedoStackAdvancesAfterAnExternalEdit() throws {
-        let root = try makeConfigRoot()
-        let fileURL = root.appendingPathComponent("items/clock.lua")
-        try write("width = 10\n", to: fileURL)
-        let store = SketchyBarStore(configRoot: root)
-        let file = try XCTUnwrap(store.files.first { $0.url == fileURL })
-        let value = try XCTUnwrap(file.values.first)
-
-        store.update(valueID: value.id, draftValue: "20")
+        // Redo: the same for a step that was undone before the edit.
+        let reloaded = try XCTUnwrap(store.files.first { $0.url == fileURL })
+        let reloadedValue = try XCTUnwrap(reloaded.values.first)
+        store.update(valueID: reloadedValue.id, draftValue: "20")
         store.undo()
         XCTAssertTrue(store.canRedo)
 
-        // Another program writes the file and the config is read again.
-        try write("-- a comment\nwidth = 10\n", to: fileURL)
+        try write("-- another comment\nwidth = 10\n", to: fileURL)
         store.reload()
-
         store.redo()
-
-        // The step was dropped instead of blocking the history.
         XCTAssertFalse(store.canRedo)
         XCTAssertTrue(store.statusMessage.contains("dropped"))
     }

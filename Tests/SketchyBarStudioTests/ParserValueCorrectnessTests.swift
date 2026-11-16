@@ -202,16 +202,6 @@ final class ParserValueCorrectnessTests: XCTestCase {
         XCTAssertEqual(values.first?.originalValue, "x")
     }
 
-    func testShellHeredocBodyIsNotScanned() throws {
-        let root = try makeConfigRoot()
-        let fileURL = root.appendingPathComponent("items/body.sh")
-        try write("cat <<EOF\nLABEL=\"body\"\nEOF\nICON=\"real\"\n", to: fileURL)
-
-        let values = ShellConfigScanner().scan(fileURL: fileURL)
-
-        XCTAssertEqual(values.map(\.keyPath), ["ICON"])
-    }
-
     // MARK: - Lua file structure
 
     func testLuaCommentValuesAreNotScanned() throws {
@@ -285,7 +275,7 @@ final class ParserValueCorrectnessTests: XCTestCase {
             XCTAssertTrue(SketchyBarBoolean.isBooleanKey(key), "\(key) should be a boolean key")
         }
 
-        for key in ["clip", "lazy", "cache_scripts", "highlight_color"] {
+        for key in ["clip", "lazy", "cache_scripts", "highlight_color", "topmost"] {
             XCTAssertFalse(SketchyBarBoolean.isBooleanKey(key), "\(key) should not be a boolean key")
         }
     }

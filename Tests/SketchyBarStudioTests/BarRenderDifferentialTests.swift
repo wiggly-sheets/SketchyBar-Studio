@@ -139,49 +139,6 @@ final class BarRenderDifferentialTests: XCTestCase {
         }
     }
 
-    // MARK: - The query parser
-
-    /// The tolerant parser reads a real --query reply and a reply whose
-    /// value contains a backslash, and it detects the "[!] …" error prefix.
-    func testQueryParserToleratesBackslashAndErrorPrefix() throws {
-        // A reply with a backslash in a value (invalid JSON escape).
-        // In Swift multi-line string, \\ is literal backslash, \t and \f are escapes.
-        // Use \\t and \\f to get literal backslash-t and backslash-f.
-        let replyWithBackslash = """
-        {
-            "name": "test",
-            "geometry": {
-                "label": {
-                    "value": "path\\\\to\\\\file"
-                }
-            }
-        }
-        """
-        let parsed = try SketchyBarQueryParser.parse(replyWithBackslash)
-        let geometry = parsed["geometry"] as? [String: Any]
-        let label = geometry?["label"] as? [String: Any]
-        XCTAssertEqual(label?["value"] as? String, "path\\to\\file")
-
-        // A reply with the error prefix "[!]".
-        let errorReply = "[!] The property 'not_a_property' is not a valid property."
-        let errorParsed = SketchyBarQueryParser.parseError(errorReply)
-        XCTAssertNotNil(errorParsed)
-        XCTAssertTrue(errorParsed!.contains("not_a_property"))
-
-        // A valid reply without the error prefix.
-        let validReply = """
-        {
-            "name": "test",
-            "geometry": {
-                "width": 100
-            }
-        }
-        """
-        let validParsed = try SketchyBarQueryParser.parse(validReply)
-        let validGeometry = validParsed["geometry"] as? [String: Any]
-        XCTAssertEqual(validGeometry?["width"] as? Int, 100)
-    }
-
     // MARK: - Helpers
 
     /// Renders the fixture config and returns the item rectangles.

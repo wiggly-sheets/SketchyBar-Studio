@@ -248,37 +248,4 @@ final class BarLevelPropertyTests: XCTestCase {
         XCTAssertEqual(values.first?.suggestedValues, ["top", "bottom"])
     }
 
-    // MARK: - The picker
-
-    private let catalog = SketchyBarOptionCatalog()
-
-    func testThePickerKeepsTheCurrentValueOfEveryOption() {
-        for doc in SketchyBarOptionDocs.all where !doc.values.isEmpty {
-            for value in doc.values {
-                let suggestions = catalog.suggestedValues(for: doc.key, currentValue: value)
-                XCTAssertTrue(
-                    suggestions.contains(value),
-                    "the picker of \(doc.key) has no tag for \(value)"
-                )
-            }
-        }
-    }
-
-    func testThePickerOffersTheBarValuesOfTheBarProperties() {
-        XCTAssertEqual(
-            catalog.suggestedValues(for: "bar.position", currentValue: "top"),
-            ["top", "bottom"]
-        )
-        XCTAssertEqual(
-            catalog.suggestedValues(for: "bar.display", currentValue: "main"),
-            ["all", "main"]
-        )
-    }
-
-    func testThePickerOffersTheItemValuesOfTheItemProperties() {
-        XCTAssertEqual(
-            catalog.suggestedValues(for: "position", currentValue: "left"),
-            ["left", "right", "center", "q", "e"]
-        )
-    }
 }

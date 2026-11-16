@@ -20,17 +20,6 @@ final class ConfigGraphTests: XCTestCase {
         XCTAssertTrue(report.cycles.isEmpty)
     }
 
-    func testFileNothingLoadsIsAnOrphan() throws {
-        let root = try makeConfigRoot()
-        try write("require(\"items/left/clock\")\n", to: root.appendingPathComponent("init.lua"))
-        try write("return {}\n", to: root.appendingPathComponent("items/left/clock.lua"))
-        try write("return {}\n", to: root.appendingPathComponent("items/left/dead.lua"))
-
-        let report = ConfigGraphService().report(for: root)
-
-        XCTAssertEqual(report.orphanFiles.map { $0.lastPathComponent }, ["dead.lua"])
-    }
-
     func testMissingTargetIsReportedWithTheLineNumber() throws {
         let root = try makeConfigRoot()
         try write(

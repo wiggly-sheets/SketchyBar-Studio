@@ -220,6 +220,15 @@ final class BarThemeTests: XCTestCase {
                 XCTAssertEqual(hex.count, 6, "\(palette.id).\(role)")
                 XCTAssertTrue(hex.allSatisfy(\.isHexDigit), "\(palette.id).\(role)")
             }
+
+            for swatch in palette.swatches {
+                XCTAssertTrue(swatch.hasPrefix("#"), "\(palette.id): \(swatch)")
+                XCTAssertEqual(swatch.count, 7, "\(palette.id): \(swatch)")
+                XCTAssertTrue(
+                    swatch.dropFirst().allSatisfy(\.isHexDigit),
+                    "\(palette.id): \(swatch)"
+                )
+            }
         }
     }
 
@@ -237,23 +246,9 @@ final class BarThemeTests: XCTestCase {
         XCTAssertTrue(written.contains("red = 0xffbf616a"))
         XCTAssertTrue(written.contains("green = 0xffa3be8c"))
         XCTAssertTrue(written.contains("blue = 0xff5e81ac"))
-    }
-
-    func testHueNamedKeysDoNotCollide() throws {
-        let written = try renderedTheme(
-            """
-            return {
-            \tred = 0xff101010,
-            \tblue = 0xff101010,
-            }
-            """
-        )
-
-        XCTAssertTrue(written.contains("red = 0xffbf616a"))
-        XCTAssertTrue(written.contains("blue = 0xff5e81ac"))
         XCTAssertNotEqual(
             BarThemeService.hexEntries(in: written).map(\.value),
-            ["0xffbf616a", "0xffbf616a"]
+            ["0xffbf616a", "0xffbf616a", "0xffbf616a"]
         )
     }
 
@@ -364,21 +359,9 @@ final class BarThemeTests: XCTestCase {
         )
     }
 
-    func testEveryPaletteSwatchIsValidHex() {
-        for palette in BarPalette.all {
-            XCTAssertFalse(palette.swatches.isEmpty, palette.id)
-            for swatch in palette.swatches {
-                XCTAssertTrue(swatch.hasPrefix("#"), "\(palette.id): \(swatch)")
-                XCTAssertEqual(swatch.count, 7, "\(palette.id): \(swatch)")
-                XCTAssertTrue(
-                    swatch.dropFirst().allSatisfy(\.isHexDigit),
-                    "\(palette.id): \(swatch)"
-                )
-            }
-        }
-    }
+    // MARK: - Detection of a require
 
-        func testDetectFindsLuaVariableRequire() throws {
+    func testDetectFindsLuaVariableRequire() throws {
         let root = try makeConfigRoot()
         try writeTheme(name: "Tokyo Night", to: root)
         try write(

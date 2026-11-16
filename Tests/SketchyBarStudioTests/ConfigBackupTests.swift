@@ -20,12 +20,14 @@ final class ConfigBackupTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: backupURL, encoding: .utf8), "battery_width = 42\n")
     }
 
-    func testConfigLocatorSkipsMirroredBackupsFolder() throws {
+    func testConfigLocatorSkipsABackupFolderAtEveryDepth() throws {
         let root = try makeConfigRoot()
         let itemURL = root.appendingPathComponent("items/left/battery.lua")
-        let backupURL = root.appendingPathComponent("backups/items/left/battery.lua")
+        let rootBackupURL = root.appendingPathComponent("backups/items/left/battery.lua")
+        let nestedBackupURL = root.appendingPathComponent("items/backups/old.lua")
         try write("battery_width = 42\n", to: itemURL)
-        try write("battery_width = 10\n", to: backupURL)
+        try write("battery_width = 10\n", to: rootBackupURL)
+        try write("battery_width = 10\n", to: nestedBackupURL)
 
         let files = SketchyBarConfigLocator().configFiles(in: root)
 
@@ -58,17 +60,6 @@ final class ConfigBackupTests: XCTestCase {
 
         XCTAssertEqual(references[batteryURL.path]?.lineNumber, 1)
         XCTAssertEqual(references[batteryURL.path]?.isActive, true)
-    }
-
-    func testLuaScannerFindsPositionInCompactItemTable() throws {
-        let root = try makeConfigRoot()
-        let fileURL = root.appendingPathComponent("items/battery.lua")
-        try write("sbar.add(\"item\", \"battery\", { position = \"right\", drawing = true })\n", to: fileURL)
-
-        let values = LuaConfigScanner().scan(fileURL: fileURL)
-
-        XCTAssertEqual(values.map(\.keyPath), ["position", "drawing"])
-        XCTAssertEqual(values.map(\.draftValue), ["right", "true"])
     }
 
     func testActivationLookupPrefersLongestMatchingToken() throws {

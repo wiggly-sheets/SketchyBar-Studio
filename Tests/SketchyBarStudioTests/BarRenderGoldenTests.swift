@@ -37,18 +37,6 @@ final class BarRenderGoldenTests: XCTestCase {
 
     // MARK: - The smoke test
 
-    /// The smoke test of the stage: a preview is created, one item is added
-    /// with a fixed width, the bar is rendered and a non-null image of the
-    /// expected pixel size comes back.
-    func testRenderReturnsAnImageOfTheExpectedPixelSize() throws {
-        let rendered = try renderBar(items: [
-            Item(alias: "apple", type: "item", properties: ["width=120", "label=hello"])
-        ])
-
-        XCTAssertEqual(rendered.image.width, 960, "the width of the image is the width of the bar times 2")
-        XCTAssertEqual(rendered.image.height, 50, "the height of the image is the height of the bar times 2")
-    }
-
     /// A bar with three items has the size of the display and the size of
     /// the bar, in the fixed backing scale of 2.0.
     func testTheImageIsAsWideAsTheDisplayAndAsTallAsTheBar() throws {
@@ -97,15 +85,6 @@ final class BarRenderGoldenTests: XCTestCase {
 
         XCTAssertEqual(red.originX, rect.origin.x * 2, accuracy: 1)
         XCTAssertEqual(red.width, rect.width * 2, accuracy: 1)
-    }
-
-    /// The image is not blank: at least one pixel differs from the
-    /// background of the bar.
-    func testTheImageIsNotBlank() throws {
-        let rendered = try renderBar(items: Self.threeItems)
-
-        let bytes = pixels(of: rendered.image)
-        XCTAssertTrue(bytes.contains { $0 != 0 }, "the image must hold more than the empty background")
     }
 
     // MARK: - The frame of the bar

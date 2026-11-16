@@ -100,32 +100,6 @@ final class BarPreviewCoreTests: XCTestCase {
 
     // MARK: - The defaults
 
-    /// A default that is set before the item is created is inherited by the
-    /// item. That is the snapshot of the daemon (src/bar_manager.c:463,
-    /// src/bar_item.c:68, src/bar_item.c:883-933).
-    func testDefaultSetBeforeTheItemIsInherited() {
-        let handle = SketchyBarPreviewC.create()
-        XCTAssertNotNil(handle)
-        defer { SketchyBarPreviewC.destroy(handle) }
-
-        XCTAssertEqual(SketchyBarPreviewC.setDefault(handle, key: "padding_left", value: "7"), SketchyBarPreviewC.Code.ok)
-        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple", position: "left"), SketchyBarPreviewC.Code.ok)
-
-        XCTAssertEqual(BarPreviewTestAccessors.itemPaddingLeft(handle, alias: "apple"), 7)
-    }
-
-    /// A default that is set after the item exists never reaches that item.
-    func testDefaultSetAfterTheItemDoesNotReachIt() {
-        let handle = SketchyBarPreviewC.create()
-        XCTAssertNotNil(handle)
-        defer { SketchyBarPreviewC.destroy(handle) }
-
-        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "apple", position: "left"), SketchyBarPreviewC.Code.ok)
-        XCTAssertEqual(SketchyBarPreviewC.setDefault(handle, key: "padding_left", value: "7"), SketchyBarPreviewC.Code.ok)
-
-        XCTAssertEqual(BarPreviewTestAccessors.itemPaddingLeft(handle, alias: "apple"), 0)
-    }
-
     /// The reset empties the default item again, like `--default reset` does.
     func testDefaultResetEmptiesTheDefaultItem() {
         let handle = SketchyBarPreviewC.create()

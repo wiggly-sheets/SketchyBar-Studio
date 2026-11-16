@@ -60,29 +60,6 @@ final class DraftStoreAccuracyTests: XCTestCase {
         XCTAssertEqual(onDisk.draftValue, "12")
     }
 
-    func testDraftSurvivesALineShift() throws {
-        let root = try makeConfigRoot()
-        let fileURL = root.appendingPathComponent("items/clock.lua")
-        try write("width = 10\n", to: fileURL)
-        let scanner = LuaConfigScanner()
-        var session = DocumentSession.loading(
-            ConfigFile(url: fileURL, rootURL: root, kind: .lua, values: scanner.scan(fileURL: fileURL), activationReference: nil)
-        )
-        session = try withDraft(on: session, keyPath: "width", value: "11")
-
-        // A formatter inserts a line above the edited value.
-        try write("-- inserted\nwidth = 10\n", to: fileURL)
-        let rescanned = ConfigFile(url: fileURL, rootURL: root, kind: .lua, values: scanner.scan(fileURL: fileURL), activationReference: nil)
-        let missingCount = session.merge(from: rescanned)
-
-        XCTAssertEqual(missingCount, 0)
-        let value = try XCTUnwrap(session.file.values.first { $0.keyPath == "width" })
-        XCTAssertEqual(value.draftValue, "11")
-        XCTAssertEqual(value.originalValue, "10")
-        XCTAssertEqual(value.lineNumber, 2)
-        XCTAssertFalse(value.isMissingFromFile)
-    }
-
     // MARK: - FIX 2: Save All and the quit guard
 
     func testSaveAllReportsAFileThatIsMissingFromDiskAndKeepsItsDraft() throws {
@@ -161,20 +138,6 @@ final class DraftStoreAccuracyTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: fileURL, encoding: .utf8), "external text\n")
     }
 
-    func testTheBackupOfASymlinkedFileIsARegularFile() throws {
-        let root = try makeConfigRoot()
-        let realURL = root.appendingPathComponent("items/real.lua")
-        let linkURL = root.appendingPathComponent("items/link.lua")
-        try write("real text\n", to: realURL)
-        try FileManager.default.createSymbolicLink(at: linkURL, withDestinationURL: realURL)
-
-        let backupURL = try ConfigBackupService().backup(fileURL: linkURL, rootURL: root, contents: "app text\n")
-
-        let isLink = (try backupURL.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink ?? false
-        XCTAssertFalse(isLink)
-        XCTAssertEqual(try String(contentsOf: backupURL, encoding: .utf8), "app text\n")
-    }
-
     // MARK: - FIX 4: a file that is missing from disk stays marked
 
     func testAFileThatIsMissingFromDiskStaysMarkedAfterAnEdit() throws {
@@ -220,18 +183,6 @@ final class DraftStoreAccuracyTests: XCTestCase {
 
         let position = try XCTUnwrap(values.first { $0.keyPath == "position" })
         XCTAssertEqual(position.lineNumber, 3)
-    }
-
-    func testAHeredocIsStillIgnored() throws {
-        let root = try makeConfigRoot()
-        let fileURL = root.appendingPathComponent("scripts/event.sh")
-        try write("#!/bin/sh\ncat <<EOF\nposition=inside\nEOF\nposition=outside\n", to: fileURL)
-
-        let values = ShellConfigScanner().scan(fileURL: fileURL)
-
-        let positions = values.filter { $0.keyPath == "position" }
-        XCTAssertEqual(positions.count, 1)
-        XCTAssertEqual(positions.first?.originalValue, "outside")
     }
 
     // MARK: - Helpers

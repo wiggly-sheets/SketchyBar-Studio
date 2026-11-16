@@ -41,7 +41,8 @@ final class BarRenderPaneTests: XCTestCase {
 
     // MARK: - The geometry of the pane
 
-    /// The fitted image keeps the aspect ratio of the rendered image.
+    /// The fitted image keeps the aspect ratio of the render and applies the
+    /// same factor to both axes.
     func testTheFittedImageKeepsTheAspectRatioOfTheRender() {
         let layout = BarRenderLayout(imageSize: CGSize(width: 960, height: 50),
                                      paneSize: CGSize(width: 480, height: 200),
@@ -52,14 +53,6 @@ final class BarRenderPaneTests: XCTestCase {
 
         XCTAssertEqual(drawn, rendered, accuracy: rendered * 0.001,
                        "the fitted image must have the aspect ratio of the rendered image")
-    }
-
-    /// The scaled-to-fit view applies the same factor to both axes.
-    func testTheFittedImageUsesOneFactorForBothAxes() {
-        let layout = BarRenderLayout(imageSize: CGSize(width: 960, height: 50),
-                                     paneSize: CGSize(width: 480, height: 200),
-                                     isOneToOne: false)
-
         XCTAssertEqual(layout.drawnSize.width, 480, "the fitted image is as wide as the pane")
         XCTAssertEqual(layout.drawnSize.width / layout.imageSize.width,
                        layout.drawnSize.height / layout.imageSize.height,
@@ -134,9 +127,13 @@ final class BarRenderPaneTests: XCTestCase {
         XCTAssertEqual(wide.image.width, 1600)
     }
 
-    /// The bar is never re-laid out to the shape of the pane: the render
-    /// holds every item of the config.
-    func testTheRenderHoldsEveryItemOfTheConfig() async throws {
+    /// The bar is never re-laid out to the shape of the pane, and an item of
+    /// the config is really painted.
+    ///
+    /// The background of the bar is a translucent black, so a test that
+    /// only looks for a byte that is not zero passes on an empty bar. The
+    /// red background of the item on the left is the proof.
+    func testTheRenderHoldsEveryItemOfTheConfigAndPaintsIt() async throws {
         let result = try await render(widthPoints: 480)
 
         XCTAssertEqual(result.itemRects.count, 2, "both items of the config must be in the render")
@@ -144,16 +141,6 @@ final class BarRenderPaneTests: XCTestCase {
             let rect = try XCTUnwrap(result.itemRects[alias], "the item '\(alias)' must have a rectangle")
             XCTAssertGreaterThan(rect.width, 0)
         }
-    }
-
-    /// The image is not blank: an item of the config is really painted.
-    ///
-    /// The background of the bar is a translucent black, so a test that
-    /// only looks for a byte that is not zero passes on an empty bar. The
-    /// red background of the item on the left is the proof.
-    func testTheRenderPaintsAnItemOfTheConfig() async throws {
-        let result = try await render(widthPoints: 480)
-
         XCTAssertTrue(hasRedPixels(result.image),
                       "the red background of the item must be in the pixels of the image")
     }
@@ -248,27 +235,6 @@ final class BarRenderPaneTests: XCTestCase {
         )
 
         XCTAssertTrue(result.warnings.contains("This config is not open."))
-    }
-
-    /// A config that is not open is rendered in file order, and the pane
-    /// says so.
-    @MainActor
-    func testAConfigThatIsNotOpenSaysItIsRenderedInFileOrder() throws {
-        let root = try makeConfigRoot()
-        try write("sbar.add(\"item\", \"clock\", { position = \"right\", label = \"10:00\" })\n",
-                  to: root.appendingPathComponent("items/clock.lua"))
-        let store = SketchyBarStore(configRoot: root)
-
-        let otherRoot = try makeConfigRoot()
-        try write("sbar.add(\"item\", \"other\", { position = \"left\", label = \"x\" })\n",
-                  to: otherRoot.appendingPathComponent("items/other.lua"))
-        store.addConfig(name: "Other", path: otherRoot.path, selectAfterAdd: false)
-        let other = try XCTUnwrap(store.configs.first { $0.id != store.selectedConfig?.id })
-
-        let warnings = store.barRenderWarnings(for: .config(other.id))
-
-        XCTAssertTrue(warnings.contains { $0.contains("file order") },
-                      "the pane has to say that the order of the items is the order of the files")
     }
 
     // MARK: - The state of the pane

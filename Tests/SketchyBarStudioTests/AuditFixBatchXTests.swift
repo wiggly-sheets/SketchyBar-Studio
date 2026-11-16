@@ -42,9 +42,10 @@ final class AuditFixBatchXTests: XCTestCase {
 
     // MARK: - F5: the shell file does not run the text of the user
 
-    func testTheShellStyleEscapesTheLabelOfTheUser() throws {
+    func testTheShellStyleEscapesTheTextOfTheUser() throws {
         let template = try XCTUnwrap(scaffolder.templates(for: .shell).first { $0.id == "static" })
-        let contents = scaffolder.fileContents(
+
+        let withLabel = scaffolder.fileContents(
             template: template,
             alias: "clock",
             position: "right",
@@ -52,14 +53,10 @@ final class AuditFixBatchXTests: XCTestCase {
             label: "$(whoami)",
             updateFreq: 0
         )
+        XCTAssertTrue(withLabel.contains("label=\"\\$(whoami)\""))
+        XCTAssertFalse(hasUnescapedSubstitution(withLabel), "the label of the user must not run")
 
-        XCTAssertTrue(contents.contains("label=\"\\$(whoami)\""))
-        XCTAssertFalse(hasUnescapedSubstitution(contents), "the label of the user must not run")
-    }
-
-    func testTheShellStyleEscapesTheIconOfTheUser() throws {
-        let template = try XCTUnwrap(scaffolder.templates(for: .shell).first { $0.id == "static" })
-        let contents = scaffolder.fileContents(
+        let withIcon = scaffolder.fileContents(
             template: template,
             alias: "clock",
             position: "right",
@@ -67,9 +64,8 @@ final class AuditFixBatchXTests: XCTestCase {
             label: "hello",
             updateFreq: 0
         )
-
-        XCTAssertTrue(contents.contains("icon=\"\\`whoami\\`\""))
-        XCTAssertFalse(hasUnescapedSubstitution(contents), "the icon of the user must not run")
+        XCTAssertTrue(withIcon.contains("icon=\"\\`whoami\\`\""))
+        XCTAssertFalse(hasUnescapedSubstitution(withIcon), "the icon of the user must not run")
     }
 
     func testTheShellStyleRunsTheCommandOfTheTemplate() throws {
@@ -138,55 +134,6 @@ final class AuditFixBatchXTests: XCTestCase {
         // The oldest entries were dropped, so they are looked up again.
         _ = cache.image(for: SketchyBarIcon.parse("app.com.example.app0"))
         XCTAssertEqual(lookups, 101)
-    }
-
-    // MARK: - F11: the diff tells a trailing newline
-
-    func testATrailingNewlineIsADifference() {
-        let difference = DiffEngine.difference(old: "a\nb", new: "a\nb\n")
-
-        XCTAssertTrue(difference.hunks.isEmpty)
-        XCTAssertNotNil(difference.note)
-        XCTAssertNotEqual(DiffEngine.summary(for: difference), "No changes")
-    }
-
-    func testTheSameTextHasNoDifference() {
-        let difference = DiffEngine.difference(old: "a\nb\n", new: "a\nb\n")
-
-        XCTAssertTrue(difference.hunks.isEmpty)
-        XCTAssertNil(difference.note)
-        XCTAssertEqual(DiffEngine.summary(for: difference), "No changes")
-    }
-
-    func testCarriageReturnsDoNotMakeAWholeFileDiff() {
-        let difference = DiffEngine.difference(old: "a\r\nb\r\nc\r\n", new: "a\nb\nc\n")
-
-        XCTAssertTrue(difference.hunks.isEmpty, "a CRLF file must not look like a changed file")
-        XCTAssertNotNil(difference.note)
-    }
-
-    // MARK: - F12: the locator skips a backup folder at every depth
-
-    func testAFileInABackupFolderIsNotListed() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SketchyBarStudioAuditFixBatchXTests")
-            .appendingPathComponent(UUID().uuidString)
-        let items = root.appendingPathComponent("items")
-        let backups = items.appendingPathComponent("backups")
-        try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true)
-        addTeardownBlock {
-            try? FileManager.default.removeItem(at: root)
-        }
-
-        let kept = items.appendingPathComponent("kept.lua")
-        let backup = backups.appendingPathComponent("old.lua")
-        try "kept".write(to: kept, atomically: true, encoding: .utf8)
-        try "old".write(to: backup, atomically: true, encoding: .utf8)
-
-        let files = SketchyBarConfigLocator().configFiles(in: root)
-
-        XCTAssertTrue(files.contains(kept))
-        XCTAssertFalse(files.contains(backup), "a file in a backup folder must not be listed")
     }
 
     // MARK: - F13: the parser counts characters

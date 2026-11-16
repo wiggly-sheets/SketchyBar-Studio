@@ -35,18 +35,6 @@ final class CloneItemStoreTests: XCTestCase {
         XCTAssertTrue(loader.contains("require(\"items.first\")"))
     }
 
-    func testTheCopyIsAddedToTheConfig() throws {
-        let root = try makeConfigRoot()
-        try write("require(\"items.first\")\n", to: root.appendingPathComponent("init.lua"))
-        try write(itemContents, to: root.appendingPathComponent("items/right/clock.lua"))
-        let store = SketchyBarStore(configRoot: root)
-        let source = try XCTUnwrap(store.files.first { $0.displayName == "items/right/clock.lua" })
-
-        let result = try XCTUnwrap(store.cloneItem(file: source, newName: "clock-copy", newAlias: "clock-copy"))
-
-        XCTAssertTrue(store.files.contains { $0.url.standardizedFileURL.path == result.fileURL.standardizedFileURL.path })
-    }
-
     func testAFileWithoutAnItemIsCopiedWithoutALoaderLine() throws {
         let root = try makeConfigRoot()
         let loaderURL = root.appendingPathComponent("init.lua")
@@ -89,26 +77,13 @@ final class CloneItemStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: result.fileURL.path))
         XCTAssertEqual(try Data(contentsOf: loaderURL), original)
         XCTAssertFalse(store.canUndo)
-    }
 
-    func testTheCopyCanBeDoneAgain() throws {
-        let root = try makeConfigRoot()
-        let loaderURL = root.appendingPathComponent("init.lua")
-        try write("require(\"items.first\")\n", to: loaderURL)
-        try write(itemContents, to: root.appendingPathComponent("items/right/clock.lua"))
-        let store = SketchyBarStore(configRoot: root)
-        let source = try XCTUnwrap(store.files.first { $0.displayName == "items/right/clock.lua" })
-
-        let result = try XCTUnwrap(store.cloneItem(file: source, newName: "clock-copy", newAlias: "clock-copy"))
-
-        store.undo()
-        store.undo()
+        // The copy can be done again.
         store.redo()
         store.redo()
-
         XCTAssertTrue(FileManager.default.fileExists(atPath: result.fileURL.path))
-        let loader = try String(contentsOf: loaderURL, encoding: .utf8)
-        XCTAssertTrue(loader.contains("require(\"items.right.clock-copy\")"))
+        XCTAssertTrue(try String(contentsOf: loaderURL, encoding: .utf8)
+            .contains("require(\"items.right.clock-copy\")"))
     }
 
     func testARedoOfTheLoaderLineIsRefusedWhenTheLoaderFileChangedOnDisk() throws {

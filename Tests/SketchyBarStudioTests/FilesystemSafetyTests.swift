@@ -168,6 +168,8 @@ final class FilesystemSafetyTests: XCTestCase {
             at: targetRoot.deletingLastPathComponent(),
             includingPropertiesForKeys: nil
         )
+        XCTAssertEqual(targetSiblings.map(\.lastPathComponent), ["sketchybar"],
+                       "the restore must not leave a sibling next to the destination")
         XCTAssertFalse(targetSiblings.contains { $0.lastPathComponent.hasPrefix("sketchybar.before-studio-restore-") })
 
         let restores = try FileManager.default.contentsOfDirectory(
@@ -279,6 +281,8 @@ final class FilesystemSafetyTests: XCTestCase {
             at: liveRoot.deletingLastPathComponent(),
             includingPropertiesForKeys: nil
         )
+        XCTAssertEqual(siblings.map(\.lastPathComponent), ["sketchybar"],
+                       "the switch must not leave a sibling next to the destination")
         XCTAssertFalse(siblings.contains { $0.lastPathComponent.hasPrefix("sketchybar.before-studio-switch-") })
 
         let restores = try FileManager.default.contentsOfDirectory(

@@ -125,27 +125,6 @@ final class PreviewResolvedPaneTests: XCTestCase {
 
     // MARK: - The resolved config
 
-    /// The pane shows the values the config really has.
-    ///
-    /// The colour of the item comes from the module of the config, so the
-    /// parser cannot read it and the resolver can. The pane shows the
-    /// colour of the config and not the default of SketchyBar.
-    func testThePaneShowsTheResolvedValues() throws {
-        let plan = self.plan(of: fixture("lua-resolve"))
-
-        // The colour of the module of the config.
-        XCTAssertEqual(value(plan, "clock", "background.color"), "0xff112233")
-        // The font of the module of the config.
-        XCTAssertEqual(value(plan, "clock", "icon.font.family"), "Liga SFMono Nerd Font")
-        // The value the module computes.
-        XCTAssertEqual(value(plan, "clock", "icon.font.size"), "12")
-        // The concatenation of the module.
-        XCTAssertEqual(value(plan, "clock", "label.string"), "10:00 Liga SFMono Nerd Font")
-        // The chain of the requires.
-        XCTAssertEqual(value(plan, "extra", "label.string"), "extra")
-        XCTAssertEqual(value(plan, "extra", "background.color"), "0xff112233")
-    }
-
     /// Every item of the resolved config knows the file that declared it
     /// and the number of the declaration inside that file.
     func testEveryItemKnowsTheFileThatDeclaredIt() throws {
@@ -158,25 +137,6 @@ final class PreviewResolvedPaneTests: XCTestCase {
         let extra = try XCTUnwrap(plan.items.first { $0.alias == "extra" })
         XCTAssertEqual(extra.origin?.file, "extra.lua")
         XCTAssertEqual(extra.origin?.index, 0)
-    }
-
-    /// The order of the items is the order of the load, and not the order
-    /// of the names of the files.
-    func testTheOrderOfTheItemsIsTheOrderOfTheLoad() throws {
-        let plan = self.plan(of: fixture("lua-load-order"))
-
-        XCTAssertEqual(aliases(plan), ["first", "second"],
-                       "the loader of the fixture loads the file of the first item first")
-
-        let parsed = PreviewConfigBridge.plan(forConfigRoot: fixture("lua-load-order"))
-        XCTAssertEqual(aliases(parsed), ["second", "first"],
-                       "the parser reads the files in the order of their names")
-
-        // Every item knows the file that declared it.
-        let first = try XCTUnwrap(plan.items.first { $0.alias == "first" })
-        XCTAssertEqual(first.origin?.file, "z_first.lua")
-        let second = try XCTUnwrap(plan.items.first { $0.alias == "second" })
-        XCTAssertEqual(second.origin?.file, "a_second.lua")
     }
 
     // MARK: - The draft on top of the resolved config
@@ -413,17 +373,6 @@ final class PreviewResolvedPaneTests: XCTestCase {
 
     // MARK: - The fallback
 
-    /// A config that cannot run falls back to the parser, and the pane says
-    /// so.
-    func testAConfigThatCannotRunFallsBackToTheParser() throws {
-        let plan = self.plan(of: fixture("lua-throws"))
-
-        XCTAssertTrue(plan.warnings.contains { $0.contains("not resolved with Lua") },
-                      "the pane has to say that the config was not resolved")
-        XCTAssertEqual(plan.items.count, 0,
-                       "the parser reads no item of the broken config")
-    }
-
     /// A shell config keeps the path of the parser, and the pane says why.
     ///
     /// The config has no Lua entrypoint, so the parser is the only path
@@ -441,17 +390,6 @@ final class PreviewResolvedPaneTests: XCTestCase {
                       "the pane has to say that the config was not resolved")
         XCTAssertTrue(plan.warnings.contains { $0.contains("no Lua entrypoint") },
                       "the pane has to name the reason the config was not resolved")
-    }
-
-    /// The pane says why a shell config is read by the parser.
-    ///
-    /// The warning of the plan is the warning of the pane: the render
-    /// keeps the warnings of the plan and the pane shows them.
-    func testThePaneSaysWhyAShellConfigIsReadByTheParser() async throws {
-        let result = try await BarRendererService.shared.render(request(of: fixture("lua-shell")))
-
-        XCTAssertTrue(result.warnings.contains { $0.contains("no Lua entrypoint") },
-                      "the pane has to name the reason the parser read the config")
     }
 
     /// A config that is not open is rendered in the order of its files when

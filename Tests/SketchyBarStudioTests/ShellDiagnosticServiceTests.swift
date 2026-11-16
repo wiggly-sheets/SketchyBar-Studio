@@ -134,8 +134,7 @@ final class ShellDiagnosticServiceTests: XCTestCase {
         try FileManager.default.createDirectory(at: tempDir.appendingPathComponent("items"), withIntermediateDirectories: true)
         try contents2.write(to: file2, atomically: true, encoding: .utf8)
 
-        let validator = ConfigValidator()
-        let diagnostics = validator.validate(rootURL: tempDir)
+        let diagnostics = ConfigValidator().validate(rootURL: tempDir)
 
         let duplicates = diagnostics.filter { $0.kind == .duplicateAlias && $0.keyPath == "battery" }
         XCTAssertEqual(duplicates.count, 1)

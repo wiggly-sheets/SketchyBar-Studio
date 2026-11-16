@@ -189,62 +189,6 @@ final class FileSafetyTests: XCTestCase {
 
     // MARK: - Displaced copies
 
-    func testProfileRestoreCreatesNothingNextToTheDestination() throws {
-        let testRoot = try makeTestRoot()
-        let appSupportRoot = testRoot.appendingPathComponent("Application Support/SketchyBarStudio")
-        let liveRoot = testRoot.appendingPathComponent("live/sketchybar")
-        let profileRoot = testRoot.appendingPathComponent("profiles/selected")
-        try write("current\n", to: liveRoot.appendingPathComponent("bar.lua"))
-        try write("restored\n", to: profileRoot.appendingPathComponent("bar.lua"))
-
-        let service = ProfileArchiveService(appSupportRoot: appSupportRoot)
-        try service.restore(
-            profile: ConfigProfile(name: "Selected", url: profileRoot, createdAt: .now),
-            to: liveRoot
-        )
-
-        let siblings = try FileManager.default.contentsOfDirectory(
-            at: liveRoot.deletingLastPathComponent(),
-            includingPropertiesForKeys: nil
-        )
-        XCTAssertEqual(siblings.map(\.lastPathComponent), ["sketchybar"])
-        let restores = try FileManager.default.contentsOfDirectory(
-            at: appSupportRoot.appendingPathComponent("Restores"),
-            includingPropertiesForKeys: nil
-        )
-        XCTAssertEqual(restores.count, 1)
-        XCTAssertEqual(
-            try String(contentsOf: restores[0].appendingPathComponent("sketchybar/bar.lua"), encoding: .utf8),
-            "current\n"
-        )
-    }
-
-    func testConfigSwitchCreatesNothingNextToTheDestination() throws {
-        let testRoot = try makeTestRoot()
-        let appSupportRoot = testRoot.appendingPathComponent("Application Support/SketchyBarStudio")
-        let liveRoot = testRoot.appendingPathComponent("live/sketchybar")
-        let selectedRoot = testRoot.appendingPathComponent("configs/alternate")
-        try write("current\n", to: liveRoot.appendingPathComponent("bar.lua"))
-        try write("alternate\n", to: selectedRoot.appendingPathComponent("init.lua"))
-
-        let service = ConfigSwitchService(
-            liveSketchyBarConfigURL: liveRoot,
-            appSupportRoot: appSupportRoot
-        )
-        try service.activate(config: ConfigWorkspace.make(name: "Alternate", url: selectedRoot))
-
-        let siblings = try FileManager.default.contentsOfDirectory(
-            at: liveRoot.deletingLastPathComponent(),
-            includingPropertiesForKeys: nil
-        )
-        XCTAssertEqual(siblings.map(\.lastPathComponent), ["sketchybar"])
-        let restores = try FileManager.default.contentsOfDirectory(
-            at: appSupportRoot.appendingPathComponent("Restores"),
-            includingPropertiesForKeys: nil
-        )
-        XCTAssertEqual(restores.count, 1)
-    }
-
     // MARK: - Profiles
 
     func testProfileNameWithLeadingDotIsListed() throws {

@@ -37,12 +37,19 @@ final class BarRenderSemanticTests: XCTestCase {
     /// max_chars of zero means no truncation.
     func testMaxCharsZeroMeansNoTruncation() throws {
         let label = "short"
-        let rendered = try renderBar(items: [
-            Item(alias: "label", type: "item", properties: ["label=\(label)", "label.font=Menlo:Bold:14", "label.max_chars=0"])
+        let properties = ["label=\(label)", "label.font=Menlo:Bold:14"]
+        let without = try renderBar(items: [
+            Item(alias: "label", type: "item", properties: properties)
+        ])
+        let withZero = try renderBar(items: [
+            Item(alias: "label", type: "item", properties: properties + ["label.max_chars=0"])
         ])
 
-        let rect = try XCTUnwrap(rendered.rects["label"])
-        XCTAssertGreaterThan(rect.width, 0, "the item must have a width")
+        let plain = try XCTUnwrap(without.rects["label"])
+        let zero = try XCTUnwrap(withZero.rects["label"])
+        XCTAssertGreaterThan(zero.width, 0, "the item must have a width")
+        XCTAssertEqual(zero.width, plain.width, accuracy: 0.5,
+                       "max_chars of zero must not truncate the label")
     }
 
     // MARK: - symbol_name model
@@ -210,21 +217,6 @@ final class BarRenderSemanticTests: XCTestCase {
                       "group must start at or before first member: \(rectGroup.origin.x) vs \(rectLeft.origin.x)")
         XCTAssertTrue(abs((rectGroup.origin.x + rectGroup.width) - (rectRight.origin.x + rectRight.width)) <= 1.0,
                       "group must end at or after last member: \(rectGroup.origin.x + rectGroup.width) vs \(rectRight.origin.x + rectRight.width)")
-    }
-
-    /// The group background uses the background of the first member.
-    func testGroupBackgroundUsesFirstMemberBackground() throws {
-        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
-        defer { SketchyBarPreviewC.destroy(handle) }
-
-        XCTAssertEqual(SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25), SketchyBarPreviewC.Code.ok)
-        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "first", type: "item", position: "left"), SketchyBarPreviewC.Code.ok)
-        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "second", type: "item", position: "left"), SketchyBarPreviewC.Code.ok)
-        XCTAssertEqual(SketchyBarPreviewC.addItem(handle, alias: "group", type: "bracket", position: "left", argument: "first second"), SketchyBarPreviewC.Code.ok)
-        XCTAssertEqual(SketchyBarPreviewC.setItem(handle, alias: "group", key: "background.color", value: "0xff3355ff"), SketchyBarPreviewC.Code.ok)
-
-        let groupSerialization = try XCTUnwrap(BarPreviewTestAccessors.itemSerialization(handle, alias: "group"))
-        XCTAssertTrue(groupSerialization.contains("bracket"), "group must have bracket array: \(groupSerialization)")
     }
 
     // MARK: - Helpers

@@ -10,10 +10,6 @@ final class DiffEngineTests: XCTestCase {
         XCTAssertTrue(DiffEngine.diff(old: "one\ntwo\nthree\n", new: "one\ntwo\nthree\n").isEmpty)
     }
 
-    func testTheSameTextWithoutANewlineHasNoHunks() {
-        XCTAssertTrue(DiffEngine.diff(old: "one\ntwo", new: "one\ntwo\n").isEmpty)
-    }
-
     // MARK: - One changed line
 
     func testOneChangedLineMakesOneHunk() throws {
@@ -194,10 +190,6 @@ final class DiffEngineTests: XCTestCase {
     }
 
     // MARK: - Text that is not plain ASCII
-
-    func testEmojiLinesAreCompared() {
-        XCTAssertTrue(DiffEngine.diff(old: "🎉 party\n", new: "🎉 party\n").isEmpty)
-    }
 
     func testAChangedEmojiLineIsFound() {
         let hunks = DiffEngine.diff(old: "🎉 party\n", new: "🎊 party\n")

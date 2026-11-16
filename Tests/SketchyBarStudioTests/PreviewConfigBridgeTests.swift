@@ -166,22 +166,6 @@ final class PreviewConfigBridgeTests: XCTestCase {
         XCTAssertEqual(lua.defaults, shell.defaults)
     }
 
-    func testTheDefaultsAreAppliedBeforeTheItemsAreAdded() throws {
-        // The default item is a snapshot that every item inherits when it
-        // is created, so a default that comes after an item never reaches
-        // that item.
-        let plan = PreviewConfigBridge.plan(forLua: """
-        sbar.default({ width = 120 })
-        sbar.add("item", "clock", { position = "right" })
-        """)
-
-        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
-        defer { SketchyBarPreviewC.destroy(handle) }
-        PreviewConfigBridge.apply(plan, to: handle)
-
-        XCTAssertEqual(BarPreviewTestAccessors.itemWidth(handle, alias: "clock"), 120)
-    }
-
     func testTheDefaultOfTheShellConfigIsNotABarProperty() throws {
         let plan = PreviewConfigBridge.plan(forShell: """
         sketchybar --default label.string=default
@@ -437,7 +421,7 @@ final class PreviewConfigBridgeTests: XCTestCase {
 
     // MARK: - The problems of a config
 
-    func testADuplicateAliasIsMergedIntoOneItemAndReported() {
+    func testADuplicateAliasIsMergedIntoOneItemAndReported() throws {
         let plan = PreviewConfigBridge.plan(forLua: """
         sbar.add("item", "clock", { position = "right" })
         sbar.add("item", "clock", { position = "left", label = { string = "second" } })
@@ -448,13 +432,6 @@ final class PreviewConfigBridgeTests: XCTestCase {
         XCTAssertEqual(plan.warnings.count, 1)
         XCTAssertTrue(plan.warnings[0].contains("The alias 'clock' is added twice."))
         XCTAssertTrue(plan.warnings[0].contains("the last value of a property wins"))
-    }
-
-    func testADuplicateAliasIsAddedOnce() throws {
-        let plan = PreviewConfigBridge.plan(forLua: """
-        sbar.add("item", "clock", { position = "right" })
-        sbar.add("item", "clock", { position = "left" })
-        """)
 
         // The daemon refuses the second add (src/message.c:190-193), but
         // SbarLua sets the properties of every declaration, so they reach
@@ -463,10 +440,11 @@ final class PreviewConfigBridgeTests: XCTestCase {
         XCTAssertEqual(value(tree, "geometry", "position"), "left")
     }
 
-    func testTheSecondAddOfTheShellStyleIsReported() {
+    func testTheSecondAddOfTheShellStyleIsReportedAndIgnored() throws {
         let plan = PreviewConfigBridge.plan(forShell: """
         sketchybar --add item clock right
         sketchybar --add item clock left
+        sketchybar --set clock label="10:00"
         """)
 
         XCTAssertEqual(plan.items.count, 1)
@@ -474,17 +452,9 @@ final class PreviewConfigBridgeTests: XCTestCase {
         XCTAssertEqual(plan.warnings.count, 1)
         XCTAssertTrue(plan.warnings[0].contains("The alias 'clock' is added twice."))
         XCTAssertTrue(plan.warnings[0].contains("The position of the second add is ignored."))
-    }
 
-    func testThePositionOfTheSecondAddOfTheShellStyleIsIgnored() throws {
         // The position of the shell style travels in the add command, and
         // the daemon refuses the whole second add.
-        let plan = PreviewConfigBridge.plan(forShell: """
-        sketchybar --add item clock right
-        sketchybar --add item clock left
-        sketchybar --set clock label="10:00"
-        """)
-
         let tree = try tree(of: plan, alias: "clock")
         XCTAssertEqual(value(tree, "geometry", "position"), "right")
         XCTAssertEqual(value(tree, "label", "value"), "10:00")

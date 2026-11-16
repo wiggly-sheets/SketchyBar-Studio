@@ -1076,39 +1076,36 @@ extension StoreTests {
         return directory
     }
 
-    func testFormulaPresencePresent() async {
-        let mock = MockCommandRunner()
-        mock.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 0, stdout: "jq 1.7\n", stderr: ""))
-        // Use real binSearchPaths so brew is found, but mock the list call
-        let service = StoreDependencyService(runner: mock)
-
+    func testFormulaPresenceFollowsBrew() async {
+        let present = MockCommandRunner()
+        present.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 0, stdout: "jq 1.7\n", stderr: ""))
         let dep = StoreDependency(kind: .formula, name: "jq", required: true)
-        let presence = await service.presence(of: dep)
-        XCTAssertEqual(presence, .present)
+        let presentState = await StoreDependencyService(runner: present).presence(of: dep)
+        XCTAssertEqual(presentState, .present)
+
+        let missing = MockCommandRunner()
+        missing.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 1, stdout: "", stderr: "Error: No available formula with the name \"jq\"\n"))
+        let missingState = await StoreDependencyService(runner: missing).presence(of: dep)
+        XCTAssertEqual(missingState, .missing)
     }
 
-    func testFormulaPresenceMissing() async {
-        let mock = MockCommandRunner()
-        mock.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 1, stdout: "", stderr: "Error: No available formula with the name \"jq\"\n"))
-        // Use real binSearchPaths so brew is found, but mock the list call
-        let service = StoreDependencyService(runner: mock)
-
-        let dep = StoreDependency(kind: .formula, name: "jq", required: true)
-        let presence = await service.presence(of: dep)
-        XCTAssertEqual(presence, .missing)
-    }
-
-    func testFormulaPresenceBrewAbsent() async {
+    func testPresenceIsUnknownWhenTheLookupToolIsAbsent() async {
         StoreDependencyService.pathEnvironment = ["PATH": "/usr/bin:/bin"]
+        defer {
+            StoreDependencyService.pathEnvironment = nil
+            StoreDependencyService.testBinSearchPaths = nil
+        }
         // The fixed Homebrew directories are empty too, so brew is absent
         // even when the machine has a real Homebrew.
-        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
-        // brew not on PATH; binURL(for: "brew") will return nil
-        let dep = StoreDependency(kind: .formula, name: "jq", required: true)
-        let presence = await service.presence(of: dep)
-        XCTAssertEqual(presence, .unknownBecauseBrewAbsent)
-        StoreDependencyService.pathEnvironment = nil
-        StoreDependencyService.testBinSearchPaths = nil
+        let withoutBrew = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
+        let formula = StoreDependency(kind: .formula, name: "jq", required: true)
+        let formulaState = await withoutBrew.presence(of: formula)
+        XCTAssertEqual(formulaState, .unknownBecauseBrewAbsent)
+
+        let withoutFontconfig = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
+        let font = StoreDependency(kind: .font, name: "sf-symbols", required: false)
+        let fontState = await withoutFontconfig.presence(of: font)
+        XCTAssertEqual(fontState, .unknownBecauseFontconfigAbsent)
     }
 
     func testCommandPresencePresent() async throws {
@@ -1137,7 +1134,7 @@ extension StoreTests {
         StoreDependencyService.testBinSearchPaths = nil
     }
 
-    func testFontPresencePresent() async {
+    func testFontPresenceFollowsFontconfig() async {
         let mock = MockCommandRunner()
         mock.addStub("fc-list", [":spacing:lang=en", "sf-symbols"], CommandOutcome(status: 0, stdout: "/path/to/font.ttf: SF Symbols\n", stderr: ""))
         let service = StoreDependencyService(runner: mock)
@@ -1146,55 +1143,22 @@ extension StoreTests {
         XCTAssertEqual(presence, .present)
     }
 
-    func testFontPresenceFontconfigAbsent() async {
-        StoreDependencyService.pathEnvironment = ["PATH": "/usr/bin:/bin"]
-        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
-        // fc-list not on PATH and not in the fixed directories
-        let dep = StoreDependency(kind: .font, name: "sf-symbols", required: false)
-        let presence = await service.presence(of: dep)
-        XCTAssertEqual(presence, .unknownBecauseFontconfigAbsent)
-        StoreDependencyService.pathEnvironment = nil
-        StoreDependencyService.testBinSearchPaths = nil
-    }
-
-    func testSketchybarPresence() async throws {
-        let directory = try makeExecutableDirectory(named: "sketchybar")
-        StoreDependencyService.pathEnvironment = ["PATH": directory.path]
-        defer {
-            StoreDependencyService.pathEnvironment = nil
-            StoreDependencyService.testBinSearchPaths = nil
-            try? FileManager.default.removeItem(at: directory)
-        }
-        let service = StoreDependencyService(runner: MockCommandRunner(), binSearchPaths: [])
-        let dep = StoreDependency(kind: .sketchybar, name: "sketchybar", required: true)
-        let presence = await service.presence(of: dep)
-        XCTAssertEqual(presence, .present)
-    }
-
     // MARK: - Install argument array
 
-    func testInstallBuildsCorrectArgumentsForFormula() async {
-        let mock = MockCommandRunner()
-        mock.addStub("brew", ["install", "jq"], CommandOutcome(status: 0, stdout: "==> Installing jq\n", stderr: ""))
-        let service = StoreDependencyService(runner: mock, streamingRunner: mock)
+    func testInstallBuildsTheBrewArguments() async {
+        let formula = MockCommandRunner()
+        formula.addStub("brew", ["install", "jq"], CommandOutcome(status: 0, stdout: "==> Installing jq\n", stderr: ""))
+        let formulaResult = await StoreDependencyService(runner: formula, streamingRunner: formula)
+            .install(StoreDependency(kind: .formula, name: "jq", required: true)) { _ in }
+        XCTAssertEqual(formulaResult.status, .present)
+        XCTAssertEqual(formulaResult.exitCode, 0)
 
-        let dep = StoreDependency(kind: .formula, name: "jq", required: true)
-        let result = await service.install(dep) { _ in }
-
-        XCTAssertEqual(result.status, .present)
-        XCTAssertEqual(result.exitCode, 0)
-    }
-
-    func testInstallBuildsCorrectArgumentsForCask() async {
-        let mock = MockCommandRunner()
-        mock.addStub("brew", ["install", "--cask", "font-sf-mono"], CommandOutcome(status: 0, stdout: "==> Installing font-sf-mono\n", stderr: ""))
-        let service = StoreDependencyService(runner: mock, streamingRunner: mock)
-
-        let dep = StoreDependency(kind: .cask, name: "font-sf-mono", required: false)
-        let result = await service.install(dep) { _ in }
-
-        XCTAssertEqual(result.status, .present)
-        XCTAssertEqual(result.exitCode, 0)
+        let cask = MockCommandRunner()
+        cask.addStub("brew", ["install", "--cask", "font-sf-mono"], CommandOutcome(status: 0, stdout: "==> Installing font-sf-mono\n", stderr: ""))
+        let caskResult = await StoreDependencyService(runner: cask, streamingRunner: cask)
+            .install(StoreDependency(kind: .cask, name: "font-sf-mono", required: false)) { _ in }
+        XCTAssertEqual(caskResult.status, .present)
+        XCTAssertEqual(caskResult.exitCode, 0)
     }
 
     func testInstallRefusesNonBrewDependency() async {
@@ -1222,59 +1186,37 @@ extension StoreTests {
     // MARK: - Policy gating via StoreModel
 
     @MainActor
-    func testDependencyPolicyNeverBlocksMissingRequired() async throws {
-        let mockRunner = MockCommandRunner()
-        // Simulate missing jq via brew list returning nonzero
-        mockRunner.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 1, stdout: "", stderr: ""))
-        mockRunner.addStub("brew", ["list", "--versions", "sketchybar"], CommandOutcome(status: 0, stdout: "sketchybar 1.0\n", stderr: ""))
+    func testDependencyPoliciesThatDoNotInstallBlockMissingRequired() async throws {
+        for policy in [StoreDependencyPolicy.never, .ask] {
+            let mockRunner = MockCommandRunner()
+            // Simulate missing jq via brew list returning nonzero
+            mockRunner.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 1, stdout: "", stderr: ""))
+            mockRunner.addStub("brew", ["list", "--versions", "sketchybar"], CommandOutcome(status: 0, stdout: "sketchybar 1.0\n", stderr: ""))
 
-        let transport = RecordingTransport(routes: [
-            rawURL("items/main.lua", makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
+            let transport = RecordingTransport(routes: [
+                rawURL("items/main.lua", makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
+                    StoreDependency(kind: .formula, name: "jq", required: true)
+                ])): .data(Data("print(1)\n".utf8))
+            ])
+            let client = StoreClient(transport: transport)
+            let fixture = try makeModelFixture()
+            let userDefaults = UserDefaults(suiteName: "test-policy-\(policy.rawValue)-\(UUID().uuidString)")!
+            let model = fixture.model(transport: transport,
+                                      client: client,
+                                      dependencyService: StoreDependencyService(runner: mockRunner),
+                                      userDefaults: userDefaults)
+            userDefaults.set(policy.rawValue, forKey: "store.dependencyPolicy")
+
+            let entry = makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
                 StoreDependency(kind: .formula, name: "jq", required: true)
-            ])): .data(Data("print(1)\n".utf8))
-        ])
-        let client = StoreClient(transport: transport)
-        let fixture = try makeModelFixture()
-        let userDefaults = UserDefaults(suiteName: "test-never-\(UUID().uuidString)")!
-        let model = fixture.model(transport: transport, client: client, dependencyService: StoreDependencyService(runner: mockRunner), userDefaults: userDefaults)
+            ])
+            await model.inspect(entry)
+            model.beginInstall(entry)
+            await model.install(entry)
 
-        // Override policy to never
-        userDefaults.set(StoreDependencyPolicy.never.rawValue, forKey: "store.dependencyPolicy")
-
-        let entry = makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
-            StoreDependency(kind: .formula, name: "jq", required: true)
-        ])
-        await model.inspect(entry)
-        model.beginInstall(entry)
-        await model.install(entry)
-
-        XCTAssertTrue(model.errorMessage.contains("Required dependencies missing"), "errorMessage: \(model.errorMessage)")
-    }
-
-    @MainActor
-    func testDependencyPolicyAskShowsMissingRequired() async throws {
-        let mockRunner = MockCommandRunner()
-        mockRunner.addStub("brew", ["list", "--versions", "jq"], CommandOutcome(status: 1, stdout: "", stderr: ""))
-        mockRunner.addStub("brew", ["list", "--versions", "sketchybar"], CommandOutcome(status: 0, stdout: "sketchybar 1.0\n", stderr: ""))
-
-        let transport = RecordingTransport(routes: [
-            rawURL("items/main.lua", makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
-                StoreDependency(kind: .formula, name: "jq", required: true)
-            ])): .data(Data("print(1)\n".utf8))
-        ])
-        let client = StoreClient(transport: transport)
-        let fixture = try makeModelFixture()
-        let model = fixture.model(transport: transport, client: client, dependencyService: StoreDependencyService(runner: mockRunner), userDefaults: nil)
-
-        // Policy is ask by default
-        let entry = makeEntry(id: "dep-test", path: "items/main.lua", dependencies: [
-            StoreDependency(kind: .formula, name: "jq", required: true)
-        ])
-        await model.inspect(entry)
-        model.beginInstall(entry)
-        await model.install(entry)
-
-        XCTAssertTrue(model.errorMessage.contains("Required dependencies missing"))
+            XCTAssertTrue(model.errorMessage.contains("Required dependencies missing"),
+                          "\(policy): \(model.errorMessage)")
+        }
     }
 
     @MainActor

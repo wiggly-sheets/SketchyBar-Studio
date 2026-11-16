@@ -25,29 +25,20 @@ final class PreviewScriptShimTests: XCTestCase {
                        [PreviewScriptShim.Assignment(alias: "clock", key: "label", value: "12:00")])
     }
 
-    /// The marker of a message is skipped before the alias is read, so the
-    /// form `-m --set` reaches the same path as the plain form.
+    /// The marker of a message is skipped before the alias is read, in both
+    /// spellings, so the form `-m --set` reaches the same path as the plain
+    /// form.
     func testTheShimAcceptsTheMessageMarker() throws {
-        let installation = try PreviewScriptShim.Installation()
-        defer { installation.remove() }
+        for marker in ["-m", "--message"] {
+            let installation = try PreviewScriptShim.Installation()
+            defer { installation.remove() }
 
-        let result = try runShim(installation, arguments: ["-m", "--set", "clock", "label=12:00"])
+            let result = try runShim(installation, arguments: [marker, "--set", "clock", "label=12:00"])
 
-        XCTAssertEqual(result.status, 0)
-        XCTAssertEqual(installation.assignments(),
-                       [PreviewScriptShim.Assignment(alias: "clock", key: "label", value: "12:00")])
-    }
-
-    /// The long form of the marker of a message reaches the same path.
-    func testTheShimAcceptsTheLongMessageMarker() throws {
-        let installation = try PreviewScriptShim.Installation()
-        defer { installation.remove() }
-
-        let result = try runShim(installation, arguments: ["--message", "--set", "clock", "label=12:00"])
-
-        XCTAssertEqual(result.status, 0)
-        XCTAssertEqual(installation.assignments(),
-                       [PreviewScriptShim.Assignment(alias: "clock", key: "label", value: "12:00")])
+            XCTAssertEqual(result.status, 0)
+            XCTAssertEqual(installation.assignments(),
+                           [PreviewScriptShim.Assignment(alias: "clock", key: "label", value: "12:00")])
+        }
     }
 
     /// Several properties of one call all land in the sink.
@@ -146,7 +137,8 @@ final class PreviewScriptShimTests: XCTestCase {
 
     // MARK: - The runner
 
-    /// The script of an item sets the label of the item in the preview.
+    /// The script of an item sets the label of the item in the preview, in
+    /// the plain form and with the marker of a message.
     func testTheScriptOfAnItemSetsItsLabelInThePreview() throws {
         let handle = try XCTUnwrap(SketchyBarPreviewC.create())
         defer { SketchyBarPreviewC.destroy(handle) }
@@ -154,8 +146,6 @@ final class PreviewScriptShimTests: XCTestCase {
         SketchyBarPreviewC.addItem(handle, alias: "clock", position: "left")
         SketchyBarPreviewC.setItem(handle, alias: "clock", key: "label", value: "before")
 
-        let script = "sketchybar --set clock label=\"12:00\""
-        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
         // The daemon runs the script of an item from its clock, and the
         // counter of the item decides when it runs (src/bar_item.c:132-133).
         // An item without an update frequency runs its script only on an
@@ -163,19 +153,27 @@ final class PreviewScriptShimTests: XCTestCase {
         SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
 
         let runner = PreviewScriptRunner()
-        let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
-                                    in: handle)
-
-        XCTAssertEqual(outcome.assignments,
-                       [PreviewScriptShim.Assignment(alias: "clock", key: "label", value: "12:00")])
-        XCTAssertEqual(outcome.warnings, [])
+        let forms = [
+            "sketchybar --set clock label=\"12:00\"",
+            "sketchybar -m --set clock label=\"12:00\""
+        ]
+        var plain: PreviewScriptRunner.Outcome?
+        for script in forms {
+            SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
+            let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
+                                        in: handle)
+            XCTAssertEqual(outcome.assignments,
+                           [PreviewScriptShim.Assignment(alias: "clock", key: "label", value: "12:00")])
+            XCTAssertEqual(outcome.warnings, [])
+            if plain == nil { plain = outcome }
+        }
 
         // The script itself does not change the preview: the assignments it
         // made are what the preview applies.
         let before = try XCTUnwrap(BarPreviewTestAccessors.itemSerialization(handle, alias: "clock"))
         XCTAssertTrue(before.contains("\"value\": \"before\""), before)
 
-        for assignment in outcome.assignments {
+        for assignment in try XCTUnwrap(plain).assignments {
             SketchyBarPreviewC.setItem(handle, alias: "clock",
                                        key: assignment.key,
                                        value: assignment.value)
@@ -183,26 +181,6 @@ final class PreviewScriptShimTests: XCTestCase {
 
         let serialization = try XCTUnwrap(BarPreviewTestAccessors.itemSerialization(handle, alias: "clock"))
         XCTAssertTrue(serialization.contains("\"value\": \"12:00\""), serialization)
-    }
-
-    /// The form with the marker of a message sets the label as well.
-    func testTheScriptWithTheMessageMarkerSetsItsLabelInThePreview() throws {
-        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
-        defer { SketchyBarPreviewC.destroy(handle) }
-        SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25)
-        SketchyBarPreviewC.addItem(handle, alias: "clock", position: "left")
-
-        let script = "sketchybar -m --set clock label=\"12:00\""
-        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
-        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
-
-        let runner = PreviewScriptRunner()
-        let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
-                                    in: handle)
-
-        XCTAssertEqual(outcome.assignments,
-                       [PreviewScriptShim.Assignment(alias: "clock", key: "label", value: "12:00")])
-        XCTAssertEqual(outcome.warnings, [])
     }
 
     /// A value with a space survives the whole way: the script, the sink and
@@ -300,50 +278,28 @@ final class PreviewScriptShimTests: XCTestCase {
         XCTAssertEqual(outcome.assignments, [])
     }
 
-    /// A script that calls the binary by its absolute path is not
-    /// intercepted, and the preview warns about it.
-    func testAScriptThatCallsTheBinaryByItsAbsolutePathIsAWarning() throws {
+    /// A script that bypasses the shim, by an absolute path or by setting
+    /// its own PATH, is reported. A mention in a comment is not run, so it
+    /// is no warning.
+    func testAScriptThatBypassesTheShimIsReported() throws {
         let handle = try XCTUnwrap(SketchyBarPreviewC.create())
         defer { SketchyBarPreviewC.destroy(handle) }
         SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25)
         SketchyBarPreviewC.addItem(handle, alias: "clock", position: "left")
-
-        let script = "/opt/homebrew/bin/sketchybar --set clock label=12:00"
-        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
         SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
 
         let runner = PreviewScriptRunner()
-        let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
-                                    in: handle)
+        let cases = [
+            ("/opt/homebrew/bin/sketchybar --set clock label=12:00", "absolute path"),
+            ("PATH=/opt/homebrew/bin:$PATH sketchybar --set clock label=12:00", "its own PATH")
+        ]
+        for (script, warning) in cases {
+            SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
+            let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
+                                        in: handle)
+            XCTAssertTrue(outcome.warnings.contains { $0.contains(warning) }, "\(outcome.warnings)")
+        }
 
-        XCTAssertTrue(outcome.warnings.contains { $0.contains("absolute path") }, "\(outcome.warnings)")
-    }
-
-    /// A script that sets its own PATH can put the real binary in front of
-    /// the shim, and the preview warns about it.
-    ///
-    /// The shim is the first `sketchybar` of the PATH of the child, so a
-    /// script that sets the PATH itself is not intercepted. The preview
-    /// cannot see what the script does with the PATH, so it says so.
-    func testAScriptThatSetsItsOwnPathIsAWarning() throws {
-        let handle = try XCTUnwrap(SketchyBarPreviewC.create())
-        defer { SketchyBarPreviewC.destroy(handle) }
-        SketchyBarPreviewC.setDisplay(handle, widthPoints: 480, heightPoints: 25)
-        SketchyBarPreviewC.addItem(handle, alias: "clock", position: "left")
-
-        let script = "PATH=/opt/homebrew/bin:$PATH sketchybar --set clock label=12:00"
-        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "script", value: script)
-        SketchyBarPreviewC.setItem(handle, alias: "clock", key: "update_freq", value: "1")
-
-        let runner = PreviewScriptRunner()
-        let outcome = runner.values(for: [PreviewScriptRunner.Script(alias: "clock", script: script)],
-                                    in: handle)
-
-        XCTAssertTrue(outcome.warnings.contains { $0.contains("its own PATH") }, "\(outcome.warnings)")
-    }
-
-    /// A line that is a comment is not run, so it is not a warning.
-    func testAMentionInACommentIsNoWarning() {
         XCTAssertFalse(PreviewScriptShim.callsBinaryByAbsolutePath("# /opt/homebrew/bin/sketchybar --set"))
         XCTAssertFalse(PreviewScriptShim.overridesPath("# PATH=/opt/homebrew/bin sketchybar --set"))
         XCTAssertTrue(PreviewScriptShim.callsBinaryByAbsolutePath("/opt/homebrew/bin/sketchybar --set"))

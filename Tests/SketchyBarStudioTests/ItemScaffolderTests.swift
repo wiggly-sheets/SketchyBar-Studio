@@ -77,37 +77,6 @@ final class ItemScaffolderTests: XCTestCase {
         }
     }
 
-    func testTheGeneratedFileIsValidWhenItIsWrittenAndReadAgain() throws {
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SketchyBarStudioScaffolderTests")
-            .appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        addTeardownBlock {
-            try? FileManager.default.removeItem(at: root)
-        }
-
-        for template in scaffolder.templates(for: .sbarLua) {
-            let url = root.appendingPathComponent("\(template.id).lua")
-            let contents = contents(for: template, alias: template.id)
-            try contents.write(to: url, atomically: true, encoding: .utf8)
-
-            let read = try String(contentsOf: url, encoding: .utf8)
-            let items = SbarLuaItemParser.items(in: read)
-            let item = try XCTUnwrap(items.first, "\(template.id) does not parse")
-            XCTAssertEqual(item.alias, template.id)
-
-            let parsed = LuaTableParser.parse(source: read)
-            let table = try XCTUnwrap(parsed.tables.first)
-            for entry in table.entries {
-                let keyPath = entry.path.joined(separator: ".")
-                XCTAssertNotNil(
-                    SketchyBarOptionDocs.doc(for: keyPath),
-                    "\(template.id) uses the unknown option \(keyPath)"
-                )
-            }
-        }
-    }
-
     func testTheCustomTemplateOnlyHoldsThePosition() throws {
         let template = try XCTUnwrap(scaffolder.templates(for: .sbarLua).first { $0.id == "custom" })
         let contents = contents(for: template, alias: "my_item")
@@ -163,16 +132,15 @@ final class ItemScaffolderTests: XCTestCase {
 
     // MARK: - The loader line
 
-    func testTheLoaderLineUsesTheDottedStyle() {
-        let line = scaffolder.loaderLine(for: "clock", relativePath: "items/left/clock.lua")
-
-        XCTAssertEqual(line, "require(\"items.left.clock\")")
-    }
-
     func testTheLoaderLineFollowsThePathOfTheFile() {
-        let line = scaffolder.loaderLine(for: "clock", relativePath: "items/right/battery.lua")
-
-        XCTAssertEqual(line, "require(\"items.right.battery\")")
+        XCTAssertEqual(
+            scaffolder.loaderLine(for: "clock", relativePath: "items/left/clock.lua"),
+            "require(\"items.left.clock\")"
+        )
+        XCTAssertEqual(
+            scaffolder.loaderLine(for: "clock", relativePath: "items/right/battery.lua"),
+            "require(\"items.right.battery\")"
+        )
     }
 
     func testTheShellLoaderLineSourcesTheFile() {

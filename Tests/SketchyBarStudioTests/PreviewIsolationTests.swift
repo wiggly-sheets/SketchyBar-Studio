@@ -15,36 +15,13 @@ final class PreviewIsolationTests: XCTestCase {
 
     // MARK: - The PATH of the child
 
-    /// The child of a script gets the directory of the shim first on its
-    /// PATH, and the directory of the real binary is not on it at all.
-    func testTheChildOfAScriptHasNoDirectoryWithTheRealBinary() throws {
-        let installation = try PreviewScriptShim.Installation()
-        defer { installation.remove() }
-
-        SketchyBarPreviewC.setScriptEnvironment(shimDirectory: installation.directory.path,
-                                                sinkPath: installation.sinkURL.path,
-                                                logDirectory: installation.logDirectory.path)
-
-        let entries = pathEntries(in: BarPreviewTestAccessors.childEnvironment())
-
-        XCTAssertEqual(entries.first, installation.directory.path,
-                       "the shim has to come first on the PATH of the child")
-        XCTAssertTrue(entries.contains("/bin"), "the child needs a shell: \(entries)")
-        XCTAssertTrue(entries.contains("/usr/bin"), "the child needs a shell: \(entries)")
-
-        for directory in directoriesWithRealBinary() {
-            XCTAssertFalse(entries.contains(directory),
-                           "the child must not have \(directory) on its PATH: \(entries)")
-        }
-    }
-
     /// The child of a script does not get a directory that holds a file
     /// called `sketchybar` on its PATH.
     ///
     /// The test builds that directory itself, so the assertion always means
     /// something: the directories of the PATH of the test process may hold
-    /// no binary at all, and then the loop above proves nothing.
-    func testTheChildOfAScriptHasNoDirectoryWithABinaryOnItsPath() throws {
+    /// no binary at all.
+    func testTheChildOfAScriptHasNoDirectoryWithTheRealBinary() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PreviewIsolation-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -73,6 +50,12 @@ final class PreviewIsolationTests: XCTestCase {
                        "the child must not have the directory of a sketchybar binary on its PATH: \(entries)")
         XCTAssertEqual(entries.first, installation.directory.path,
                        "the shim has to come first on the PATH of the child")
+        XCTAssertTrue(entries.contains("/bin"), "the child needs a shell: \(entries)")
+        XCTAssertTrue(entries.contains("/usr/bin"), "the child needs a shell: \(entries)")
+        for realDirectory in directoriesWithRealBinary() {
+            XCTAssertFalse(entries.contains(realDirectory),
+                           "the child must not have \(realDirectory) on its PATH: \(entries)")
+        }
     }
 
     // MARK: - The live bar

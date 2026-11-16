@@ -226,16 +226,6 @@ final class LuaConfigRunnerTests: XCTestCase {
         XCTAssertEqual(plan.items.count, 0, "the parser reads no item of the broken config")
     }
 
-    /// A config without a Lua entrypoint falls back to the parser.
-    func testAConfigWithoutALuaEntrypointFallsBackToTheParser() throws {
-        let root = fixture("lua-shell")
-        let plan = PreviewConfigBridge.plan(forLuaConfigRoot: root)
-
-        XCTAssertTrue(plan.warnings.contains { $0.contains("no Lua entrypoint") },
-                      "the fallback must be a warning")
-        XCTAssertEqual(plan.items.count, 1, "the parser reads the shell config")
-    }
-
     // MARK: - The names and the order of the items
 
     /// A name that an expression builds is resolved.
@@ -304,7 +294,7 @@ final class LuaConfigRunnerTests: XCTestCase {
     }
 
     /// The order of the items is the order of the load, not the order of
-    /// the files.
+    /// the files. Every item knows the file that declared it.
     func testTheOrderOfTheItemsIsTheOrderOfTheLoad() throws {
         let plan = self.plan(of: "lua-load-order")
 
@@ -313,6 +303,9 @@ final class LuaConfigRunnerTests: XCTestCase {
         let parsed = PreviewConfigBridge.plan(forConfigRoot: fixture("lua-load-order"))
         XCTAssertEqual(aliases(parsed), ["second", "first"],
                        "the parser reads the files in the order of their names")
+
+        XCTAssertEqual(plan.items.first { $0.alias == "first" }?.origin?.file, "z_first.lua")
+        XCTAssertEqual(plan.items.first { $0.alias == "second" }?.origin?.file, "a_second.lua")
     }
 
     // MARK: - The real config of the user

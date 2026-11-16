@@ -147,16 +147,6 @@ final class ShellEntrypointSafetyTests: XCTestCase {
         XCTAssertEqual(values.map(\.keyPath), ["label"])
     }
 
-    func testUserArrayIsNotReported() throws {
-        let root = try makeConfigRoot()
-        let fileURL = root.appendingPathComponent("sketchybarrc")
-        try write("SPACE_ICONS=(\"1\" \"2\")\n", to: fileURL)
-
-        let values = ShellConfigScanner().scan(fileURL: fileURL)
-
-        XCTAssertTrue(values.isEmpty)
-    }
-
     // MARK: - Lua entrypoints
 
     func testLuaSketchybarrcIsAnEntrypointAndItsRequireCanBeToggled() throws {
@@ -287,23 +277,6 @@ final class ShellEntrypointSafetyTests: XCTestCase {
             "The backups folder of the user must survive a restore"
         )
         XCTAssertEqual(try String(contentsOf: backupURL, encoding: .utf8), "my own notes\n")
-    }
-
-    func testProfileSnapshotDoesNotCarryTheBackupMirror() throws {
-        let root = try makeConfigRoot()
-        let configRoot = root.appendingPathComponent("config")
-        let supportRoot = root.appendingPathComponent("support")
-        try write("width = 42\n", to: configRoot.appendingPathComponent("items/battery.lua"))
-        try write("my own notes\n", to: configRoot.appendingPathComponent("backups/notes.txt"))
-
-        let service = ProfileArchiveService(appSupportRoot: supportRoot)
-        try service.saveProfile(named: "before", from: configRoot, configID: "test")
-        let profile = try XCTUnwrap(service.listProfiles(for: "test").first)
-
-        XCTAssertFalse(
-            FileManager.default.fileExists(atPath: profile.url.appendingPathComponent("backups").path),
-            "A profile must not carry the backup mirror"
-        )
     }
 
     // MARK: - Helpers

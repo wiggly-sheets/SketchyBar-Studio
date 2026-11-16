@@ -8,86 +8,39 @@ import XCTest
 /// A change that holds no changed line, such as a trailing newline that was
 /// added, is held by the note of the difference.
 final class SaveReviewAccuracyTests: XCTestCase {
+    /// A change without a hunk is held by the note, and the note is what the
+    /// summary and the sheet show.
+    func testANoteReachesTheSummaryAndTheSheet() {
+        let cases = [
+            ("a\nb", "a\nb\n", "Only the trailing newline changed."),
+            ("a\r\nb", "a\nb", "Only the line endings changed.")
+        ]
+        for (old, new, note) in cases {
+            let difference = DiffEngine.difference(old: old, new: new)
 
-    // MARK: - The difference
-
-    func testATrailingNewlineHoldsANoteAndNoHunk() {
-        let difference = DiffEngine.difference(old: "a\nb", new: "a\nb\n")
-
-        XCTAssertTrue(difference.hunks.isEmpty)
-        XCTAssertEqual(difference.note, "Only the trailing newline changed.")
+            XCTAssertTrue(difference.hunks.isEmpty)
+            XCTAssertEqual(difference.note, note)
+            XCTAssertEqual(DiffEngine.summary(for: difference), note)
+            XCTAssertEqual(SaveReviewView.content(for: difference), .note(note))
+        }
     }
 
-    func testOtherLineEndingsHoldANoteAndNoHunk() {
-        let difference = DiffEngine.difference(old: "a\r\nb", new: "a\nb")
-
-        XCTAssertTrue(difference.hunks.isEmpty)
-        XCTAssertEqual(difference.note, "Only the line endings changed.")
-    }
-
-    func testEqualTextsHoldNoHunkAndNoNote() {
+    /// Equal texts hold no hunk, no note, and the empty state of the sheet.
+    func testEqualTextsHoldNoDifference() {
         let difference = DiffEngine.difference(old: "a\nb\n", new: "a\nb\n")
 
         XCTAssertTrue(difference.hunks.isEmpty)
         XCTAssertNil(difference.note)
+        XCTAssertEqual(DiffEngine.summary(for: difference), "No changes")
+        XCTAssertEqual(SaveReviewView.content(for: difference), .noChanges)
     }
 
-    func testChangedLinesHoldHunksAndNoNote() {
+    /// A changed line holds a hunk, no note, and the sheet shows the change.
+    func testAChangedLineHoldsAHunk() {
         let difference = DiffEngine.difference(old: "a\nb\n", new: "a\nc\n")
 
         XCTAssertFalse(difference.hunks.isEmpty)
         XCTAssertNil(difference.note)
-    }
-
-    // MARK: - The summary
-
-    func testTheSummaryOfATrailingNewlineIsTheNote() {
-        let difference = DiffEngine.difference(old: "a\nb", new: "a\nb\n")
-
-        XCTAssertEqual(DiffEngine.summary(for: difference), "Only the trailing newline changed.")
-    }
-
-    func testTheSummaryOfOtherLineEndingsIsTheNote() {
-        let difference = DiffEngine.difference(old: "a\r\nb", new: "a\nb")
-
-        XCTAssertEqual(DiffEngine.summary(for: difference), "Only the line endings changed.")
-    }
-
-    func testTheSummaryOfEqualTextsIsNoChanges() {
-        let difference = DiffEngine.difference(old: "a\nb\n", new: "a\nb\n")
-
-        XCTAssertEqual(DiffEngine.summary(for: difference), "No changes")
-    }
-
-    // MARK: - The content of the sheet
-
-    func testTheSheetShowsTheNoteOfATrailingNewline() {
-        let difference = DiffEngine.difference(old: "a\nb", new: "a\nb\n")
-
-        XCTAssertEqual(
-            SaveReviewView.content(for: difference),
-            .note("Only the trailing newline changed.")
-        )
-    }
-
-    func testTheSheetShowsTheNoteOfOtherLineEndings() {
-        let difference = DiffEngine.difference(old: "a\r\nb", new: "a\nb")
-
-        XCTAssertEqual(
-            SaveReviewView.content(for: difference),
-            .note("Only the line endings changed.")
-        )
-    }
-
-    func testTheSheetShowsTheEmptyStateForEqualTexts() {
-        let difference = DiffEngine.difference(old: "a\nb\n", new: "a\nb\n")
-
-        XCTAssertEqual(SaveReviewView.content(for: difference), .noChanges)
-    }
-
-    func testTheSheetShowsTheChangedLines() {
-        let difference = DiffEngine.difference(old: "a\nb\n", new: "a\nc\n")
-
         XCTAssertEqual(SaveReviewView.content(for: difference), .changes)
     }
 }
