@@ -424,11 +424,12 @@ final class BarRenderGoldenTests: XCTestCase {
     ///
     /// The config of the golden image sets the font of every text, so the
     /// pixels do not depend on the font of the machine: the default family
-    /// of the renderer never reaches the pixels of this fixture, and the
-    /// test runs everywhere. The matrix is one golden file per macOS major
-    /// version, so the file is comparable on every machine of that major
-    /// version. A macOS major version without a file skips the comparison;
-    /// the rest of this suite still covers that release.
+    /// of the renderer never reaches the pixels of this fixture, so the
+    /// font of the machine never blocks the test. The matrix is one golden
+    /// file per macOS major version, so the file is comparable on every
+    /// machine of that major version. A macOS major version without a file
+    /// skips the comparison; the rest of this suite still covers that
+    /// release.
     func testTheGoldenImage() throws {
         let mode = GoldenMode.current
 

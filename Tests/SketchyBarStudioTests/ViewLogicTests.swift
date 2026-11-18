@@ -495,6 +495,28 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertNil(SketchyBarOptionDocs.doc(for: ""))
     }
 
+    /// The bar and an item share key names, but their values differ. The
+    /// pickers and the validator read these values, so a shared entry would
+    /// offer the bar values on an item and the reverse.
+    func testOptionDocsKeepTheItemAndTheBarLevelsApart() {
+        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "display")?.values, ["active"])
+        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "bar.display")?.values, ["all", "main"])
+        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "align")?.values, ["left", "right", "center"])
+
+        let defaults = [
+            ("bar.color", "0x44000000"),
+            ("color", "0xffffffff"),
+            ("bar.border_color", "0xffff0000"),
+            ("bar.height", "25"),
+            ("height", "0"),
+            ("bar.padding_left", "20"),
+            ("padding_left", "0")
+        ]
+        for (key, value) in defaults {
+            XCTAssertEqual(SketchyBarOptionDocs.doc(for: key)?.defaultValue, value, key)
+        }
+    }
+
     func testOptionDocsHaveNoEntryForAPropertyThatSketchyBarRejects() {
         let keys = Set(SketchyBarOptionDocs.all.map(\.key))
 
@@ -531,6 +553,15 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertEqual(
             catalog.suggestedValues(for: "position", currentValue: "left"),
             ["left", "right", "center", "q", "e"]
+        )
+    }
+
+    /// The picker offers every mode of the reference, not only the current
+    /// value.
+    func testCatalogReturnsTheValuesOfSymbolMode() {
+        XCTAssertEqual(
+            catalog.suggestedValues(for: "symbol_mode", currentValue: "color"),
+            ["automatic", "color", "draw"]
         )
     }
 

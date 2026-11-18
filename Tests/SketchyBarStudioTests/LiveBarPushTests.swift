@@ -897,8 +897,12 @@ final class LiveBarPushTests: XCTestCase {
         store.liveUpdateMode = .never
         XCTAssertNil(store.pendingLiveBarPush)
 
-        try await waitUntil("the preview finishes") { runner.finishedQueries == 1 }
-        await Task.yield()
+        // The preview applies its answer on the main actor after the query
+        // returns. The message of the refused preview proves that the drop
+        // path ran; the query count alone does not.
+        try await waitUntil("the preview is refused") {
+            store.statusMessage.contains("mode is 'Never'")
+        }
 
         XCTAssertNil(store.pendingLiveBarPush,
                      "the preview did not wait for the confirmation of the user")
@@ -932,10 +936,16 @@ final class LiveBarPushTests: XCTestCase {
         // preview is still running, so the older preview finds no change.
         runner.setValues(["label.value": "10:00"], for: "clock")
         try await waitUntil("both previews returned") { runner.finishedQueries == 2 }
-        await Task.yield()
 
-        XCTAssertEqual(store.pendingLiveBarPush?.preview.propertyCount, 1,
-                       "the older preview won over the newer one")
+        // The drop of the older preview is silent: no published state marks
+        // the moment the store applies it. Watch the dialog through the
+        // main-actor hop instead of reading it once.
+        // shortcut: the drop has no completion signal, so the window is a
+        // time bound; add a preview completion hook to the store if this
+        // ever flakes.
+        try await settle("the older preview is dropped") {
+            store.pendingLiveBarPush?.preview.propertyCount == 1
+        }
     }
 
     /// A push that changed nothing does not use up the confirmation of the
@@ -1401,6 +1411,26 @@ final class LiveBarPushTests: XCTestCase {
         while !condition() {
             if Date() >= deadline {
                 XCTFail("timed out waiting for \(what)", file: file, line: line)
+                return
+            }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    /// Watches a condition over a settle window.
+    ///
+    /// The main-actor hop of a background preview has no completion signal
+    /// of its own, so the condition must hold on every poll of the window.
+    @MainActor
+    private func settle(_ what: String,
+                        for duration: TimeInterval = 0.5,
+                        file: StaticString = #filePath,
+                        line: UInt = #line,
+                        _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(duration)
+        while Date() < deadline {
+            if !condition() {
+                XCTFail("\(what) stopped holding while the work settled", file: file, line: line)
                 return
             }
             try await Task.sleep(nanoseconds: 5_000_000)

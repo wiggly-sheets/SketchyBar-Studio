@@ -33,7 +33,7 @@ The fixtures are the existing parser fixtures. The bridge and shim tests need no
 
 The comparison uses a per-pixel tolerance of zero (exact match) for the text and the shapes, so a change in a glyph shows up.
 
-The golden test is **not skipped for the font**: the config of the golden image pins the font of every text (`label.font=Menlo:Bold:14`) and its icon carries no text, so the default family of the renderer (`src/font.c:152-158`) never reaches the pixels of this fixture. The test therefore runs on every machine, and the pixels of the fixture do not depend on the fonts of the machine. An earlier version of this file asked for a skip when `Hack Nerd Font` was missing; the skip was wrong, because the fixture never uses that family, so the only pixel-exact net of stage 4 never ran.
+The golden test is **not skipped for the font**: the config of the golden image pins the font of every text (`label.font=Menlo:Bold:14`) and its icon carries no text, so the default family of the renderer (`src/font.c:152-158`) never reaches the pixels of this fixture. The pixels of the fixture therefore do not depend on the fonts of the machine, so the comparison runs on every machine that has a golden file for its macOS major version. An earlier version of this file asked for a skip when `Hack Nerd Font` was missing; the skip was wrong, because the fixture never uses that family, so the only pixel-exact net of stage 4 never ran.
 
 The render of the preview is in the colour space of the device and the golden file is in sRGB, so the test converts the render into sRGB once and compares the two sRGB images. The golden file is written from that same converted image, so both sides of the comparison are in sRGB.
 
