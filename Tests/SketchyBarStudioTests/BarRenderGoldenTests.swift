@@ -425,8 +425,10 @@ final class BarRenderGoldenTests: XCTestCase {
     /// The config of the golden image sets the font of every text, so the
     /// pixels do not depend on the font of the machine: the default family
     /// of the renderer never reaches the pixels of this fixture, and the
-    /// test runs everywhere. The file is comparable on every machine of the
-    /// same macOS version.
+    /// test runs everywhere. The matrix is one golden file per macOS major
+    /// version, so the file is comparable on every machine of that major
+    /// version. A macOS major version without a file skips the comparison;
+    /// the rest of this suite still covers that release.
     func testTheGoldenImage() throws {
         let mode = GoldenMode.current
 
@@ -452,7 +454,7 @@ final class BarRenderGoldenTests: XCTestCase {
 
         let file = Self.goldenFileURL
         try XCTSkipUnless(FileManager.default.fileExists(atPath: file.path),
-                          "the golden image of this macOS version has not been generated yet")
+                          "no golden image for macOS \(ProcessInfo.processInfo.operatingSystemVersion.majorVersion) has been generated yet")
         let golden = try XCTUnwrap(CGImageSourceCreateWithData(try Data(contentsOf: file) as CFData, nil))
         let goldenImage = try XCTUnwrap(CGImageSourceCreateImageAtIndex(golden, 0, nil))
 
@@ -650,14 +652,15 @@ final class BarRenderGoldenTests: XCTestCase {
         }
     }
 
-    /// The name of the golden file. The macOS version is part of the name,
-    /// because the text of a glyph is not the same on every macOS release.
+    /// The name of the golden file. The macOS major version is part of the
+    /// name, because the text of a glyph is not the same on every macOS
+    /// release. Minor and patch releases of a major version share the file,
+    /// so the comparison covers every machine of that major version.
     private static var goldenFileName: String {
-        let version = ProcessInfo.processInfo.operatingSystemVersion
-        return "bar-render-golden-macos\(version.majorVersion).\(version.minorVersion).\(version.patchVersion).png"
+        "bar-render-golden-macos\(ProcessInfo.processInfo.operatingSystemVersion.majorVersion).png"
     }
 
-    /// The golden file of this macOS version.
+    /// The golden file of this macOS major version.
     private static var goldenFileURL: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -37,7 +37,7 @@ The golden test is **not skipped for the font**: the config of the golden image 
 
 The render of the preview is in the colour space of the device and the golden file is in sRGB, so the test converts the render into sRGB once and compares the two sRGB images. The golden file is written from that same converted image, so both sides of the comparison are in sRGB.
 
-The expected PNG is regenerated per macOS major version, and the macOS version is part of the test file name, because the text rasterization differs between macOS releases.
+The expected PNG is regenerated per macOS major version, and the macOS major version is part of the test file name, because the text rasterization differs between macOS releases. Minor and patch releases of a major version share the file, so the comparison covers every machine of that major version. A macOS major version without a file skips the comparison, and the structural tests of the same suite still cover that release; add a golden file for a new major version deliberately.
 
 The golden files are regenerated deliberately, never silently. A golden file that changes in a diff is a review item, not a merge detail. Regenerate it on purpose and say so in the commit message. The test never writes the file of the tree: `SKETCHYBAR_STUDIO_GOLDEN=write` writes the file to a temporary directory and prints that path, so the file of the tree is only replaced on purpose.
 

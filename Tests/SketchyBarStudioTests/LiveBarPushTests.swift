@@ -525,18 +525,22 @@ final class LiveBarPushTests: XCTestCase {
 
         store.liveUpdateMode = .never
         store.update(valueID: valueID, draftValue: "changed once")
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        // A push that must not happen is the one case that has to wait for
+        // the window in which the app could have acted.
+        try await waitOneDebounceInterval()
         XCTAssertNil(store.pendingLiveBarPush)
         XCTAssertTrue(runner.calls.isEmpty)
 
         store.liveUpdateMode = .whileEditing
         store.update(valueID: valueID, draftValue: "changed twice")
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await waitUntil("the preview of the push is ready") { store.pendingLiveBarPush != nil }
         let pending = try XCTUnwrap(store.pendingLiveBarPush)
         XCTAssertGreaterThan(pending.preview.propertyCount, 0)
 
         store.confirmLiveBarPush()
-        try await Task.sleep(nanoseconds: 500_000_000)
+        try await waitUntil("the daemon gets the value of the edit") {
+            runner.calls.contains { $0.arguments.contains("label=changed twice") }
+        }
 
         let call = try XCTUnwrap(runner.calls.first)
         XCTAssertEqual(call.arguments.first, "--set")
@@ -832,17 +836,17 @@ final class LiveBarPushTests: XCTestCase {
         let store = try makeStore(defaults: defaults,
                                   runner: runner,
                                   liveConfigURL: root.appendingPathComponent("another-config"))
-        let valueID = try XCTUnwrap(store.files.first?.values.first { $0.keyPath == "label" }?.id)
 
         XCTAssertFalse(store.isLiveBarSourceLive)
         XCTAssertNotNil(store.liveBarBlockedReason)
 
         store.liveUpdateMode = .whileEditing
-        store.update(valueID: valueID, draftValue: "changed")
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        store.requestLiveBarPush(structuredOnly: true)
 
         XCTAssertNil(store.pendingLiveBarPush)
         XCTAssertTrue(runner.calls.isEmpty)
+        XCTAssertEqual(store.statusMessage, store.liveBarBlockedReason,
+                       "the message names why the source cannot reach the live bar")
     }
 
     /// The "Apply Bar Settings" with no change of the bar never pushes
@@ -858,12 +862,12 @@ final class LiveBarPushTests: XCTestCase {
         // The config of the test has no settings of the bar, so nothing
         // changes.
         store.requestLiveBarSettingsPush()
-        try await Task.sleep(nanoseconds: 500_000_000)
+        try await waitUntil("the preview of the bar settings is ready") { store.pendingLiveBarPush != nil }
         let pending = try XCTUnwrap(store.pendingLiveBarPush)
         XCTAssertTrue(pending.barChanges.isEmpty)
 
         store.confirmLiveBarPush()
-        try await Task.sleep(nanoseconds: 500_000_000)
+        try await waitUntil("the push of the bar settings lands") { !store.liveBarIsWorking }
 
         XCTAssertTrue(runner.calls.isEmpty,
                       "the daemon got \(runner.calls.map(\.arguments))")
@@ -882,19 +886,19 @@ final class LiveBarPushTests: XCTestCase {
         runner.values = ["clock": ["label.value": "09:00"]]
         // The query of the daemon takes a while, so the preview is still
         // running when the user changes the mode.
-        runner.queryDelays = [2]
+        runner.queryDelays = [1]
         let store = try makeStore(defaults: defaults, runner: runner)
-        let valueID = try XCTUnwrap(store.files.first?.values.first { $0.keyPath == "label" }?.id)
 
         store.liveUpdateMode = .whileEditing
-        store.update(valueID: valueID, draftValue: "changed")
-        // The debounce waits, and then the preview starts.
-        try await Task.sleep(nanoseconds: 800_000_000)
-        XCTAssertNil(store.pendingLiveBarPush)
+        store.requestLiveBarPush(structuredOnly: true)
+        try await waitUntil("the preview asks the daemon") { runner.queries.count == 1 }
 
         // The user turns the mode off while the preview runs.
         store.liveUpdateMode = .never
-        try await Task.sleep(nanoseconds: 2_500_000_000)
+        XCTAssertNil(store.pendingLiveBarPush)
+
+        try await waitUntil("the preview finishes") { runner.finishedQueries == 1 }
+        await Task.yield()
 
         XCTAssertNil(store.pendingLiveBarPush,
                      "the preview did not wait for the confirmation of the user")
@@ -911,22 +915,26 @@ final class LiveBarPushTests: XCTestCase {
         runner.values = ["clock": ["label.value": "09:00"]]
         // The first query takes a while, so the first preview lands after
         // the second one.
-        runner.queryDelays = [2, 0]
+        runner.queryDelays = [1, 0]
         let store = try makeStore(defaults: defaults, runner: runner)
 
         store.liveUpdateMode = .whileEditing
         store.requestLiveBarPush(structuredOnly: true)
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await waitUntil("the first preview asks the daemon") { runner.queries.count == 1 }
         store.requestLiveBarPush(structuredOnly: true)
 
-        // The second preview found a change. The live bar takes the value
-        // of the config while the first preview is still running.
-        try await Task.sleep(nanoseconds: 1_000_000_000)
-        runner.setValues(["label.value": "10:00"], for: "clock")
-        try await Task.sleep(nanoseconds: 2_000_000_000)
+        // The second preview found a change.
+        try await waitUntil("the second preview lands") {
+            store.pendingLiveBarPush?.preview.propertyCount == 1
+        }
 
-        let pending = try XCTUnwrap(store.pendingLiveBarPush)
-        XCTAssertEqual(pending.preview.propertyCount, 1,
+        // The live bar takes the value of the config while the first
+        // preview is still running, so the older preview finds no change.
+        runner.setValues(["label.value": "10:00"], for: "clock")
+        try await waitUntil("both previews returned") { runner.finishedQueries == 2 }
+        await Task.yield()
+
+        XCTAssertEqual(store.pendingLiveBarPush?.preview.propertyCount, 1,
                        "the older preview won over the newer one")
     }
 
@@ -942,18 +950,18 @@ final class LiveBarPushTests: XCTestCase {
 
         store.liveUpdateMode = .whileEditing
         store.update(valueID: valueID, draftValue: "changed")
-        try await Task.sleep(nanoseconds: 1_500_000_000)
-        XCTAssertNotNil(store.pendingLiveBarPush)
+        try await waitUntil("the preview of the push is ready") { store.pendingLiveBarPush != nil }
         store.confirmLiveBarPush()
-        try await Task.sleep(nanoseconds: 500_000_000)
+        try await waitUntil("the push reports the missing daemon") {
+            store.statusMessage.contains("not running")
+        }
 
         XCTAssertTrue(runner.calls.isEmpty)
         XCTAssertTrue(store.statusMessage.contains("not running"))
 
         // The push changed nothing, so the user is asked again.
         store.update(valueID: valueID, draftValue: "changed again")
-        try await Task.sleep(nanoseconds: 1_500_000_000)
-        XCTAssertNotNil(store.pendingLiveBarPush)
+        try await waitUntil("the next push asks the user again") { store.pendingLiveBarPush != nil }
     }
 
     /// Two pushes that follow each other do not fight: the older plan
@@ -968,20 +976,24 @@ final class LiveBarPushTests: XCTestCase {
 
         store.liveUpdateMode = .whileEditing
         store.update(valueID: valueID, draftValue: "changed once")
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await waitUntil("the first preview is ready") { store.pendingLiveBarPush != nil }
         store.confirmLiveBarPush()
-        try await Task.sleep(nanoseconds: 1_000_000_000)
+        try await waitUntil("the first push lands") {
+            !runner.calls.isEmpty && !store.liveBarIsWorking
+        }
 
         // The push that follows is slow, so the request that comes after
         // it has to wait for it.
-        runner.delays = [0, 3]
+        runner.delays = [0, 1]
         store.update(valueID: valueID, draftValue: "changed twice")
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await waitUntil("the slow push reaches the daemon") { runner.calls.count >= 2 }
 
         // The request comes in while the slow push runs.
         store.update(valueID: valueID, draftValue: "changed three times")
         store.requestLiveBarPush(structuredOnly: true)
-        try await Task.sleep(nanoseconds: 5_000_000_000)
+        try await waitUntil("the queued push lands") {
+            runner.calls.count >= 3 && !store.liveBarIsWorking
+        }
 
         let values = runner.calls.flatMap(\.arguments).filter { $0.hasPrefix("label=") }
         XCTAssertEqual(values.last, "label=changed three times",
@@ -989,10 +1001,12 @@ final class LiveBarPushTests: XCTestCase {
 
         // The app knows the values of the live bar, so the next push has
         // nothing to do. An older plan that won would send the value
-        // again.
+        // again. The debounce of the last edit may still fire, so its
+        // window is part of the check.
         runner.forgetCalls()
         store.requestLiveBarPush(structuredOnly: true)
-        try await Task.sleep(nanoseconds: 1_000_000_000)
+        try await waitUntil("the last push lands") { !store.liveBarIsWorking }
+        try await waitOneDebounceInterval()
         XCTAssertTrue(runner.calls.isEmpty,
                       "the daemon got \(runner.calls.map(\.arguments))")
     }
@@ -1009,20 +1023,22 @@ final class LiveBarPushTests: XCTestCase {
 
         store.liveUpdateMode = .whileEditing
         store.update(valueID: valueID, draftValue: "changed")
-        try await Task.sleep(nanoseconds: 1_500_000_000)
+        try await waitUntil("the preview of the push is ready") { store.pendingLiveBarPush != nil }
         store.confirmLiveBarPush()
-        try await Task.sleep(nanoseconds: 500_000_000)
-        XCTAssertFalse(runner.calls.isEmpty)
+        try await waitUntil("the push lands") {
+            !runner.calls.isEmpty && !store.liveBarIsWorking
+        }
+        XCTAssertTrue(store.liveBarHasSnapshot)
 
         store.restoreLiveBar()
-        try await Task.sleep(nanoseconds: 500_000_000)
+        try await waitUntil("the restore lands") {
+            !store.liveBarHasSnapshot && !store.liveBarIsWorking
+        }
 
         // The next push asks the daemon about the item again.
         runner.forgetQueries()
         store.update(valueID: valueID, draftValue: "changed again")
-        try await Task.sleep(nanoseconds: 1_500_000_000)
-        XCTAssertTrue(runner.queries.contains("clock"),
-                      "the next push asks the daemon about the item")
+        try await waitUntil("the next push asks the daemon") { runner.queries.contains("clock") }
     }
 
     // MARK: - The config of the user
@@ -1250,10 +1266,25 @@ final class LiveBarPushTests: XCTestCase {
         var refusedAliases: Set<String> = []
         /// True when the daemon answers.
         var isRunning = true
-        /// The calls the runner received.
-        private(set) var calls: [LiveBarCommand] = []
-        /// The items the runner was asked about.
-        private(set) var queries: [String] = []
+        /// The calls the runner received, safe to read from the test while a
+        /// push runs in the background.
+        var calls: [LiveBarCommand] {
+            lock.lock()
+            defer { lock.unlock() }
+            return receivedCalls
+        }
+        /// The items the runner was asked about, safe to read from the test.
+        var queries: [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return askedItems
+        }
+        /// The number of queries that have answered.
+        var finishedQueries: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return answers
+        }
         /// The time every call takes, in the order of the calls.
         var delays: [TimeInterval] = []
         /// The time every query takes, in the order of the queries.
@@ -1261,6 +1292,12 @@ final class LiveBarPushTests: XCTestCase {
         /// A query that is slow stands for a daemon that needs a while,
         /// so two previews can be in flight at the same time.
         var queryDelays: [TimeInterval] = []
+        /// The calls of the runner, in the order they came in.
+        private var receivedCalls: [LiveBarCommand] = []
+        /// The items the runner was asked about, in the order of the asks.
+        private var askedItems: [String] = []
+        /// The number of queries that have answered.
+        private var answers = 0
         /// The lock of the runner: a push runs in the background.
         private let lock = NSLock()
 
@@ -1275,22 +1312,22 @@ final class LiveBarPushTests: XCTestCase {
         func forgetQueries() {
             lock.lock()
             defer { lock.unlock() }
-            queries = []
+            askedItems = []
         }
 
         /// Forgets the calls the runner received.
         func forgetCalls() {
             lock.lock()
             defer { lock.unlock() }
-            calls = []
+            receivedCalls = []
         }
 
         func daemonIsRunning() -> Bool { isRunning }
 
         func liveValues(of alias: String) -> [String: String]? {
             lock.lock()
-            let index = queries.count
-            queries.append(alias)
+            let index = askedItems.count
+            askedItems.append(alias)
             lock.unlock()
             if index < queryDelays.count {
                 Thread.sleep(forTimeInterval: queryDelays[index])
@@ -1298,6 +1335,7 @@ final class LiveBarPushTests: XCTestCase {
             lock.lock()
             let reply = replies[alias]
             let known = values[alias]
+            answers += 1
             lock.unlock()
             if let reply {
                 let parsed = LiveBarQuery.values(in: reply)
@@ -1308,8 +1346,8 @@ final class LiveBarPushTests: XCTestCase {
 
         func run(_ command: LiveBarCommand) -> LiveBarCommandResult {
             lock.lock()
-            let index = calls.count
-            calls.append(command)
+            let index = receivedCalls.count
+            receivedCalls.append(command)
             let delay = index < delays.count ? delays[index] : 0
             lock.unlock()
             // A call that is slow stands for a daemon that needs a while,
@@ -1347,9 +1385,38 @@ final class LiveBarPushTests: XCTestCase {
         }
     }
 
+    /// Waits for a state the app publishes, so the test never guesses a
+    /// time.
+    ///
+    /// The store publishes on the main actor from a detached task, so the
+    /// wait polls a short interval. The deadline turns a missing change
+    /// into a failure instead of a hang.
+    @MainActor
+    private func waitUntil(_ what: String,
+                           timeout: TimeInterval = 10,
+                           file: StaticString = #filePath,
+                           line: UInt = #line,
+                           _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() >= deadline {
+                XCTFail("timed out waiting for \(what)", file: file, line: line)
+                return
+            }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    /// Waits one interval of the debounce and a margin.
+    ///
+    /// Only a test that asserts that the push did not happen needs this: the
+    /// app can act inside that window and nowhere else.
+    private func waitOneDebounceInterval() async throws {
+        try await Task.sleep(nanoseconds: UInt64(LiveBarDebouncer.interval * 1_000_000_000) + 150_000_000)
+    }
+
     /// The defaults of the test, in a suite of their own.
-    private func makeDefaults() throws -> UserDefaults {
-        let name = "LiveBarPushTests-\(UUID().uuidString)"
+    private func makeDefaults() throws -> UserDefaults {        let name = "LiveBarPushTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { defaults.removePersistentDomain(forName: name) }
         return defaults

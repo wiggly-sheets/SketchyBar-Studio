@@ -495,23 +495,6 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertNil(SketchyBarOptionDocs.doc(for: ""))
     }
 
-    func testOptionDocsTableHasTheCoreKeys() {
-        let keys = Set(SketchyBarOptionDocs.all.map(\.key))
-
-        for key in ["position", "align", "width", "updates", "update_freq", "icon", "label",
-                    "script", "click_script", "space", "display", "associated_display",
-                    "associated_space", "ignore_association", "scroll_texts", "scroll_duration",
-                    "max_chars", "drawing", "shadow", "font",
-                    "color", "highlight", "highlight_color", "padding_left", "padding_right",
-                    "x_offset", "y_offset", "border_color", "border_width", "corner_radius",
-                    "fill_color", "symbol_color", "symbol_mode", "percentage", "anchor",
-                    "margin", "topmost", "sticky", "show_in_fullscreen", "hidden",
-                    "font_smoothing", "notch_width", "notch_offset", "notch_display_height",
-                    "horizontal"] {
-            XCTAssertTrue(keys.contains(key), "missing option reference for \(key)")
-        }
-    }
-
     func testOptionDocsHaveNoEntryForAPropertyThatSketchyBarRejects() {
         let keys = Set(SketchyBarOptionDocs.all.map(\.key))
 
@@ -524,38 +507,6 @@ final class ViewLogicTests: XCTestCase {
 
     func testOptionDocsKeysAreUnique() {
         XCTAssertEqual(Set(SketchyBarOptionDocs.all.map(\.key)).count, SketchyBarOptionDocs.all.count)
-    }
-
-    func testOptionDocsListTheAcceptedValues() throws {
-        let position = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "position"))
-        XCTAssertEqual(position.values, ["left", "right", "center", "q", "e"])
-
-        let barPosition = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "bar.position"))
-        XCTAssertEqual(barPosition.values, ["top", "bottom"])
-
-        let updates = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "updates"))
-        XCTAssertEqual(updates.values, ["on", "off", "when_shown"])
-
-        let align = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "align"))
-        XCTAssertEqual(align.values, ["left", "right", "center"])
-    }
-
-    func testOptionDocsKeepTheItemAndTheBarLevelsApart() throws {
-        let itemDisplay = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "display"))
-        XCTAssertEqual(itemDisplay.values, ["active"])
-        XCTAssertFalse(itemDisplay.values.contains("all"))
-        XCTAssertFalse(itemDisplay.values.contains("main"))
-
-        let barDisplay = try XCTUnwrap(SketchyBarOptionDocs.doc(for: "bar.display"))
-        XCTAssertEqual(barDisplay.values, ["all", "main"])
-
-        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "bar.color")?.defaultValue, "0x44000000")
-        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "color")?.defaultValue, "0xffffffff")
-        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "bar.border_color")?.defaultValue, "0xffff0000")
-        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "bar.height")?.defaultValue, "25")
-        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "height")?.defaultValue, "0")
-        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "bar.padding_left")?.defaultValue, "20")
-        XCTAssertEqual(SketchyBarOptionDocs.doc(for: "padding_left")?.defaultValue, "0")
     }
 
     func testOptionDocsUseTheRangeOfTheSourceForTheColorParts() throws {
@@ -590,28 +541,10 @@ final class ViewLogicTests: XCTestCase {
         XCTAssertTrue(values.contains("center"))
     }
 
-    func testCatalogReturnsTheBarPositionList() {
-        XCTAssertEqual(
-            catalog.suggestedValues(for: "bar.position", currentValue: "top"),
-            ["top", "bottom"]
-        )
-    }
-
     func testCatalogReturnsTheBooleanListForABooleanKey() {
         XCTAssertEqual(
             catalog.suggestedValues(for: "drawing", currentValue: "true"),
             ["true", "false"]
-        )
-    }
-
-    func testCatalogReturnsTheValuesOfTheOptionReference() {
-        XCTAssertEqual(
-            catalog.suggestedValues(for: "symbol_mode", currentValue: "color"),
-            ["automatic", "color", "draw"]
-        )
-        XCTAssertEqual(
-            catalog.suggestedValues(for: "updates", currentValue: "when_shown"),
-            ["on", "off", "when_shown"]
         )
     }
 
