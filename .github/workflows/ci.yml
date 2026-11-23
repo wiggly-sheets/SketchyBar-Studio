@@ -38,10 +38,11 @@ jobs:
       - name: Test
         run: make test
 
-      - name: Package app bundle
+      # Builds the Apple silicon and the Intel bundle, each in its own folder.
+      - name: Package both app bundles
         run: make app
 
-      # Checks the executable, the icon, the architecture, the version and the
-      # signature in one place, so the same gate runs locally.
+      # Checks both executables, the icon, the architecture of each bundle, the
+      # version and the signature in one place, so the same gate runs locally.
       - name: Verify app bundle metadata
         run: make verify

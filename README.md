@@ -133,7 +133,7 @@ What you can do now: render any config or profile in the library as a live bar p
 
 ## Installation
 
-SketchyBar Studio preview builds are ad-hoc signed, but not Developer ID signed or notarized. You can install the universal DMG release or build it yourself.
+SketchyBar Studio preview builds are ad-hoc signed, but not Developer ID signed or notarized. You can install the DMG release for your Mac or build it yourself.
 
 ### Install with Homebrew
 
@@ -145,7 +145,7 @@ brew install --cask sketchybar-studio
 
 ### Install from a release
 
-1. Download the universal `.dmg` from the [latest release](https://github.com/wiggly-sheets/SketchyBar-Studio/releases/latest).
+1. Download the `.dmg` for your Mac, `arm64` for Apple silicon or `x86_64` for Intel, from the [latest release](https://github.com/wiggly-sheets/SketchyBar-Studio/releases/latest).
 2. Open the DMG and drag **SketchyBar Studio** to your Applications folder.
 3. Open the app from Applications.
 
@@ -210,35 +210,37 @@ To build and install without launching:
 
 ```bash
 make build
-make app             # dist/SketchyBarStudio.app
-make verify          # architecture, version, icon and signature
+make app             # dist/arm64/ and dist/x86_64/
+make verify          # architecture of each bundle, version, icon and signature
 make install         # ~/Applications/SketchyBarStudio.app
 make run             # install and launch
 ```
 
 `make test` runs the changelog check before the SwiftPM suite.
 
-### Build a universal app
+### Build a release-style app
 
-To package a release-style app for both Apple Silicon and Intel Macs:
+To package a release-style app for both Apple silicon and Intel Macs:
 
 ```bash
-make app             # equivalent to make app-universal
-lipo -info dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
+make app             # dist/arm64/ and dist/x86_64/
+make app-arm         # Apple silicon bundle only
+make app-intel       # Intel bundle only
+lipo -archs dist/arm64/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
 ```
 
 ### Build the release artifacts
 
-To build the disk image and its checksum sidecar, give the version on the command line:
+To build both disk images and the checksum file, give the version on the command line:
 
 ```bash
 make release-artifacts VERSION=1.0.3
 ```
 
-That writes `dist/SketchyBarStudio-1.0.3-universal.dmg` and the sidecar
-`dist/SketchyBarStudio-1.0.3-universal.dmg.sha256` next to it, then verifies the
-checksum. The sidecar holds one line: the digest, two spaces and the bare file
-name.
+That writes `release/SketchyBarStudio-1.0.3-arm64.dmg` and
+`release/SketchyBarStudio-1.0.3-x86_64.dmg`, plus `release/checksums.txt`, then
+verifies the checksum file. It holds one line per disk image: the digest, two
+spaces and the bare file name.
 
 To prepare a release, which moves `[Unreleased]` to the version, tests, builds,
 verifies, commits the changelog bump and creates the tag without pushing:

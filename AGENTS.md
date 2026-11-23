@@ -26,7 +26,7 @@ Core goals:
 - `Sources/CSketchyBar` - vendored SketchyBar C subset, the preview shim, the preview API and the public preview header.
 - `Sources/CSketchyBar/preview` - the C API of the preview, the headless item tree and the bar domain. It is not upstream code.
 - `Assets` - app icon/logo assets.
-- `script/build_and_run.sh` - build, bundle, run, package, and universal package helper.
+- `script/build_and_run.sh` - build, bundle, run, and package helper. It packages one bundle per architecture or one universal bundle.
 - `dist` - generated app bundle output. Do not hand-edit generated bundles.
 
 ## Build Commands
@@ -36,16 +36,20 @@ Use these from repo root:
 ```bash
 swift build
 ./script/build_and_run.sh --package
+./script/build_and_run.sh --arm-package
+./script/build_and_run.sh --intel-package
 ./script/build_and_run.sh --universal-package
 ```
 
-The Makefile drives the same work: `make help` lists every target, `make build` builds the package, `make test` runs the changelog check and the test suite, `make verify` checks the built bundle, `make install` copies it to `~/Applications`, `make run` installs and launches it, `make app` (and `make app-universal`) builds the universal bundle, `make dmg-universal` builds the disk image, `make release-artifacts VERSION=x.y.z` writes the disk image and its verified checksum sidecar, `make release-notes VERSION=x.y.z` prints the changelog section, and `make release VERSION=x.y.z` bumps the changelog, tests, builds, verifies, commits the bump and creates the tag without pushing anything.
+The Makefile drives the same work: `make help` lists every target, `make build` builds the package, `make test` runs the changelog check and the test suite, `make verify` checks both built bundles, `make install` copies the bundle of the host Mac to `~/Applications`, `make run` installs and launches it, `make app` builds the Apple silicon and the Intel bundle into `dist/arm64/` and `dist/x86_64/`, `make app-arm` and `make app-intel` build one of them, `make app-universal` builds the one universal bundle, `make dmg` builds both disk images, `make release-artifacts VERSION=x.y.z` writes both disk images and the verified `release/checksums.txt`, `make release-notes VERSION=x.y.z` prints the changelog section, and `make release VERSION=x.y.z` bumps the changelog, tests, builds, verifies, commits the bump and creates the tag without pushing anything.
 
 For release sanity:
 
 ```bash
-lipo -info dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
-codesign --verify --deep --strict dist/SketchyBarStudio.app
+lipo -archs dist/arm64/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
+lipo -archs dist/x86_64/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
+codesign --verify --deep --strict dist/arm64/SketchyBarStudio.app
+codesign --verify --deep --strict dist/x86_64/SketchyBarStudio.app
 ```
 
 The package is ad-hoc signed after the complete bundle is assembled, but it is not Developer ID signed or notarized. README documents Gatekeeper quarantine removal for trusted preview builds.

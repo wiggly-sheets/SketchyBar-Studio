@@ -58,6 +58,7 @@ This project follows a human-readable changelog style and aims to use semantic v
 - Builds now record the real linked SDK in `LC_BUILD_VERSION`. SwiftPM 6.4 stamps the deployment target in that field, and macOS uses it to decide whether an app gets Liquid Glass, so the build script restamps it with the SDK that compiled the binary before signing and verifies the result. The app still records `minos 14.0`, so it runs on macOS 14 and later, but building now requires the macOS 26 SDK or later.
 - The project licence is now GPL-3.0 instead of MIT. The full licence text is in LICENSE.
 - The install instructions now point at the consolidated Homebrew tap `wiggly-sheets/homebrew-tap`. The old tap `wiggly-sheets/sketchybar-studio` is deprecated. Move over with `brew untap wiggly-sheets/sketchybar-studio` and `brew tap wiggly-sheets/homebrew-tap`.
+- The release publishes one disk image per architecture now: `SketchyBarStudio-<version>-arm64.dmg` for Apple silicon and `SketchyBarStudio-<version>-x86_64.dmg` for Intel, with one `checksums.txt` that verifies both. `make app` and `make dmg` build both, `make verify` checks the architecture of each bundle, and `make install` and `make run` take the bundle of the host Mac.
 
 <!-- pre-versioning -->
 

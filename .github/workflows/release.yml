@@ -37,7 +37,8 @@ jobs:
             exit 2
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "dmg_name=SketchyBarStudio-$VERSION-universal.dmg" >> "$GITHUB_OUTPUT"
+          echo "dmg_arm=SketchyBarStudio-$VERSION-arm64.dmg" >> "$GITHUB_OUTPUT"
+          echo "dmg_intel=SketchyBarStudio-$VERSION-x86_64.dmg" >> "$GITHUB_OUTPUT"
 
       - name: Show toolchain
         run: |
@@ -66,7 +67,7 @@ jobs:
           SKETCHYBAR_STUDIO_BUILD: ${{ github.run_number }}
         run: make release-artifacts VERSION=${{ steps.version.outputs.version }}
 
-      - name: Verify the bundle
+      - name: Verify both bundles
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: make verify VERSION="$VERSION"
@@ -74,7 +75,6 @@ jobs:
       - name: Write the release notes
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          DMG_NAME: ${{ steps.version.outputs.dmg_name }}
         run: |
           set -euo pipefail
           ./scripts/changelog.sh notes "$VERSION" > release-notes.md
@@ -83,7 +83,7 @@ jobs:
             echo "## Checksums"
             echo ""
             echo '```'
-            cat "dist/$DMG_NAME.sha256"
+            cat release/checksums.txt
             echo '```'
           } >> release-notes.md
 
@@ -91,11 +91,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
-          DMG_NAME: ${{ steps.version.outputs.dmg_name }}
+          DMG_ARM: ${{ steps.version.outputs.dmg_arm }}
+          DMG_INTEL: ${{ steps.version.outputs.dmg_intel }}
         run: |
+          set -euo pipefail
+          ASSETS=("release/$DMG_ARM" "release/$DMG_INTEL" "release/checksums.txt")
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "dist/$DMG_NAME" "dist/$DMG_NAME.sha256" --clobber
+            gh release upload "$GITHUB_REF_NAME" "${ASSETS[@]}" --clobber
             gh release edit "$GITHUB_REF_NAME" --title "SketchyBar Studio $VERSION" --notes-file release-notes.md
           else
-            gh release create "$GITHUB_REF_NAME" "dist/$DMG_NAME" "dist/$DMG_NAME.sha256" --title "SketchyBar Studio $VERSION" --notes-file release-notes.md
+            gh release create "$GITHUB_REF_NAME" "${ASSETS[@]}" --title "SketchyBar Studio $VERSION" --notes-file release-notes.md
           fi

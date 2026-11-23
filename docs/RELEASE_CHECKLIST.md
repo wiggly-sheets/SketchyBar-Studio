@@ -7,12 +7,16 @@
    ```bash
    make build
    make test
-   make app-universal
-   lipo -info dist/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
-   codesign --verify --deep --strict dist/SketchyBarStudio.app
+   make app
+   make verify
+   lipo -archs dist/arm64/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
+   lipo -archs dist/x86_64/SketchyBarStudio.app/Contents/MacOS/SketchyBarStudio
+   codesign --verify --deep --strict dist/arm64/SketchyBarStudio.app
+   codesign --verify --deep --strict dist/x86_64/SketchyBarStudio.app
    ```
 
-4. Manually open `dist/SketchyBarStudio.app`.
+4. Manually open the bundle of the host Mac, `dist/arm64/` on Apple silicon or
+   `dist/x86_64/` on Intel.
 5. Test with:
    - Lua config
    - shell/sketchybarrc config
@@ -31,11 +35,11 @@
    ```
 
 8. GitHub Actions `Release` workflow will automatically:
-   - build the universal app
-   - create a DMG with `create-dmg@8.1.0`
-   - write the checksum sidecar next to the DMG
-   - upload the DMG and the checksum sidecar
-   - publish the release with the download, Homebrew and notes blocks, the changelog section of that version and the SHA-256 of the DMG
+   - build the Apple silicon and the Intel app
+   - create one DMG per architecture with `create-dmg@8.1.0`
+   - write `release/checksums.txt` with one line per DMG and verify it
+   - upload `SketchyBarStudio-<version>-arm64.dmg`, `SketchyBarStudio-<version>-x86_64.dmg` and `checksums.txt`
+   - publish the release with the download, Homebrew and notes blocks, the changelog section of that version and both SHA-256 digests
 9. Download the release DMG and smoke test it.
 
 ## Daemon-dependent tests

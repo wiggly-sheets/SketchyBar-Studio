@@ -47,10 +47,32 @@ fi
 
 SWIFT_CONFIGURATION="debug"
 UNIVERSAL_BUILD="false"
+BUNDLE_ARCH=""
 
-if [[ "$MODE" == "--universal-package" || "$MODE" == "universal-package" ]]; then
-  SWIFT_CONFIGURATION="release"
-  UNIVERSAL_BUILD="true"
+case "$MODE" in
+  --universal-package | universal-package)
+    SWIFT_CONFIGURATION="release"
+    UNIVERSAL_BUILD="true"
+    ;;
+  --arm-package | arm-package)
+    SWIFT_CONFIGURATION="release"
+    BUNDLE_ARCH="arm64"
+    ;;
+  --intel-package | intel-package)
+    SWIFT_CONFIGURATION="release"
+    BUNDLE_ARCH="x86_64"
+    ;;
+esac
+
+# Each architecture gets its own folder, so the two bundles never overwrite
+# each other and the app keeps its name inside its disk image.
+if [[ -n "$BUNDLE_ARCH" ]]; then
+  APP_BUNDLE="$DIST_DIR/$BUNDLE_ARCH/$APP_NAME.app"
+  APP_CONTENTS="$APP_BUNDLE/Contents"
+  APP_MACOS="$APP_CONTENTS/MacOS"
+  APP_RESOURCES="$APP_CONTENTS/Resources"
+  APP_BINARY="$APP_MACOS/$APP_NAME"
+  INFO_PLIST="$APP_CONTENTS/Info.plist"
 fi
 
 # Swift 6.4's SwiftPM records the deployment target in the sdk field of
@@ -69,6 +91,9 @@ build_bundle() {
   if [[ "$UNIVERSAL_BUILD" == "true" ]]; then
     swift build --configuration "$SWIFT_CONFIGURATION" --arch arm64 --arch x86_64
     BUILD_DIR="$(swift build --configuration "$SWIFT_CONFIGURATION" --arch arm64 --arch x86_64 --show-bin-path)"
+  elif [[ -n "$BUNDLE_ARCH" ]]; then
+    swift build --configuration "$SWIFT_CONFIGURATION" --arch "$BUNDLE_ARCH"
+    BUILD_DIR="$(swift build --configuration "$SWIFT_CONFIGURATION" --arch "$BUNDLE_ARCH" --show-bin-path)"
   else
     swift build --configuration "$SWIFT_CONFIGURATION"
     BUILD_DIR="$(swift build --configuration "$SWIFT_CONFIGURATION" --show-bin-path)"
@@ -144,7 +169,7 @@ open_app() {
 }
 
 case "$MODE" in
-  --package|package|--universal-package|universal-package)
+  --package|package|--universal-package|universal-package|--arm-package|arm-package|--intel-package|intel-package)
     build_bundle
     verify_bundle
     echo "$APP_BUNDLE"
@@ -174,7 +199,7 @@ case "$MODE" in
     pgrep -x "$APP_NAME" >/dev/null
     ;;
   *)
-    echo "usage: $0 [run|--package|--universal-package|--debug|--logs|--telemetry|--verify]" >&2
+    echo "usage: $0 [run|--package|--universal-package|--arm-package|--intel-package|--debug|--logs|--telemetry|--verify]" >&2
     exit 2
     ;;
 esac
