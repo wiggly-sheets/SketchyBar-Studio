@@ -6,6 +6,8 @@ This project follows a human-readable changelog style and aims to use semantic v
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-23
+
 ### Added
 
 - A reload parses only the files that changed. The store keeps the text and values of every file together with its modification date and size, so a save, an undo, an activation toggle or a profile restore no longer re-reads and re-parses the whole config. Profile save and restore now copy the tree off the main actor and reload when they finish, and the simulation keeps its rendered state and selection across a switch to the editor and back.
